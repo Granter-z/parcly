@@ -683,6 +683,18 @@ void main() {
       expect(names, contains('wapquerylogisticpackagebymailno_0001.json'));
     });
 
+    test('clear 删掉全部采集文件、保留目录，之后还能继续写', () async {
+      final store = DiagFileStore(Directory('${tmp.path}/diag/taobao'));
+      await store.write(TaobaoDiagEndpoint.orderList, '{}');
+      await store.write(TaobaoDiagEndpoint.byMailNo, '{}');
+      expect(await store.clear(), 2);
+      expect(store.listFiles(), isEmpty);
+      expect(store.dir.existsSync(), isTrue);
+      await store.write(TaobaoDiagEndpoint.orderList, '{}');
+      expect(store.listFiles().length, 1);
+      expect(await DiagFileStore(Directory('${tmp.path}/none')).clear(), 0);
+    });
+
     test('打包 zip', () async {
       final store = DiagFileStore(Directory('${tmp.path}/diag/taobao'));
       await store.write(TaobaoDiagEndpoint.ssrDetail, '{"a":1}');

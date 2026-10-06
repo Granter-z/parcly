@@ -1,11 +1,12 @@
 /// 淘宝原始返回采集（P11-a）
 ///
-/// 设置 → 同步诊断里打开开关后，淘宝连接器拿到的接口响应先脱敏，再存到
-/// App 私有目录 `diag/taobao/<接口>_<序号>.json`，每个接口只保留最近 20 份；
-/// 诊断页可一键打成 zip 用系统分享导出。
+/// 设置 → 同步诊断（仅调试版）里打开开关后，淘宝连接器拿到的接口响应先脱敏，再存到
+/// App 缓存目录 `diag/taobao/<接口>_<序号>.json`（getApplicationCacheDirectory，不进系统备份），
+/// 每个接口只保留最近 20 份；诊断页可一键打成 zip 用系统分享导出，也可一键清空。
 ///
 /// 约束：
 /// - 开关关闭时 [TaobaoRawCapture.capture] 只做一次布尔判断就返回，不落盘；
+/// - 关闭开关时自动清空已采集文件；导出用的临时 zip 分享完即删；
 /// - 采集过程任何异常都只记日志，绝不抛给同步流程；
 /// - 只存响应体，不存 Cookie 和请求头。
 library;
@@ -83,6 +84,20 @@ class DiagFileStore {
     return result;
   }
 
+  /// 删除目录下全部采集文件（目录本身保留）；返回删除的文件数
+  Future<int> clear() async {
+    if (!dir.existsSync()) return 0;
+    var n = 0;
+    for (final e in dir.listSync()) {
+      if (e is! File) continue;
+      try {
+        await e.delete();
+        n++;
+      } catch (_) {}
+    }
+    return n;
+  }
+
   List<File> listFiles() {
     if (!dir.existsSync()) return [];
     final files = dir.listSync().whereType<File>().where((f) => f.path.endsWith('.json')).toList()
@@ -135,17 +150,38 @@ class TaobaoRawCapture {
     return _enabled!;
   }
 
+  /// 关闭时会等正在写的文件落盘后清空已采集文件
   Future<void> setEnabled(bool value) async {
     _enabled = value;
     final box = await _openBox();
     await box.put(_enabledKey, value);
+    if (!value) await clearAll();
   }
 
+  /// 采集文件放缓存目录（不进 iCloud / Android 自动备份）
   Future<DiagFileStore> store() async {
     final existing = _store;
     if (existing != null) return existing;
-    final base = await getApplicationSupportDirectory();
+    final base = await getApplicationCacheDirectory();
     return _store = DiagFileStore(Directory('${base.path}/diag/taobao'));
+  }
+
+  /// 清空已采集文件（等队列里正在写的先写完）；顺带删掉早期版本放在 Application Support 下的旧目录
+  Future<int> clearAll() async {
+    try {
+      await _queue;
+    } catch (_) {}
+    var n = 0;
+    try {
+      n = await (await store()).clear();
+    } catch (e) {
+      debugPrint('[TaobaoRawCapture] clear failed: $e');
+    }
+    try {
+      final legacy = Directory('${(await getApplicationSupportDirectory()).path}/diag/taobao');
+      if (legacy.existsSync()) await legacy.delete(recursive: true);
+    } catch (_) {}
+    return n;
   }
 
   /// 同步流程里拿到响应后调用；不 await、不抛异常，开关关闭时立即返回。
@@ -198,16 +234,29 @@ class TaobaoRawCapture {
     if (s.listFiles().isEmpty) return false;
     final bytes = await compute(DiagFileStore.zipDirectory, s.dir.path);
     final tmp = await getTemporaryDirectory();
+    // 专用子目录：每次导出前清掉上次异常退出留下的 zip
+    final exportDir = Directory('${tmp.path}/diag_export');
+    try {
+      if (exportDir.existsSync()) await exportDir.delete(recursive: true);
+    } catch (_) {}
+    await exportDir.create(recursive: true);
     final ts = DateTime.now();
     String two(int v) => v.toString().padLeft(2, '0');
     final name =
         'parcly_taobao_diag_${ts.year}${two(ts.month)}${two(ts.day)}_${two(ts.hour)}${two(ts.minute)}${two(ts.second)}.zip';
-    final zip = File('${tmp.path}/$name');
-    await zip.writeAsBytes(bytes, flush: true);
-    await SharePlus.instance.share(ShareParams(
-      files: [XFile(zip.path, mimeType: 'application/zip')],
-      subject: '取件助手 淘宝原始返回（已脱敏）',
-    ));
+    final zip = File('${exportDir.path}/$name');
+    try {
+      await zip.writeAsBytes(bytes, flush: true);
+      await SharePlus.instance.share(ShareParams(
+        files: [XFile(zip.path, mimeType: 'application/zip')],
+        subject: '取件助手 淘宝原始返回（已脱敏）',
+      ));
+    } finally {
+      // 分享面板关闭后即删（share_plus 在 Android 上会先把文件拷到自己的共享目录）
+      try {
+        if (zip.existsSync()) await zip.delete();
+      } catch (_) {}
+    }
     return true;
   }
 }
