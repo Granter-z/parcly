@@ -21,7 +21,8 @@ void main() {
       final out = DiagSanitizer.sanitizeJson({
         'desc': '快递员王师傅(电话:138' '12345678)正在派送，有问题请联系186' '00001234。',
       });
-      expect(out['desc'], '快递员王师傅(电话:1**********)正在派送，有问题请联系1**********。');
+      // 定案 1：快递员名字只留姓
+      expect(out['desc'], '快递员王**(电话:1**********)正在派送，有问题请联系1**********。');
     });
 
     test('不误伤长订单号和毫秒时间戳', () {
@@ -159,7 +160,8 @@ void main() {
       });
       final decoded = jsonDecode(out['data']['result'] as String) as Map<String, dynamic>;
       final order = decoded['mainOrders'][0] as Map<String, dynamic>;
-      expect(order['id'], '3891234567890123456');
+      // K1：订单列表 mainOrders[].id 是订单号，保留前 4 后 4
+      expect(order['id'], '3891***********3456');
       expect(order['receiver'], {'name': '***', 'mobile': '***'});
       expect(order['logistics'][0]['mailNo'], 'YT07*******2621');
       expect(order['logistics'][0]['desc'], '取件码 9-9-9999，电话 1**********');
@@ -309,6 +311,319 @@ void main() {
     });
   });
 
+  group('K1 JSON 里的订单号', () {
+    const oid = '4012345678901234567';
+    test('bizOrderId / orderId / mainOrderId（字符串和数字）前 4 后 4', () {
+      final out = DiagSanitizer.sanitizeJson({
+        'bizOrderId': oid,
+        'orderId': 5012345678901234567,
+        'mainOrderId': '6012345678901234567',
+        'subOrderIds': ['7012345678901234567'],
+      });
+      expect(out['bizOrderId'], '4012***********4567');
+      expect(out['orderId'], '5012***********4567');
+      expect(out['mainOrderId'], '6012***********4567');
+      expect(out['subOrderIds'], ['7012***********4567']);
+    });
+
+    test('订单列表 mainOrders[].id 打码；其它对象下的 id 不动', () {
+      final out = DiagSanitizer.sanitizeJson({
+        'mainOrders': [
+          {'id': oid, 'item': {'id': '600000000001'}}
+        ],
+        'id': 'req-1',
+      });
+      expect(out['mainOrders'][0]['id'], '4012***********4567');
+      expect(out['mainOrders'][0]['item']['id'], '600000000001');
+      expect(out['id'], 'req-1');
+    });
+
+    test('JSON 字符串里链接的 bizOrderId= 参数、同文档其它文本里的同一订单号', () {
+      final out = DiagSanitizer.sanitizeJson({
+        'orderId': oid,
+        'detailUrl': 'https://h5.m.taobao.com/mlapp/odetail.html?bizOrderId=6012345678901234567&spm=a1',
+        'tip': '订单$oid已发货',
+      });
+      expect(out['detailUrl'], 'https://h5.m.taobao.com/mlapp/odetail.html?bizOrderId=6012***********4567&spm=a1');
+      expect(out['tip'], '订单4012***********4567已发货');
+    });
+  });
+
+  group('K2 JSON / 兜底文本里的 URL', () {
+    const tok = 'TkFake7Zx9Lp3Mv5';
+    test('token / sid / _m_h5_tk / cookie / csrf 参数值换 ***，订单号 4+4，其它参数保留', () {
+      final out = DiagSanitizer.sanitizeJson({
+        'url': 'https://h5.m.taobao.com/a?bizOrderId=4012345678901234567&token=$tok&sid=sidfake1'
+            '&_m_h5_tk=tkfake1&cookie2=c2fake1&_tb_token_=tbfake1&csrfToken=csfake1&spm=a2.b3',
+      });
+      final u = out['url'] as String;
+      for (final v in [tok, 'sidfake1', 'tkfake1', 'c2fake1', 'tbfake1', 'csfake1', '4012345678901234567']) {
+        expect(u, isNot(contains(v)), reason: v);
+      }
+      expect(u, contains('bizOrderId=4012***********4567'));
+      expect(u, contains('token=***'));
+      expect(u, contains('spm=a2.b3'));
+    });
+
+    test('hash 路由里的参数、嵌套跳转地址也处理', () {
+      final out = DiagSanitizer.sanitizeJson({
+        'a': 'https://m.taobao.com/#/detail?token=$tok&x=1',
+        'b': 'https://login.m.taobao.com/login.htm?redirectURL=${Uri.encodeComponent('https://h5.m.taobao.com/a?sid=sidfake2&bizOrderId=4012345678901234567')}',
+      });
+      final s = jsonEncode(out);
+      for (final v in [tok, 'sidfake2', '4012345678901234567']) {
+        expect(s, isNot(contains(v)), reason: v);
+      }
+    });
+
+    test('解析失败走兜底文本时同样处理 URL 和订单号', () {
+      final out = DiagSanitizer.sanitizeRaw(
+          '{"url":"https://a.taobao.com/x?bizOrderId=4012345678901234567&_m_h5_tk=$tok&cookie=ck1", "orderId":"5012345678901234567" broken');
+      expect(out, contains('_unparsed'));
+      for (final v in [tok, 'ck1', '4012345678901234567', '5012345678901234567']) {
+        expect(out, isNot(contains(v)), reason: v);
+      }
+      expect(out, contains('4012***********4567'));
+      expect(out, contains('5012***********4567'));
+    });
+  });
+
+  group('K3 页面片段里的 4 种凭据写法', () {
+    const url = 'https://pages-g.m.taobao.com/wow/z/app/mtb/logisticsV2/h5-detail?bizOrderId=4012345678901234567';
+    String page(String body) => jsonEncode(DiagSanitizer.sanitizeHtmlPage(url: url, html: '<html><head><title>T</title></head>$body</html>'));
+
+    test('① 脚本里转义的 JSON', () {
+      final out = page(r'<script>var s="{\"_m_h5_tk\":\"tkesc1\",\"unb\":\"2200000001\",\"bizOrderId\":5012345678901234567}";</script>');
+      expect(out, isNot(contains('tkesc1')));
+      expect(out, isNot(contains('2200000001')));
+      expect(out, isNot(contains('5012345678901234567')));
+    });
+
+    test('② URL 编码的跳转地址', () {
+      final out = page('<a href="/login?redirect=https%3A%2F%2Fx.taobao.com%2F%3Ftoken%3Dtokenc1%26sid%3Dsidenc1%26_m_h5_tk%3Dtkenc1">x</a>'
+          '<script>location.href="/l?u=" + "https%253A%252F%252Fa.b%252F%253Fcookie2%253Dc2dbl1";</script>');
+      for (final v in ['tokenc1', 'sidenc1', 'tkenc1', 'c2dbl1']) {
+        expect(out, isNot(contains(v)), reason: v);
+      }
+      // 普通参数名保留，便于诊断
+      expect(out, contains('redirect='));
+    });
+
+    test('③ 隐藏表单和 csrf meta：打 value / content，name 保留', () {
+      final out = page('<form><input type="hidden" name="_tb_token_" value="tbform1">'
+          "<input value='umform1' name='umidToken' type='hidden'><input name=\"receiverName\" value=\"张三\"></form>"
+          '<meta name="csrf-token" content="csrfmeta1"><meta charset="utf-8">');
+      for (final v in ['tbform1', 'umform1', 'csrfmeta1', '张三']) {
+        expect(out, isNot(contains(v)), reason: v);
+      }
+      expect(out, contains(r'name=\"_tb_token_\"'));
+      expect(out, contains(r'name=\"csrf-token\"'));
+    });
+
+    test('④ 普通字段里夹着的 Cookie 串', () {
+      final out = page('<script>var info = {"ext":"unb=2200000001; cookie2=c2mix1; sgcookie=sgmix1", "cfg": "a=1&tracknick=nickmix1"};'
+          'var raw = "lang=zh; _m_h5_tk=tkmix1";</script><div>ext=unb=2200000002</div>');
+      for (final v in ['2200000001', '2200000002', 'c2mix1', 'sgmix1', 'nickmix1', 'tkmix1']) {
+        expect(out, isNot(contains(v)), reason: v);
+      }
+    });
+  });
+
+  group('S1 手机号变体', () {
+    final p = '138' '00001111';
+    String half(String s) =>
+        s.replaceAllMapped(RegExp('[０-９]'), (m) => String.fromCharCode(m.group(0)!.codeUnitAt(0) - 0xFEE0));
+    void expectNoPhone(String s) => expect(half(s).replaceAll(RegExp(r'\D'), ''), isNot(contains('00001111')), reason: s);
+
+    test('+86 / 86 / 空格 / 横杠 / 括号 / 全角 / 零宽 都打码', () {
+      final samples = [
+        '+86$p', '+86 $p', '86$p', '＋86-$p',
+        '138 ' '0000 1111', '138-' '0000-1111', '(138)' '0000-1111', '138\u200b0000\u200c1111',
+        '１３８' '００００１１１１', '%2B86$p',
+      ];
+      for (final v in samples) {
+        final out = DiagSanitizer.sanitizeText('电话：$v，请保持畅通');
+        expectNoPhone(out);
+        expect(out, contains(DiagSanitizer.maskedPhone), reason: v);
+      }
+    });
+
+    test('mobile / phone / receiverMobile 字段按字段名整体打码；tel 字段里有手机号才打码', () {
+      final out = DiagSanitizer.sanitizeJson({
+        'mobile': '138 ' '0000 1111',
+        'receiverMobile': '+86-138-' '0000-1111',
+        'phone': 'tel:(138)' '00001111',
+        'contactTel': '138****1111',
+        'stationTel': '0571-88886666',
+      });
+      expect(out['mobile'], DiagSanitizer.maskedPhone);
+      expect(out['receiverMobile'], DiagSanitizer.maskedPhone);
+      expect(out['phone'], DiagSanitizer.maskedPhone);
+      expect(out['contactTel'], DiagSanitizer.maskedPhone);
+      expect(out['stationTel'], '0571-88886666'); // 座机号不在本次范围（P15）
+    });
+
+    test('不误伤：19 位订单号、13 位时间戳、日期、货架码', () {
+      const s = '订单 4138000011112222333 时间 1759812345678 2026-10-07 13:45 货架 13-2-1001';
+      expect(DiagSanitizer.sanitizeText(s), '订单 4138000011112222333 时间 1759812345678 2026-10-07 13:45 货架 99-9-9999');
+    });
+  });
+
+  group('S2 凭据清单统一', () {
+    test('unb / userId / buyerId / uid 在 JSON、兜底文本、页面里都打码', () {
+      final json = DiagSanitizer.sanitizeJson({'unb': '2200000001', 'userId': 2200000002, 'buyerId': '2200000003', 'uid': '2200000004', 'tracknick': 'nk1', 'csrfToken': 'cs1'});
+      expect(json.values.toSet(), {'***'});
+      final raw = DiagSanitizer.sanitizeRaw("{unb: '2200000001', userId: 2200000002, buyerId:\"2200000003\", x");
+      final html = jsonEncode(DiagSanitizer.sanitizeHtmlPage(url: 'https://a.b/c', html: '<script>var c={unb:"2200000001",userId:2200000002,buyerId:"2200000003"}</script>'));
+      for (final out in [raw, html]) {
+        for (final v in ['2200000001', '2200000002', '2200000003']) {
+          expect(out, isNot(contains(v)), reason: v);
+        }
+      }
+    });
+
+    test('运单号 outSid 仍按运单号打码（不会被当成 sid 置 ***）', () {
+      expect(DiagSanitizer.sanitizeJson({'outSid': '78123456789012'})['outSid'], '7812******9012');
+    });
+  });
+
+  group('S3 驿站地址保留', () {
+    test('station / stationInfo / cpInfo 下的地址保留，收件人地址照旧打码', () {
+      final out = DiagSanitizer.sanitizeJson({
+        'station': {'name': 'XX路菜鸟驿站', 'address': 'XX路100号'},
+        'stationInfo': {'stationName': 'YY驿站', 'detailAddress': 'YY路8号底商'},
+        'receiver': {'detailAddress': 'XX小区3栋2单元501'},
+        'receiverInfo': {'address': 'ZZ小区1栋'},
+        'address': 'WW小区2栋',
+      });
+      expect(out['station'], {'name': 'XX路菜鸟驿站', 'address': 'XX路100号'});
+      expect(out['stationInfo'], {'stationName': 'YY驿站', 'detailAddress': 'YY路8号底商'});
+      expect(out['receiver'], {'detailAddress': '***'});
+      expect(out['receiverInfo'], {'address': '***'});
+      expect(out['address'], '***');
+    });
+  });
+
+  group('定案 1/2 快递员姓名、部分打码手机号', () {
+    test('快递员 / 派送员 / 小哥后面的名字只留姓', () {
+      expect(DiagSanitizer.sanitizeText('快递员张三丰正在派件'), '快递员张**正在派件');
+      expect(DiagSanitizer.sanitizeText('派送员：李大伟，小哥赵四'), '派送员：李**，小哥赵*');
+      expect(DiagSanitizer.sanitizeText('快递小哥 王师傅 已揽收'), '快递小哥 王** 已揽收');
+    });
+
+    test('后面不是名字时不动', () {
+      for (final s in ['快递员正在派件', '快递员已签收', '请联系快递员', '快递员电话', '小哥会尽快送达']) {
+        expect(DiagSanitizer.sanitizeText(s), s);
+      }
+    });
+
+    test('courierName / deliveryManName / courier.name 字段只留姓；快递公司名不动', () {
+      final out = DiagSanitizer.sanitizeJson({
+        'courierName': '王小明',
+        'deliveryManName': '李大伟',
+        'courier': {'name': '赵四', 'mobile': '138' '00001111'},
+        'courierCompanyName': '顺丰速运',
+      });
+      expect(out['courierName'], '王**');
+      expect(out['deliveryManName'], '李**');
+      expect(out['courier'], {'name': '赵*', 'mobile': DiagSanitizer.maskedPhone});
+      expect(out['courierCompanyName'], '顺丰速运');
+    });
+
+    test('已部分打码的手机号统一换成 1**********', () {
+      expect(DiagSanitizer.sanitizeText('电话 138****1111，备用 139*****22'), '电话 1**********，备用 1**********');
+    });
+  });
+
+  group('L2 / L3', () {
+    test('原页面未闭合的敏感值超过 1KB，截断后残值也打码', () {
+      final longTok = List.generate(300, (i) => 'Ab${i}Cd').join();
+      final page = DiagSanitizer.sanitizeHtmlPage(url: 'https://a.b/c', html: '<script>var a = {"_m_h5_tk":"$longTok');
+      expect(page['snippet'], '<script>var a = {"_m_h5_tk":"***');
+    });
+
+    test('带间隔号的长名、扩展区汉字人名整体打码', () {
+      expect(DiagSanitizer.sanitizeText('签收人：阿依古丽·买买提 已签收'), '签收人：*** 已签收');
+      expect(DiagSanitizer.sanitizeText('收件人：王\u{2C317} 已签收'), '收件人：*** 已签收');
+    });
+  });
+
+  group('真机采集形态补充（10-07，数据为假）', () {
+    const oid = '5012345678901234567';
+    const seller = '2200000000001';
+    const buyer = '2200000000002';
+    String esc(Object m) {
+      final once = jsonEncode(jsonEncode(m));
+      return once.substring(1, once.length - 1);
+    }
+
+    test('页面脚本转义 JSON 的 globalUTParams：orderId 4+4，sellerId / buyerId 置 ***，半遮运单号整体遮住', () {
+      final page = jsonEncode(DiagSanitizer.sanitizeHtmlPage(
+          url: 'https://a.b/c',
+          html: '<script>var d="${esc({'globalUTParams': {'mailNo': 'YT12*******5678', 'sellerId': seller, 'orderId': oid, 'buyerId': buyer}})}";</script>'
+              '<img src="//img.alicdn.com/imgextra/i1/$seller/O1CNfake_!!$seller.jpg">'));
+      for (final v in [oid, seller, buyer, '5678']) {
+        expect(page, isNot(contains(v)), reason: v);
+      }
+      expect(page, contains('5012***********4567'));
+    });
+
+    test('JSON 里 sellerId / buyerId / seller.id 置 ***，同一 id 在店铺链接、图片路径里同值替换', () {
+      final out = DiagSanitizer.sanitizeJson({
+        'mainOrders': [
+          {
+            'id': oid,
+            'extra': {'id': int.parse(oid)},
+            'seller': {'id': int.parse(seller), 'shopUrl': 'https://shop.taobao.com/view_shop.htm?user_number_id=$seller'},
+            'subOrders': [
+              {'itemInfo': {'pic': '//img.alicdn.com/imgextra/i3/$seller/O1CNfake_!!$seller.jpg'}}
+            ],
+          }
+        ],
+        'globalUTParams': {'sellerId': seller, 'buyerId': buyer},
+      });
+      final s = jsonEncode(out);
+      for (final v in [oid, seller, buyer]) {
+        expect(s, isNot(contains(v)), reason: v);
+      }
+      expect(out['mainOrders'][0]['seller']['id'], '***');
+      expect(out['mainOrders'][0]['extra']['id'], '5012***********4567');
+      expect(out['globalUTParams'], {'sellerId': '***', 'buyerId': '***'});
+    });
+
+    test('JUMP_302 redirectUrl 里 URL 编码 / 嵌套的 orderId（JSON 与兜底文本两条路径）', () {
+      const url = 'https://m.duanqu.com?_ariver_appid=1000001&page=plugin-private%3A%2F%2F2021000000000001%2Fpages%2Fdetail%3ForderId%3D$oid';
+      final json = jsonEncode(DiagSanitizer.sanitizeJson({'code': 'JUMP_302', 'redirectUrl': url, 'data': jsonEncode({'redirectUrl': url})}));
+      final raw = DiagSanitizer.sanitizeRaw('{"code":"JUMP_302","redirectUrl":"$url" broken');
+      for (final out in [json, raw]) {
+        expect(out, isNot(contains(oid)));
+        expect(out, contains('_ariver_appid=1000001'));
+      }
+    });
+
+    test('已部分遮挡的运单号露出位去掉；本脱敏器自己的 4+4 不受影响', () {
+      final out = DiagSanitizer.sanitizeJson({
+        'mailNo': 'YT12*******5678',
+        'cpMailNo': 'SF1234567890123',
+        'desc': '运单号 7812*******9012，电话 138****1111',
+      });
+      expect(out['mailNo'], '*' * 15);
+      expect(out['cpMailNo'], 'SF12*******0123');
+      expect(out['desc'], '运单号 ${'*' * 15}，电话 1**********');
+    });
+
+    test('组件名这类机器标识的 name 保留；人名上下文和中文 name 照旧打码', () {
+      final out = DiagSanitizer.sanitizeJson({
+        'container': {'data': [{'name': 'logistics_detail_h5', 'containerType': 'dinamicx'}]},
+        'buyer': {'name': 'zhang_san'},
+        'name': '张三',
+      });
+      expect(out['container']['data'][0]['name'], 'logistics_detail_h5');
+      expect(out['buyer']['name'], '***');
+      expect(out['name'], '***');
+    });
+  });
+
   group('L1 性能：去标签 / title / script 线性复杂度', () {
     int ms(void Function() f) {
       final sw = Stopwatch()..start();
@@ -330,6 +645,13 @@ void main() {
         final t = ms(() => DiagSanitizer.sanitizeHtmlPage(url: url, html: html));
         expect(t, lessThan(1000), reason: '$name: ${t}ms');
       });
+    });
+
+    test('sanitizeRaw：1MB 病态文本在 1 秒内', () {
+      for (final raw in ['<' * (1 << 20), 'k=' * (1 << 19), '%2' * ((1 << 20) ~/ 2), 'a%41' * (1 << 18)]) {
+        final t = ms(() => DiagSanitizer.sanitizeRaw(raw));
+        expect(t, lessThan(1000), reason: '${raw.substring(0, 4)}: ${t}ms');
+      }
     });
 
     test('去标签、title、未闭合 script 的结果不变', () {
