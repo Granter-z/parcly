@@ -15,6 +15,7 @@ import '../../core/sanitizer/goods_name_cleaner.dart';
 import '../storage/platform_auth_store.dart';
 import '../webview/platform_cookie.dart';
 import 'platform_connector.dart';
+import 'taobao_sync_rules.dart';
 
 void _logTb(String msg) {
   debugPrint(msg);
@@ -37,6 +38,7 @@ class _CainiaoItem {
 class TaobaoH5Connector implements PlatformConnector {
   final PlatformAuthStore _authStore;
   final List<String> Function()? _getActiveTrackingNumbers;
+  final List<Package> Function()? _getLocalPackages;
   static const _appKey = '12574478';
   static const _ua =
       'Mozilla/5.0 (Linux; Android 14; 25102RKBEC Build/UP1A.231005.007) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36';
@@ -44,8 +46,10 @@ class TaobaoH5Connector implements PlatformConnector {
   TaobaoH5Connector({
     PlatformAuthStore? authStore,
     List<String> Function()? getActiveTrackingNumbers,
+    List<Package> Function()? getLocalPackages,
   })  : _authStore = authStore ?? PlatformAuthStore(),
-        _getActiveTrackingNumbers = getActiveTrackingNumbers;
+        _getActiveTrackingNumbers = getActiveTrackingNumbers,
+        _getLocalPackages = getLocalPackages;
 
   @override
   String get platformId => 'taobao';
@@ -90,13 +94,16 @@ class TaobaoH5Connector implements PlatformConnector {
     _logTb('[Taobao] Starting sync with cookies (len: ${cookies.length})');
 
     // ── 阶段 1：直连淘宝内嵌菜鸟驿站（Cainiao Station）抓取待取件包裹与真实货架码 ──
+    // 本次同步菜鸟列表里的包裹，阶段 2 用来「以菜鸟为准」（淘宝已签收但驿站还挂着）
+    final cainiaoPackages = <Package>[];
     try {
       final cainiaoItems = await _fetchCainiaoStationPackages(cookies);
       if (_cancelled) return;
+      // 日志只记数量，不打印运单号、取件码、驿站名
+      _logTb('[Cainiao] 阶段 1 产出待取件包裹 ${cainiaoItems.length} 个');
       for (final item in cainiaoItems) {
         if (_cancelled) return;
-        _logTb('[Cainiao Yield] Tracking: ${item.trackingNumber}, Code: ${item.pickupCode}, Station: ${item.stationName}');
-        yield Package(
+        final cn = Package(
           id: 'CN_${item.trackingNumber}',
           trackingNumber: item.trackingNumber,
           courier: _resolveCourier(item.courier),
@@ -109,9 +116,11 @@ class TaobaoH5Connector implements PlatformConnector {
           status: PackageStatus.arrived,
           addedAt: DateTime.now(),
         );
+        cainiaoPackages.add(cn);
+        yield cn;
       }
     } catch (e) {
-      _logTb('[Cainiao] Stage 1 error: $e');
+      _logTb('[Cainiao] 阶段 1 异常：${e.runtimeType}');
     }
 
     if (_cancelled) return;
@@ -126,18 +135,28 @@ class TaobaoH5Connector implements PlatformConnector {
       final withLogistics = orders.where((o) => o.hasLogistics).toList();
       _logTb('[Taobao] 订单 ${orders.length} 个，有「查看物流」${withLogistics.length} 个，'
           '跳过 ${orders.length - withLogistics.length} 个');
+      // 已签收订单只请求一次：本地已有、已签收且轨迹不为空的跳过（不另存标记）
+      final local = _getLocalPackages?.call() ?? const <Package>[];
       var parsedCount = 0;
       var failedCount = 0;
+      var skippedSigned = 0;
+      var cainiaoOverrides = 0;
       for (final order in withLogistics) {
         if (_cancelled) break;
+        final localPkg = findLocalTaobaoPackage(local, order.orderId);
+        if (shouldSkipSignedDetail(localPkg)) {
+          skippedSigned++;
+          continue;
+        }
         final parcel = await _fetchSsrLogistics(client, cookies, order.orderId);
         if (_cancelled) break;
         if (parcel == null) {
           failedCount++;
         } else {
           parsedCount++;
-          yield Package(
-            id: 'TB_${parcel.mailNo.isNotEmpty ? parcel.mailNo : order.orderId}',
+          final status = parcel.derivedStatus ?? _resolveStatus(parcel.stateLabel);
+          final tbPkg = Package(
+            id: taobaoPackageId(order.orderId),
             trackingNumber: parcel.mailNo.isNotEmpty ? parcel.mailNo : order.orderId,
             courier: _resolveCourier(parcel.cpName),
             goodsName: order.goodsName,
@@ -146,25 +165,34 @@ class TaobaoH5Connector implements PlatformConnector {
             stationName: parcel.stationName.isNotEmpty ? parcel.stationName : '菜鸟驿站',
             location: parcel.location,
             platform: 'taobao',
-            urgency: parcel.pickupCode.isNotEmpty ? UrgencyLevel.urgent : UrgencyLevel.normal,
-            status: parcel.derivedStatus ?? _resolveStatus(parcel.stateLabel),
+            // 急件由引擎统一判定：已签收时即使轨迹里有旧取件码也不标急件
+            urgency: LogisticsStatusEngine.urgencyFor(status: status, pickupCode: parcel.pickupCode),
+            status: status,
             addedAt: DateTime.now(),
             rawTimelineJson: parcel.rawTimelineJson,
           );
+          // 淘宝已签收但菜鸟驿站还挂着且有取件码 → 以菜鸟为准（用户手动已取 / 归档的不改）
+          final finalPkg = applyCainiaoPriority(tbPkg, cainiaoPackages, local: localPkg);
+          if (!identical(finalPkg, tbPkg)) cainiaoOverrides++;
+          yield finalPkg;
         }
       }
-      _logTb('[Taobao] 物流详情：请求 ${parsedCount + failedCount} 个，解析成功 $parsedCount 个，失败 $failedCount 个');
+      _logTb('[Taobao] 物流详情：已签收且本地有轨迹跳过 $skippedSigned 个，'
+          '请求 ${parsedCount + failedCount} 个，解析成功 $parsedCount 个，失败 $failedCount 个，'
+          '已签收但菜鸟仍待取改回待取件 $cainiaoOverrides 个');
 
       // ── 阶段 3：针对待取件但取件码仍为后5位或空的包裹，以运单号定向查询菜鸟货架码 ──
       if (_getActiveTrackingNumbers != null) {
         try {
-          final pendingTns = _getActiveTrackingNumbers();
-          _logTb('[Cainiao] Stage 3 targeted checking for ${pendingTns.length} tracking numbers: $pendingTns');
+          final activeTns = _getActiveTrackingNumbers();
+          // 打码单号（含 *）查不到菜鸟，直接跳过
+          final pendingTns = queryableTrackingNumbers(activeTns);
+          var targetedHits = 0;
           for (final tn in pendingTns) {
             if (_cancelled) break;
             final item = await _queryCainiaoByMailNo(client, cookies, tn);
             if (item != null && item.pickupCode.isNotEmpty) {
-              _logTb('[Cainiao Targeted] MailNo: $tn -> ShelfCode: ${item.pickupCode}, Station: ${item.stationName}');
+              targetedHits++;
               yield Package(
                 id: 'CN_$tn',
                 trackingNumber: tn,
@@ -180,17 +208,20 @@ class TaobaoH5Connector implements PlatformConnector {
               );
             }
           }
+          _logTb('[Cainiao] 阶段 3 按运单号查货架码：跳过打码单号 ${activeTns.length - pendingTns.length} 个，'
+              '查询 ${pendingTns.length} 个，拿到取件码 $targetedHits 个');
         } catch (e) {
-          _logTb('[Cainiao] Stage 3 error: $e');
+          _logTb('[Cainiao] 阶段 3 异常：${e.runtimeType}');
         }
 
         // 直连菜鸟驿站官方多包裹接口（复刻前端页面自身请求），一次性拿到全部到站包裹的取件码
         try {
           final listItems = await _queryCainiaoStationList(client, cookies);
+          final usable = listItems.where((i) => i.pickupCode.isNotEmpty && i.trackingNumber.isNotEmpty).length;
+          _logTb('[Cainiao StationList] 返回 ${listItems.length} 个，带取件码和运单号 $usable 个');
           for (final item in listItems) {
             if (_cancelled) break;
             if (item.pickupCode.isEmpty || item.trackingNumber.isEmpty) continue;
-            _logTb('[Cainiao StationList] MailNo: ${item.trackingNumber} -> Code: ${item.pickupCode}, Station: ${item.stationName}');
             yield Package(
               id: 'CN_${item.trackingNumber}',
               trackingNumber: item.trackingNumber,
@@ -206,7 +237,7 @@ class TaobaoH5Connector implements PlatformConnector {
             );
           }
         } catch (e) {
-          _logTb('[Cainiao] StationList error: $e');
+          _logTb('[Cainiao] StationList 异常：${e.runtimeType}');
         }
       }
     } catch (e) {
@@ -242,29 +273,7 @@ class TaobaoH5Connector implements PlatformConnector {
       final root = jsonDecode(s) as Map<String, dynamic>;
       _logTb('[Cainiao StationList RET] ${root['ret']} len=${rawJson.length}');
 
-      // 紧凑诊断：打印关键字段，便于定位取件码真实键名
-      final diagReg = RegExp(r'(code|Code|take|Take|fetch|Fetch|pickup|Pickup|shelf|Shelf|station|Station|site|Site|mail|Mail|waybill|Waybill|cp|Cp|status|Status)');
-      final diagBuf = StringBuffer();
-      var diagCount = 0;
-      void diagWalk(dynamic node) {
-        if (diagCount > 120) return;
-        if (node is Map) {
-          node.forEach((k, v) {
-            if (diagCount > 120) return;
-            if (v is String && v.length <= 40 && diagReg.hasMatch(k.toString())) {
-              diagBuf.write('$k=$v | ');
-              diagCount++;
-            }
-            diagWalk(v);
-          });
-        } else if (node is List) {
-          for (final item in node) {
-            diagWalk(item);
-          }
-        }
-      }
-      diagWalk(root);
-      _logTb('[Cainiao StationList DIAG] $diagBuf');
+      // 原「紧凑诊断」会把运单号、取件码、驿站名逐个打进日志，已删除；字段定位改用 P11-a 的脱敏采集
 
       // 提取 运单号 + 取件码 组合
       final shelfReg = RegExp(r'^\d{1,3}-\d{1,3}-\d{2,5}$');
@@ -313,7 +322,7 @@ class TaobaoH5Connector implements PlatformConnector {
       }
       walk(root);
     } catch (e) {
-      _logTb('[Cainiao StationList Err] $e');
+      _logTb('[Cainiao StationList] 解析异常：${e.runtimeType}');
     }
     return items;
   }
@@ -471,11 +480,13 @@ class TaobaoH5Connector implements PlatformConnector {
 
       try {
         final landedHref = await controller.runJavaScriptReturningResult('location.href');
-        _logTb('[Cainiao Landed] $landedHref');
+        // 只记域名和路径：跳转登录等页面的查询串里可能带用户标识或令牌
+        final landed = Uri.tryParse(landedHref.toString().replaceAll('"', ''));
+        _logTb('[Cainiao Landed] ${landed == null ? '-' : '${landed.host}${landed.path}'}');
         final title = await controller.runJavaScriptReturningResult('document.title');
         _logTb('[Cainiao Title] $title');
       } catch (e) {
-        _logTb('[Cainiao Debug Err] $e');
+        _logTb('[Cainiao Debug Err] ${e.runtimeType}');
       }
 
       // 触发可能折叠的“还有包裹未显示？查询取件码”展开交互，让隐藏的包裹（如圆通等）进入 DOM
@@ -676,7 +687,7 @@ class TaobaoH5Connector implements PlatformConnector {
       _logTb('[Cainiao] Final station pickup packages: ${uniqueMap.length}');
       return uniqueMap.values.toList();
     } catch (e) {
-      _logTb('[Cainiao] fetch error: $e');
+      _logTb('[Cainiao] fetch error: ${e.runtimeType}');
       return list;
     }
   }
@@ -714,7 +725,7 @@ class TaobaoH5Connector implements PlatformConnector {
       }
       walk(root);
     } catch (e) {
-      _logTb('[Cainiao Hook Parse Err] $e');
+      _logTb('[Cainiao Hook Parse Err] ${e.runtimeType}');
     }
     return list;
   }
@@ -867,33 +878,13 @@ class TaobaoH5Connector implements PlatformConnector {
         dataRaw: jsonEncode({'mailNo': mailNo}),
       );
       if (rawJson == null || rawJson.isEmpty) return null;
-      _logTb('[Cainiao MailNo Query] $mailNo -> len=${rawJson.length}');
+      _logTb('[Cainiao MailNo Query] len=${rawJson.length}');
 
       final s = stripJsonp(rawJson);
       final root = jsonDecode(s) as Map<String, dynamic>;
       _logTb('[Cainiao MailNo RET] ${root['ret']}');
 
-      // 紧凑诊断：打印所有与取件码/驿站相关的键值对，便于定位真实字段名
-      final diagReg = RegExp(r'(code|Code|take|Take|fetch|Fetch|pickup|Pickup|shelf|Shelf|station|Station|site|Site|self|Self|addr|Addr|status|Status|desc|Desc)');
-      final diagBuf = StringBuffer();
-      void diagWalk(dynamic node) {
-        if (node is Map) {
-          node.forEach((k, v) {
-            if (v is String && v.length <= 40 && diagReg.hasMatch(k.toString())) {
-              diagBuf.write('$k=$v | ');
-            } else if (v is num || v is bool) {
-              if (diagReg.hasMatch(k.toString())) diagBuf.write('$k=$v | ');
-            }
-            diagWalk(v);
-          });
-        } else if (node is List) {
-          for (final item in node) {
-            diagWalk(item);
-          }
-        }
-      }
-      diagWalk(root);
-      _logTb('[Cainiao MailNo DIAG] $diagBuf');
+      // 原「紧凑诊断」会把取件码、驿站名等逐个打进日志，已删除
 
       final data = root['data'] as Map<String, dynamic>?;
       if (data == null) return null;
@@ -976,7 +967,7 @@ class TaobaoH5Connector implements PlatformConnector {
         );
       }
     } catch (e) {
-      _logTb('[Cainiao MailNo Err] $mailNo: $e');
+      _logTb('[Cainiao MailNo Err] ${e.runtimeType}');
     }
     return null;
   }

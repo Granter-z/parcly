@@ -9,6 +9,7 @@ library;
 import '../models/package.dart';
 import '../models/package_status.dart';
 import 'hero_card_state.dart';
+import 'logistics_status_engine.dart';
 
 /// HeroCard决策引擎
 class HeroCardEngine {
@@ -64,7 +65,7 @@ class HeroCardEngine {
     final maxStatusScore = statusScores.reduce((a, b) => a > b ? a : b);
     
     // 基于紧急级别的评分
-    final urgencyScores = pending.map((p) => p.urgency.score * 10).toList();
+    final urgencyScores = pending.map((p) => p.effectiveUrgency.score * 10).toList();
     final maxUrgencyScore = urgencyScores.reduce((a, b) => a > b ? a : b);
     
     // 综合评分

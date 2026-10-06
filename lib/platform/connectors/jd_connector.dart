@@ -223,7 +223,7 @@ class JdH5Connector implements PlatformConnector {
           stationName: o.stationName.isNotEmpty ? o.stationName : '京东自提/配送',
           location: (detail != null && detail.address.isNotEmpty) ? detail.address : o.statusText,
           platform: 'jd',
-          urgency: o.pickupCode.isNotEmpty ? UrgencyLevel.urgent : UrgencyLevel.normal,
+          urgency: LogisticsStatusEngine.urgencyFor(status: status, pickupCode: o.pickupCode),
           status: status,
           addedAt: DateTime.now(),
           rawTimelineJson: timelineJson,

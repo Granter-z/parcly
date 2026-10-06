@@ -1559,7 +1559,7 @@ class PddH5Connector implements PlatformConnector {
       location: '',
       platform: 'pdd',
       description: descText,
-      urgency: status.isArrived ? UrgencyLevel.urgent : UrgencyLevel.normal,
+      urgency: LogisticsStatusEngine.urgencyFor(status: status, pickupCode: pickupCode),
       status: status,
       addedAt: DateTime.now(),
     );
