@@ -430,7 +430,7 @@ void main() {
   });
 
   group('S1 手机号变体', () {
-    final p = '138' '00001111';
+    const p = '138' '00001111';
     String half(String s) =>
         s.replaceAllMapped(RegExp('[０-９]'), (m) => String.fromCharCode(m.group(0)!.codeUnitAt(0) - 0xFEE0));
     void expectNoPhone(String s) => expect(half(s).replaceAll(RegExp(r'\D'), ''), isNot(contains('00001111')), reason: s);
