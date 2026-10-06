@@ -86,36 +86,74 @@ class DiagSanitizer {
   /// HTML 片段默认保留的长度（字符）
   static const int htmlSnippetLength = 4096;
 
+  /// 先对页面头部这么多字符做完整脱敏，再截 [htmlSnippetLength]，避免截断边界切在敏感值中间导致正则匹配不上
+  static const int htmlSanitizeWindow = 262144;
+
   /// SSR 页面找不到数据标记时（页面改版 / 跳登录页）的落盘内容：
   /// `{url, title, status, length, snippet, text}`。
   ///
   /// - url：query 里的 token/sid/cookie 类参数值置 ***，订单号/运单号类参数保留前 4 后 4，其余参数值做文本脱敏；
   /// - title：`<title>` 文本；
-  /// - snippet：页面源码前 [htmlSnippetLength] 字符；
-  /// - text：去掉 script/style/标签后的可见文本前 [htmlSnippetLength] 字符；
-  /// - snippet/text 都会：替换脚本里的 token/cookie 类字段值、按 key 打码姓名地址类 JSON 片段、
-  ///   再做手机号/运单号/取件码/带标注人名的文本脱敏，并把 URL 里出现过的订单号原值一并替换。
+  /// - snippet：页面源码脱敏后的前 [htmlSnippetLength] 字符；
+  /// - text：去掉 script/style/标签后的可见文本，脱敏后的前 [htmlSnippetLength] 字符；
+  /// - snippet/text 都是先对头部 [htmlSanitizeWindow] 字符（不足则全文）做完整脱敏再截断：
+  ///   替换脚本里的 token/cookie 类字段值、按 key 打码姓名地址类 JSON 片段、
+  ///   做手机号/运单号/取件码/带标注人名的文本脱敏，并把 URL 里出现过的订单号原值一并替换；
+  ///   截断后末尾若残留未闭合的敏感字段（如 `"_m_h5_tk":"xxx`），残值也置为 ***。
   static Map<String, dynamic> sanitizeHtmlPage({required String url, required String html, int? statusCode}) {
     final idValues = <String>{};
     final cleanUrl = sanitizeUrl(url, idValues);
     final titleMatch = RegExp(r'<title[^>]*>([\s\S]*?)</title>', caseSensitive: false).firstMatch(html);
     final title = titleMatch?.group(1)?.trim() ?? '';
-    final head = html.length > htmlSnippetLength ? html.substring(0, htmlSnippetLength) : html;
-    final visible = html
+    final head = html.length > htmlSanitizeWindow ? html.substring(0, htmlSanitizeWindow) : html;
+    final visible = head
         .replaceAll(RegExp(r'<script[\s\S]*?</script>', caseSensitive: false), ' ')
         .replaceAll(RegExp(r'<style[\s\S]*?</style>', caseSensitive: false), ' ')
         .replaceAll(RegExp(r'<[^>]+>'), ' ')
         .replaceAll(RegExp(r'\s+'), ' ')
         .trim();
-    final text = visible.length > htmlSnippetLength ? visible.substring(0, htmlSnippetLength) : visible;
     return {
       'url': cleanUrl,
       'title': _sanitizeHtmlText(title, idValues),
       if (statusCode != null) 'status': statusCode,
       'length': html.length,
-      'snippet': _sanitizeHtmlText(head, idValues),
-      'text': _sanitizeHtmlText(text, idValues),
+      'snippet': _truncateSanitized(_sanitizeHtmlText(head, idValues)),
+      'text': _truncateSanitized(_sanitizeHtmlText(visible, idValues)),
     };
+  }
+
+  /// 截到 [htmlSnippetLength]，并处理末尾残留的未闭合敏感字段
+  static String _truncateSanitized(String sanitized) {
+    final cut = sanitized.length > htmlSnippetLength ? sanitized.substring(0, htmlSnippetLength) : sanitized;
+    return _maskTrailingResidue(cut);
+  }
+
+  static final RegExp _trailingQuotedReg =
+      RegExp(r'''(?<![\w\-])(["']?)([A-Za-z_][\w\-]*)\1(\s*[:=]\s*)(["'])([^"']*)$''');
+  static final RegExp _trailingBareReg =
+      RegExp(r'''(?<![\w\-])(["']?)([A-Za-z_][\w\-]*)\1(\s*[:=]\s*)([^"'&;,\s<>]+)$''');
+
+  static bool _isSensitiveKey(String k) =>
+      _isCredentialKey(k) ||
+      _isPersonOrAddressKey(k, null) ||
+      _isMailNoKey(k) ||
+      _isPickupCodeKey(k) ||
+      (_isIdParam(k) && k != 'id');
+
+  /// 文本末尾以「敏感 key + 分隔符 + 未闭合的值」结尾时，把残值换成 ***
+  static String _maskTrailingResidue(String s) {
+    // 只看末尾 1KB，避免对长文本做带行尾锚点的全量回溯
+    final offset = s.length > 1024 ? s.length - 1024 : 0;
+    final tail = s.substring(offset);
+    for (final reg in [_trailingQuotedReg, _trailingBareReg]) {
+      final m = reg.firstMatch(tail);
+      if (m == null) continue;
+      final value = m.group(reg == _trailingQuotedReg ? 5 : 4)!;
+      // 已经打过码的（截在 *** 中间）不再处理
+      if (RegExp(r'^\**$').hasMatch(value) || !_isSensitiveKey(_norm(m.group(2)!))) continue;
+      return '${s.substring(0, offset + m.end - value.length)}$masked';
+    }
+    return s;
   }
 
   /// URL 脱敏：凭据类参数值置 ***，订单号/运单号/用户 id 类参数按运单号规则打码，其余参数值做文本脱敏。
@@ -172,7 +210,7 @@ class DiagSanitizer {
 
   /// 脚本里 `name=value` / `"name":"value"` / `name: 'value'` 形态的字段
   static final RegExp _scriptKvReg = RegExp(
-      r'''(["']?)([A-Za-z_][\w\-]*)\1(\s*[:=]\s*)(?:"([^"]*)"|'([^']*)'|([^"'&;,\s<>(){}\[\]]+))''');
+      r'''(?<![\w\-])(["']?)([A-Za-z_][\w\-]*)\1(\s*[:=]\s*)(?:"([^"]*)"|'([^']*)'|([^"'&;,\s<>(){}\[\]]+))''');
 
   static String _sanitizeHtmlText(String text, Set<String> idValues) {
     if (text.isEmpty) return text;
@@ -381,7 +419,7 @@ class DiagSanitizer {
 
   /// 无法解析为 JSON 时的文本兜底：按 `"key":"value"` 形态处理敏感 key，再做文本级脱敏
   static String _sanitizeUnparsedText(String text) {
-    final kv = RegExp(r'''(["']?)([A-Za-z_][\w\-]*)\1(\s*[:=]\s*)(["'])((?:\\.|(?!\4).)*)\4''');
+    final kv = RegExp(r'''(?<![\w\-])(["']?)([A-Za-z_][\w\-]*)\1(\s*[:=]\s*)(["'])((?:\\.|(?!\4).)*)\4''');
     final mailNos = <String>{};
     for (final m in kv.allMatches(text)) {
       if (_isMailNoKey(_norm(m.group(2)!)) && m.group(5)!.trim().length >= 8) {

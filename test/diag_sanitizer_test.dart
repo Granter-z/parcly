@@ -255,6 +255,52 @@ void main() {
       expect(page['text'], contains('取件码 9-9-9999'));
     });
 
+    /// token 任何长度 > 4 的原始片段都不能出现在 s 里
+    void expectNoTokenFragment(String s, String token) {
+      for (var i = 0; i + 5 <= token.length; i++) {
+        expect(s, isNot(contains(token.substring(i, i + 5))), reason: token.substring(i, i + 5));
+      }
+    }
+
+    test('token 值跨 4096 边界：先脱敏再截断，不留半截 token', () {
+      const token = 'Zq8Kp3Vx7Lm2Nw9Rt4Yb6Hc1Jd5Gf0Se';
+      const before = '<html><head><script>/*';
+      const keyPart = '*/var cfg = {"_m_h5_tk":"';
+      // token 第一个字符分别落在 4080（切在 token 中间）、4090、4095、4096（恰好在边界）
+      for (final startAt in [4080, 4090, 4095, 4096]) {
+        final pad = 'x' * (startAt - before.length - keyPart.length);
+        final html = '$before$pad$keyPart$token"};</script></head><body>hi</body></html>';
+        expect(html.indexOf(token), startAt);
+        final page = DiagSanitizer.sanitizeHtmlPage(url: 'https://a.b/c', html: html);
+        final snippet = page['snippet'] as String;
+        expect(snippet.length, lessThanOrEqualTo(DiagSanitizer.htmlSnippetLength));
+        expectNoTokenFragment(jsonEncode(page), token);
+      }
+    });
+
+    test('原页面里本身未闭合的敏感字段，截断后末尾残值也置 ***', () {
+      const token = 'Zq8Kp3Vx7Lm2Nw9Rt4Yb6Hc1Jd5Gf0Se';
+      final page = DiagSanitizer.sanitizeHtmlPage(url: 'https://a.b/c', html: '<script>var a = {"_m_h5_tk":"$token');
+      expect(page['snippet'], '<script>var a = {"_m_h5_tk":"***');
+      // 右引号缺失、后面也没有引号：完整脱敏匹配不上，靠截断后的残值处理
+      final html = '${'x' * 4070}{"_m_h5_tk":"$token${' more text' * 20}';
+      final cut = DiagSanitizer.sanitizeHtmlPage(url: 'https://a.b/c', html: html);
+      expect(cut['snippet'], endsWith('"_m_h5_tk":"***'));
+      expectNoTokenFragment(jsonEncode(cut), token);
+    });
+
+    test('手机号跨 4096 边界：截断后不留原始号码片段', () {
+      for (final startAt in [4088, 4090, 4093, 4095]) {
+        final html = '<html><body>${'x' * (startAt - 12)}13812345678 后续文字</body></html>';
+        final page = DiagSanitizer.sanitizeHtmlPage(url: 'https://a.b/c', html: html);
+        final snippet = page['snippet'] as String;
+        expect(snippet, isNot(contains('13812')), reason: '$startAt');
+        expect(snippet, isNot(contains('2345678'.substring(0, 5))), reason: '$startAt');
+        expect(RegExp(r'\d{5,}').hasMatch(snippet), isFalse, reason: '$startAt');
+        expect(page['text'], isNot(contains('13812')));
+      }
+    });
+
     test('超过 4KB 只保留前 4KB', () {
       final html = '<html><title>t</title>${'x' * 10000}</html>';
       final page = DiagSanitizer.sanitizeHtmlPage(url: 'https://a.b/c', html: html);
