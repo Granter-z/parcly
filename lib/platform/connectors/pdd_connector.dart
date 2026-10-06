@@ -17,6 +17,7 @@ import '../../core/models/package.dart';
 import '../../core/models/package_status.dart';
 import '../../core/engine/logistics_status_engine.dart';
 import '../../core/engine/timeline_merge.dart';
+import '../../core/parser/trace_time.dart';
 import '../../core/sanitizer/goods_name_cleaner.dart';
 import '../storage/platform_auth_store.dart';
 import '../webview/platform_cookie.dart';
@@ -994,6 +995,7 @@ class PddH5Connector implements PlatformConnector {
     String fallbackTrackingNo = '',
     CourierType fallbackCourier = CourierType.other,
     List<Map<String, dynamic>>? rawTraces,
+    DateTime? now,
   }) {
     if (text.trim().isEmpty) return null;
 
@@ -1248,6 +1250,21 @@ class PddH5Connector implements PlatformConnector {
     // 6) 高保真提取拼多多官方时间轴轨迹节点（图2完整对齐）
     final timelineNodes = <Map<String, String>>[];
 
+    // 写入前统一规范化时间（解析不出则不写入），同一时间只保留一条；
+    // 已有节点没有标签、新节点时间和正文相同且带标签时，用带标签的替换（DOM 兜底节点 tag 恒为空）
+    void addNode(String tag, String rawTime, String text) {
+      final time = normalizeTraceTime(rawTime, now: now);
+      if (time == null) return;
+      final idx = timelineNodes.indexWhere((n) => n['time'] == time);
+      if (idx == -1) {
+        timelineNodes.add({'tag': tag, 'time': time, 'text': text});
+      } else if ((timelineNodes[idx]['tag'] ?? '').isEmpty &&
+          tag.isNotEmpty &&
+          (timelineNodes[idx]['text'] ?? '').trim() == text.trim()) {
+        timelineNodes[idx] = {'tag': tag, 'time': time, 'text': text};
+      }
+    }
+
     // 优先注入拼多多官方结构化数据中的完整时间轴节点（expressInfo.traces 列表，含秒级时间与原生状态）
     if (rawTraces != null) {
       for (final t in rawTraces) {
@@ -1256,24 +1273,15 @@ class PddH5Connector implements PlatformConnector {
         final pddStatus = (t['status'] ?? '').toString().trim();
         if (info.isNotEmpty && timeStr.isNotEmpty) {
           final tag = _mapPddStatusToTag(pddStatus, info);
-          if (!timelineNodes.any((n) => n['time'] == timeStr)) {
-            timelineNodes.add({
-              'tag': tag,
-              'time': timeStr,
-              'text': info,
-            });
-          }
+          addNode(tag, timeStr, info);
         }
       }
     }
 
     // 融合抗推荐流状态机解析 DOM 纯文本节点（防商品流混入）
-    final domParsedNodes = parsePddDomTimeline(logisticsText);
+    final domParsedNodes = parsePddDomTimeline(logisticsText, now: now);
     for (final node in domParsedNodes) {
-      final tStr = node['time'] ?? '';
-      if (tStr.isNotEmpty && !timelineNodes.any((n) => n['time'] == tStr)) {
-        timelineNodes.add(node);
-      }
+      addNode(node['tag'] ?? '', node['time'] ?? '', node['text'] ?? '');
     }
 
     final timeRegex = RegExp(
@@ -1307,13 +1315,7 @@ class PddH5Connector implements PlatformConnector {
 
         // 节点描述必须非空且属于真实快递动态，绝不能是商品广告
         if (desc.isNotEmpty && desc.length >= 4 && _looksLikeTrace(desc)) {
-          if (!timelineNodes.any((n) => n['time'] == timeStr)) {
-            timelineNodes.add({
-              'tag': tag,
-              'time': timeStr,
-              'text': desc,
-            });
-          }
+          addNode(tag, timeStr, desc);
         }
       }
     }

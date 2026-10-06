@@ -10,6 +10,7 @@ import 'package:webview_flutter/webview_flutter.dart';
 import '../../core/engine/logistics_status_engine.dart';
 import '../../core/models/package.dart';
 import '../../core/models/package_status.dart';
+import '../../core/parser/trace_time.dart';
 import '../../core/sanitizer/goods_name_cleaner.dart';
 import '../storage/platform_auth_store.dart';
 import 'jd_delivery_filter.dart';
@@ -347,9 +348,10 @@ class JdH5Connector implements PlatformConnector {
       if (traceList != null) {
         for (final t in traceList) {
           if (t is! Map<String, dynamic>) continue;
-          final time = t['createTime']?.toString() ?? '';
+          // createTime 可能是约定格式或 epoch 毫秒，统一规范化；解析不出时间的节点不写入
+          final time = normalizeTraceTime(t['createTime']);
           final text = t['wlStateDesc']?.toString() ?? '';
-          if (text.isEmpty) continue;
+          if (text.isEmpty || time == null) continue;
           nodes.add({'tag': '', 'time': time, 'text': text});
         }
       }
