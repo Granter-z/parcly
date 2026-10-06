@@ -57,4 +57,21 @@ void main() {
     final inks = tester.widgetList<InkWell>(find.byType(InkWell));
     expect(inks.every((w) => w.onTap == null), isTrue);
   });
+
+  testWidgets('同步失败（不是掉线）：显示「同步失败」，不显示需重登，也没有红底', (tester) async {
+    await pumpBar(tester, {'pdd': ok, 'jd': ok, 'taobao': PlatformAuthStatus.syncFailed});
+    expect(find.text('淘宝 同步失败'), findsOneWidget);
+    expect(find.textContaining('需重登'), findsNothing);
+    expect(barColor(tester), Colors.transparent);
+  });
+
+  testWidgets('读屏每个平台只读一遍，点击区域不小于 44', (tester) async {
+    final handle = tester.ensureSemantics();
+    await pumpBar(tester, {'pdd': ok, 'jd': ok, 'taobao': PlatformAuthStatus.needsRelogin});
+    expect(find.bySemanticsLabel('淘宝 需重登'), findsOneWidget);
+    for (final e in find.byType(InkWell).evaluate()) {
+      expect(tester.getSize(find.byWidget(e.widget)).height, greaterThanOrEqualTo(44));
+    }
+    handle.dispose();
+  });
 }

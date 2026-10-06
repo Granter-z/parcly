@@ -558,15 +558,20 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
     _sync();
   }
 
-  /// 撤销「已取件」：把包裹恢复成标记前的样子（首页 5 秒撤销用）。
-  /// 只替换同 id 的那一条；包裹已经不在列表里就什么也不做。
+  /// 撤销「已取件」（首页 5 秒撤销用）：只把状态改回 [original] 的状态并清掉 pickedUpAt。
+  /// 包裹已经不在列表里、或已不是已取状态，就什么也不做。
   void restorePackage(Package original) {
-    // 包裹已被删除，或撤销窗口里状态又被别处改过（不再是已取），就不覆盖，避免冲掉新数据。
+    // 包裹已被删除，或撤销窗口里状态又被别处改过（不再是已取），就不动，避免冲掉新数据。
     final current = state.where((p) => p.id == original.id).firstOrNull;
     if (current == null || current.status != PackageStatus.pickedUp) return;
+    // 只回退「已取」这一步：status 改回原值、pickedUpAt 清空；
+    // 其他字段保留当前值，撤销窗口里同步进来的新轨迹不会丢。
     state = [
       for (final p in state)
-        if (p.id == original.id) original else p,
+        if (p.id == original.id)
+          current.copyWith(status: original.status, clearPickedUpAt: original.pickedUpAt == null)
+        else
+          p,
     ];
     _sync();
   }

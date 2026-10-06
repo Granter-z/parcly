@@ -85,6 +85,16 @@ class _PlatformChip extends ConsumerWidget {
         );
         label = '${info.shortName} 去绑定';
         textColor = Colors.grey.shade600;
+      case PlatformAuthStatus.syncFailed:
+        dot = syncing
+            ? const SizedBox(
+                width: 10,
+                height: 10,
+                child: CircularProgressIndicator(strokeWidth: 1.5, color: Color(0xFFE67E00)),
+              )
+            : _dot(const Color(0xFFFF9500));
+        label = '${info.shortName} 同步失败';
+        textColor = const Color(0xFFB35F00);
       case PlatformAuthStatus.ok:
         dot = syncing
             ? SizedBox(
@@ -101,25 +111,29 @@ class _PlatformChip extends ConsumerWidget {
     return Semantics(
       button: true,
       label: label,
+      excludeSemantics: true, // 不然读屏会把子 Text 再读一遍
       child: InkWell(
         borderRadius: BorderRadius.circular(8),
         onTap: syncing ? null : () => _onTap(context, ref),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              dot,
-              const SizedBox(width: 5),
-              Text(
-                label,
-                style: TextStyle(
-                  fontSize: fontSize,
-                  color: textColor,
-                  fontWeight: status == PlatformAuthStatus.needsRelogin ? FontWeight.w600 : FontWeight.w500,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(minHeight: 44),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 6),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                dot,
+                const SizedBox(width: 5),
+                Text(
+                  label,
+                  style: TextStyle(
+                    fontSize: fontSize,
+                    color: textColor,
+                    fontWeight: status == PlatformAuthStatus.needsRelogin ? FontWeight.w600 : FontWeight.w500,
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
@@ -134,7 +148,7 @@ class _PlatformChip extends ConsumerWidget {
 
   Future<void> _onTap(BuildContext context, WidgetRef ref) async {
     HapticFeedback.selectionClick();
-    if (status == PlatformAuthStatus.ok) {
+    if (status == PlatformAuthStatus.ok || status == PlatformAuthStatus.syncFailed) {
       _showPlatformSheet(context, ref);
       return;
     }
@@ -145,6 +159,7 @@ class _PlatformChip extends ConsumerWidget {
       displayName: info.displayName,
       brandColor: info.brandColor,
     );
+    // openPlatformLogin 成功时一定已经开始同步这个平台，提示才说「正在同步」。
     if (ok && context.mounted && status == PlatformAuthStatus.needsRelogin) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('${info.shortName}已重新登录，正在同步')),
@@ -167,7 +182,10 @@ class _PlatformChip extends ConsumerWidget {
               Text(info.displayName, style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600)),
               const SizedBox(height: 6),
               Text(
-                bound == null ? '登录正常' : '登录正常 · ${_formatDate(bound)} 绑定',
+                [
+                  status == PlatformAuthStatus.syncFailed ? '登录正常，上次同步出错了，已保留旧数据' : '登录正常',
+                  if (bound != null) '${_formatDate(bound)} 绑定',
+                ].join(' · '),
                 style: TextStyle(fontSize: 13, color: Colors.grey.shade600),
               ),
               const SizedBox(height: 16),

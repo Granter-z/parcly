@@ -10,6 +10,8 @@ import '../../../platform/connectors/connector_manager.dart';
 import '../settings/settings_screen.dart';
 import '../pdd/pdd_web_screen.dart';
 import '../../../core/engine/station_grouping.dart';
+import '../../../core/engine/platform_auth_status.dart' show kLoginExpiredSignals;
+import '../../../core/models/package_status.dart';
 import '../../components/platform_status_bar.dart';
 import '../../providers/platform_auth_status_provider.dart';
 import '../login/platform_login_flow.dart';
@@ -29,6 +31,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   /// 折叠起来的驿站分组（按组名记）
   final Set<String> _collapsedStations = {};
   bool _transitExpanded = false;
+  bool _shipmentExpanded = false;
 
   Widget _sectionTitle(String title, int count, {Widget? trailing}) {
     return SliverToBoxAdapter(
@@ -87,29 +90,31 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 
   /// 三个平台都没绑定时的整页引导
-  Widget _buildBindGuide() {
+  /// 三个平台都没绑定时的引导横幅。只是一条横幅，下面的包裹照常显示。
+  Widget _buildBindBanner() {
     return Container(
-      margin: const EdgeInsets.all(20),
-      padding: const EdgeInsets.all(24),
-      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(20)),
+      margin: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 10),
+      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(14)),
       child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Icon(Icons.inventory_2_outlined, size: 48, color: Color(0xFF8E8E93)),
-          const SizedBox(height: 12),
           const Text(
             '绑定拼多多 / 京东 / 淘宝，包裹自动出现在这里',
-            textAlign: TextAlign.center,
-            style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: Color(0xFF1C1C1E)),
+            style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Color(0xFF1C1C1E)),
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: 8),
           Wrap(
             spacing: 8,
-            runSpacing: 8,
-            alignment: WrapAlignment.center,
+            runSpacing: 4,
             children: [
               for (final p in kPlatforms)
                 FilledButton.tonal(
-                  style: FilledButton.styleFrom(foregroundColor: p.brandColor),
+                  style: FilledButton.styleFrom(
+                    foregroundColor: p.brandColor,
+                    minimumSize: const Size(0, 44),
+                    padding: const EdgeInsets.symmetric(horizontal: 14),
+                  ),
                   onPressed: () => openPlatformLogin(context, ref,
                       platform: p.id, displayName: p.displayName, brandColor: p.brandColor),
                   child: Text('绑定${p.shortName}'),
@@ -141,19 +146,23 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       if (!mounted) return;
       final issue = manager.lastIssue;
       if (issue != null) {
+        final loginExpired = kLoginExpiredSignals.any(issue.contains);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(issue),
             behavior: SnackBarBehavior.floating,
             duration: const Duration(seconds: 6),
-            action: SnackBarAction(
-              label: '去重新登录',
-              onPressed: () {
-                Navigator.of(context).push(
-                  MaterialPageRoute(builder: (_) => const SettingsScreen()),
-                );
-              },
-            ),
+            persist: false,
+            action: !loginExpired
+                ? null
+                : SnackBarAction(
+                    label: '去重新登录',
+                    onPressed: () {
+                      Navigator.of(context).push(
+                        MaterialPageRoute(builder: (_) => const SettingsScreen()),
+                      );
+                    },
+                  ),
           ),
         );
       }
@@ -170,9 +179,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final completedPackages = ref.watch(completedPackagesProvider);
     final stationGroups = groupPackagesByStation(pendingPackages);
     final pickupCount = stationGroups.fold<int>(0, (n, g) => n + g.packages.length);
-    final inTransit = pendingPackages.where((p) => !isAwaitingPickup(p)).toList();
-    final allUnbound = kPlatforms.every(
-        (p) => ref.watch(platformAuthStatusProvider(p.id)) == PlatformAuthStatus.unbound);
+    // 待发货的还没出仓，不算在途，折叠成在途区底部一行（产品 10-07 定）。
+    final inTransit = pendingPackages
+        .where((p) => !isAwaitingPickup(p) && p.status != PackageStatus.pendingShipment)
+        .toList();
+    final awaitingShipment = pendingPackages.where((p) => p.status == PackageStatus.pendingShipment).toList();
+    final allUnbound =
+        kPlatforms.every((p) => ref.watch(platformAuthStatusProvider(p.id)) == PlatformAuthStatus.unbound);
     const weekdays = ['一', '二', '三', '四', '五', '六', '日'];
     final now = DateTime.now();
     final todayStr = '${now.month}月${now.day}日 星期${weekdays[now.weekday - 1]}';
@@ -199,28 +212,36 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   child: Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            todayStr,
-                            style: const TextStyle(
-                              fontSize: 13,
-                              fontWeight: FontWeight.w600,
-                              color: Color(0xFF8E8E93),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              todayStr,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w600,
+                                color: Color(0xFF8E8E93),
+                              ),
                             ),
-                          ),
-                          const SizedBox(height: 2),
-                          const Text(
-                            '取件助手',
-                            style: TextStyle(
-                              fontSize: 28,
-                              fontWeight: FontWeight.w900,
-                              color: Color(0xFF1C1C1E),
-                              letterSpacing: -0.5,
+                            const SizedBox(height: 2),
+                            const FittedBox(
+                              fit: BoxFit.scaleDown,
+                              alignment: Alignment.centerLeft,
+                              child: Text(
+                                '取件助手',
+                                style: TextStyle(
+                                  fontSize: 28,
+                                  fontWeight: FontWeight.w900,
+                                  color: Color(0xFF1C1C1E),
+                                  letterSpacing: -0.5,
+                                ),
+                              ),
                             ),
-                          ),
-                        ],
+                          ],
+                        ),
                       ),
                       Row(
                         children: [
@@ -271,9 +292,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 ),
               ),
 
-              if (allUnbound)
-                SliverToBoxAdapter(child: _buildBindGuide())
-              else ...[
+              if (allUnbound) SliverToBoxAdapter(child: _buildBindBanner()),
+              ...[
                 // ② 待取件（按驿站分组）
                 _sectionTitle('待取件', pickupCount),
                 if (stationGroups.isEmpty)
@@ -283,8 +303,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 else
                   for (final group in stationGroups) ..._buildStationGroup(group, now),
 
-                // ③ 在途
-                if (inTransit.isNotEmpty) ...[
+                // ③ 在途（底部折叠一行「N 件待发货」）
+                if (inTransit.isNotEmpty || awaitingShipment.isNotEmpty) ...[
                   _sectionTitle(
                     '在途',
                     inTransit.length,
@@ -306,10 +326,18 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                         ),
                         child: Column(
                           children: [
-                            for (final p in (_transitExpanded
-                                ? inTransit
-                                : inTransit.take(_collapsedTransitCount)))
+                            for (final p
+                                in (_transitExpanded ? inTransit : inTransit.take(_collapsedTransitCount)))
                               InTransitRow(package: p),
+                            if (awaitingShipment.isNotEmpty) ...[
+                              AwaitingShipmentRow(
+                                count: awaitingShipment.length,
+                                expanded: _shipmentExpanded,
+                                onToggle: () => setState(() => _shipmentExpanded = !_shipmentExpanded),
+                              ),
+                              if (_shipmentExpanded)
+                                for (final p in awaitingShipment) InTransitRow(package: p),
+                            ],
                           ],
                         ),
                       ),

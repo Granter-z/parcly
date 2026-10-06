@@ -9,7 +9,8 @@ Package pkg(
   String? station,
   String location = '',
   DateTime? addedAt,
-  List<StatusTransition> history = const [],
+  DateTime? arrived,
+  List<StatusTransition>? history,
   String code = '',
 }) =>
     Package(
@@ -21,7 +22,12 @@ Package pkg(
       addedAt: addedAt ?? DateTime(2026, 10, 1, 9),
       stationName: station,
       location: location,
-      statusHistory: history,
+      // 真实到站时间（P16 之前先放在状态历史里；P16 后改成 arrivedAt）。
+      statusHistory: history ??
+          [
+            if (arrived != null)
+              StatusTransition(from: PackageStatus.transit, to: PackageStatus.arrived, timestamp: arrived),
+          ],
       pickupCode: code,
     );
 
@@ -47,14 +53,13 @@ void main() {
       expect(ids(groups.single), ['a']);
     });
 
-    test('同叫「菜鸟驿站」但位置不同的分成两组', () {
+    test('组名只用 stationName，location 不参与也不显示（可能是收货地址）', () {
       final groups = groupPackagesByStation([
-        pkg('a', station: '菜鸟驿站', location: '东门'),
-        pkg('b', station: '菜鸟驿站', location: '西门'),
-        pkg('c', station: '菜鸟驿站', location: '东门'),
+        pkg('a', station: '菜鸟驿站', location: '示例路 1 号 3 栋'),
+        pkg('b', station: '菜鸟驿站', location: '示例路 9 号'),
       ]);
-      expect(groups.map((g) => g.name), ['菜鸟驿站 · 东门', '菜鸟驿站 · 西门']);
-      expect(ids(groups.first), ['a', 'c']);
+      expect(groups.map((g) => g.name), ['菜鸟驿站']);
+      expect(ids(groups.single), ['a', 'b']);
     });
 
     test('空格、全角、大小写不同的驿站名算同一个，显示名用第一次出现的写法', () {
@@ -68,22 +73,21 @@ void main() {
       expect(groups.single.packages.length, 3);
     });
 
-    test('没有 stationName 时用 location；两个都没有进「未知驿站」并排最后', () {
+    test('没有 stationName 的进「未知驿站」并排最后，哪怕 location 有值、等得最久', () {
       final groups = groupPackagesByStation([
-        pkg('u', addedAt: DateTime(2026, 9, 1)),
-        pkg('a', location: '3 号楼快递柜', addedAt: DateTime(2026, 10, 3)),
-        pkg('b', station: '', location: '3号楼快递柜', addedAt: DateTime(2026, 10, 4)),
+        pkg('u', location: '示例路 1 号', arrived: DateTime(2026, 9, 1)),
+        pkg('a', station: '驿站A', arrived: DateTime(2026, 10, 3)),
+        pkg('b', station: '  ', arrived: DateTime(2026, 10, 4)),
       ]);
-      expect(groups.map((g) => g.name), ['3 号楼快递柜', unknownStationName]);
-      expect(ids(groups.first), ['a', 'b']);
-      expect(ids(groups.last), ['u']);
+      expect(groups.map((g) => g.name), ['驿站A', unknownStationName]);
+      expect(ids(groups.last), ['u', 'b']);
     });
 
     test('组内按到站从早到晚，组按最早到站从早到晚', () {
       final groups = groupPackagesByStation([
-        pkg('x2', station: '驿站X', addedAt: DateTime(2026, 10, 5)),
-        pkg('y1', station: '驿站Y', addedAt: DateTime(2026, 10, 2)),
-        pkg('x1', station: '驿站X', addedAt: DateTime(2026, 10, 3)),
+        pkg('x2', station: '驿站X', arrived: DateTime(2026, 10, 5)),
+        pkg('y1', station: '驿站Y', arrived: DateTime(2026, 10, 2)),
+        pkg('x1', station: '驿站X', arrived: DateTime(2026, 10, 3)),
       ]);
       expect(groups.map((g) => g.name), ['驿站Y', '驿站X']);
       expect(ids(groups[1]), ['x1', 'x2']);
@@ -96,15 +100,28 @@ void main() {
         StatusTransition(from: PackageStatus.delivering, to: PackageStatus.arrived, timestamp: DateTime(2026, 10, 3)),
       ]);
       expect(arrivalTimeOf(p), DateTime(2026, 10, 3));
-      expect(arrivalTimeOf(pkg('b')), DateTime(2026, 10, 1, 9));
+    });
+
+    test('不知道到站时间时返回 null，绝不拿 addedAt（最近同步时间）顶替', () {
+      expect(arrivalTimeOf(pkg('b', addedAt: DateTime(2026, 9, 1))), isNull);
+    });
+
+    test('不知道到站时间的排在组内和组间的最后', () {
+      final groups = groupPackagesByStation([
+        pkg('n', station: 'N'),
+        pkg('a2', station: 'A'),
+        pkg('a1', station: 'A', arrived: DateTime(2026, 10, 5)),
+      ]);
+      expect(groups.map((g) => g.name), ['A', 'N']);
+      expect(ids(groups.first), ['a1', 'a2']);
     });
 
     test('到站时间相同的保持原顺序', () {
       final t = DateTime(2026, 10, 1);
       final groups = groupPackagesByStation([
-        pkg('b', station: 'B', addedAt: t),
-        pkg('a', station: 'A', addedAt: t),
-        pkg('b2', station: 'B', addedAt: t),
+        pkg('b', station: 'B', arrived: t),
+        pkg('a', station: 'A', arrived: t),
+        pkg('b2', station: 'B', arrived: t),
       ]);
       expect(groups.map((g) => g.name), ['B', 'A']);
       expect(ids(groups.first), ['b', 'b2']);
@@ -118,8 +135,12 @@ void main() {
   group('isNearlyOverdue', () {
     final now = DateTime(2026, 10, 7, 12);
     test('刚好 3 天不算，超过 3 天算', () {
-      expect(isNearlyOverdue(pkg('a', addedAt: DateTime(2026, 10, 4, 12)), now), isFalse);
-      expect(isNearlyOverdue(pkg('b', addedAt: DateTime(2026, 10, 4, 11, 59)), now), isTrue);
+      expect(isNearlyOverdue(pkg('a', arrived: DateTime(2026, 10, 4, 12)), now), isFalse);
+      expect(isNearlyOverdue(pkg('b', arrived: DateTime(2026, 10, 4, 11, 59)), now), isTrue);
+    });
+
+    test('不知道到站时间的不标快过期，addedAt 再早也不标', () {
+      expect(isNearlyOverdue(pkg('a', addedAt: DateTime(2026, 9, 1)), now), isFalse);
     });
   });
 }

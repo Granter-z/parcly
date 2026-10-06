@@ -12,44 +12,43 @@ const Duration nearlyOverdueAfter = Duration(days: 3);
 /// 没有驿站信息时的组名。
 const String unknownStationName = '未知驿站';
 
-/// 一个驿站分组：显示名 + 组内包裹（到站从早到晚）。
+/// 一个驿站分组：显示名 + 组内包裹（到站从早到晚，不知道到站时间的排后面）。
 class StationGroup {
   final String name;
   final List<Package> packages;
 
   const StationGroup({required this.name, required this.packages});
 
-  /// 组里最早到站的时间，用来给组排序。
-  DateTime get earliestArrival => arrivalTimeOf(packages.first);
+  /// 组里最早到站的时间，用来给组排序；组里都不知道到站时间时为 null。
+  DateTime? get earliestArrival => arrivalTimeOf(packages.first);
 }
 
-/// 包裹到站时间：取状态历史里最后一次变成 arrived 的时间，没有就用 addedAt。
-DateTime arrivalTimeOf(Package p) {
+/// 包裹真实的到站时间，不知道就返回 null。
+///
+/// 绝不拿 addedAt 顶替：连接器每次同步都会刷新 addedAt，它是「最近一次同步时间」。
+/// TODO(P16)：P16 给 Package 加上 arrivedAt 后，这里改成 `return p.arrivedAt;`。
+DateTime? arrivalTimeOf(Package p) {
   for (final t in p.statusHistory.reversed) {
     if (t.to == PackageStatus.arrived) return t.timestamp;
   }
-  return p.addedAt;
+  return null;
 }
 
-/// 到站超过 [nearlyOverdueAfter] 就算快过期。
-bool isNearlyOverdue(Package p, DateTime now) =>
-    now.difference(arrivalTimeOf(p)) > nearlyOverdueAfter;
-
-/// 包裹的驿站显示名：stationName 和 location 都有时拼成「驿站 · 位置」
-/// （同叫「菜鸟驿站」的不同网点要分开），只有一个就用那个，都没有返回空串。
-String stationLabelOf(Package p) {
-  final s = (p.stationName ?? '').trim();
-  final l = p.location.trim();
-  if (s.isNotEmpty && l.isNotEmpty && s != l) return '$s · $l';
-  return s.isNotEmpty ? s : l;
+/// 到站超过 [nearlyOverdueAfter] 就算快过期；不知道到站时间的不标。
+bool isNearlyOverdue(Package p, DateTime now) {
+  final arrived = arrivalTimeOf(p);
+  return arrived != null && now.difference(arrived) > nearlyOverdueAfter;
 }
+
+/// 包裹的驿站组名：只用 stationName，没有返回空串（归进「未知驿站」）。
+///
+/// 不用 location：京东的 location 可能是收货地址，不能显示在首页（技术负责人 10-07 定）。
+String stationLabelOf(Package p) => (p.stationName ?? '').trim();
 
 /// 算不算「待取件」：已到达，或者还没完成但已经拿到取件码（和首页原来的排序口径一致）。
 bool isAwaitingPickup(Package p) {
   if (p.status == PackageStatus.arrived) return true;
-  return p.status.isPending &&
-      p.status != PackageStatus.pendingShipment &&
-      p.pickupCode.trim().isNotEmpty;
+  return p.status.isPending && p.status != PackageStatus.pendingShipment && p.pickupCode.trim().isNotEmpty;
 }
 
 /// 比较用的驿站名：去掉所有空白，全角字符转半角，英文转小写。
@@ -90,7 +89,7 @@ List<StationGroup> groupPackagesByStation(List<Package> packages) {
     labels.putIfAbsent(key, () => label);
   }
 
-  int byArrival(Package a, Package b) => arrivalTimeOf(a).compareTo(arrivalTimeOf(b));
+  int byArrival(Package a, Package b) => _compareArrival(arrivalTimeOf(a), arrivalTimeOf(b));
 
   final groups = <StationGroup>[
     for (final e in named.entries)
@@ -99,7 +98,7 @@ List<StationGroup> groupPackagesByStation(List<Package> packages) {
   // 稳定排序：最早到站相同的组保持出现顺序。
   final indexed = groups.asMap().entries.toList()
     ..sort((a, b) {
-      final c = a.value.earliestArrival.compareTo(b.value.earliestArrival);
+      final c = _compareArrival(a.value.earliestArrival, b.value.earliestArrival);
       return c != 0 ? c : a.key.compareTo(b.key);
     });
   final result = [for (final e in indexed) e.value];
@@ -108,6 +107,13 @@ List<StationGroup> groupPackagesByStation(List<Package> packages) {
     result.add(StationGroup(name: unknownStationName, packages: _stableSorted(unknown, byArrival)));
   }
   return result;
+}
+
+/// 早的在前，不知道到站时间（null）的排最后。
+int _compareArrival(DateTime? a, DateTime? b) {
+  if (a == null) return b == null ? 0 : 1;
+  if (b == null) return -1;
+  return a.compareTo(b);
 }
 
 List<Package> _stableSorted(List<Package> list, int Function(Package, Package) cmp) {
