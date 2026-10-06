@@ -9,6 +9,7 @@ import '../../../platform/connectors/connector_manager.dart';
 import '../../providers/package_provider.dart';
 import '../login/platform_login_screen.dart';
 import '../pdd/pdd_web_screen.dart';
+import 'diagnostics_screen.dart';
 
 class SettingsScreen extends ConsumerStatefulWidget {
   const SettingsScreen({super.key});
@@ -95,6 +96,16 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                         ),
                       );
                     }
+                  },
+                ),
+                const Divider(height: 1, indent: 56),
+                ListTile(
+                  leading: const Icon(Icons.bug_report_rounded, color: Color(0xFF8E8E93)),
+                  title: const Text('同步诊断', style: TextStyle(fontSize: 14.5, fontWeight: FontWeight.w600)),
+                  subtitle: const Text('淘宝原始返回采集与导出、拼多多会话诊断', style: TextStyle(fontSize: 12)),
+                  trailing: const Icon(Icons.chevron_right_rounded, size: 20, color: Colors.grey),
+                  onTap: () {
+                    Navigator.push(context, MaterialPageRoute(builder: (_) => const DiagnosticsScreen()));
                   },
                 ),
                 const Divider(height: 1, indent: 56),

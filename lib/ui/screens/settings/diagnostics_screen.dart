@@ -4,6 +4,7 @@ library;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../../../platform/connectors/sync_diagnostics.dart';
+import '../../../platform/diagnostics/taobao_raw_capture.dart';
 import '../../../platform/storage/platform_auth_store.dart';
 
 class DiagnosticsScreen extends StatefulWidget {
@@ -19,6 +20,65 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
   String _progress = '';
   DiagReport? _report;
   String? _error;
+
+  final _capture = TaobaoRawCapture.instance;
+  bool _captureOn = false;
+  int _captureFiles = 0;
+  bool _exporting = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _refreshCapture();
+  }
+
+  Future<void> _refreshCapture() async {
+    final on = await _capture.loadEnabled();
+    final count = await _capture.fileCount();
+    if (mounted) {
+      setState(() {
+        _captureOn = on;
+        _captureFiles = count;
+      });
+    }
+  }
+
+  Future<void> _toggleCapture(bool value) async {
+    HapticFeedback.selectionClick();
+    setState(() => _captureOn = value);
+    try {
+      await _capture.setEnabled(value);
+    } catch (e) {
+      if (mounted) {
+        setState(() => _captureOn = !value);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('保存开关失败：$e'), behavior: SnackBarBehavior.floating),
+        );
+      }
+    }
+  }
+
+  Future<void> _exportCapture() async {
+    if (_exporting) return;
+    setState(() => _exporting = true);
+    try {
+      final shared = await _capture.exportAndShare();
+      if (!shared && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('还没有采集到文件，请打开开关后同步一次'), behavior: SnackBarBehavior.floating),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('导出失败：$e'), behavior: SnackBarBehavior.floating),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _exporting = false);
+      _refreshCapture();
+    }
+  }
 
   Future<void> _run() async {
     if (_running) return;
@@ -76,6 +136,9 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
+          _taobaoCaptureCard(),
+          const SizedBox(height: 16),
+
           // 实验说明
           Container(
             padding: const EdgeInsets.all(16),
@@ -174,6 +237,53 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
             const SizedBox(height: 12),
             for (final s in _report!.steps) _stepCard(s),
           ],
+        ],
+      ),
+    );
+  }
+
+  Widget _taobaoCaptureCard() {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(16, 8, 8, 12),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            value: _captureOn,
+            onChanged: _toggleCapture,
+            activeTrackColor: const Color(0xFFFF5000),
+            title: const Text('淘宝原始返回采集', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+            subtitle: const Text(
+              '打开后同步淘宝时，把订单列表、物流详情、驿站包裹、按运单号查询的返回脱敏后保存在本机'
+              '（手机号、姓名、地址已隐藏，运单号和取件码已打码，不含 Cookie），每类最多保留最近 20 份。',
+              style: TextStyle(fontSize: 12.5, height: 1.45, color: Color(0xFF3A3A3C)),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.only(right: 8),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    '已采集 $_captureFiles 个文件',
+                    style: TextStyle(fontSize: 12.5, color: Colors.grey.shade700),
+                  ),
+                ),
+                OutlinedButton.icon(
+                  onPressed: (_exporting || _captureFiles == 0) ? null : _exportCapture,
+                  icon: _exporting
+                      ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
+                      : const Icon(Icons.ios_share_rounded, size: 18),
+                  label: const Text('导出'),
+                ),
+              ],
+            ),
+          ),
         ],
       ),
     );
