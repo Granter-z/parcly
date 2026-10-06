@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../platform/storage/platform_auth_store.dart';
 import '../../../platform/connectors/connector_manager.dart';
 import '../../providers/package_provider.dart';
+import '../../providers/platform_auth_status_provider.dart';
 import '../login/platform_login_screen.dart';
 import '../pdd/pdd_web_screen.dart';
 
@@ -86,6 +87,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                     HapticFeedback.lightImpact();
                     Navigator.pop(context);
                     await ref.read(connectorManagerProvider).syncAll();
+                    ref.invalidate(platformAuthStatusProvider);
                     if (context.mounted) {
                       final issue = ref.read(connectorManagerProvider).lastIssue;
                       ScaffoldMessenger.of(context).showSnackBar(
@@ -159,10 +161,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     required IconData icon,
     required Color brandColor,
   }) {
-    final isBound = _authStore.isBound(platform);
-    final liveIssue = ref.watch(connectorManagerProvider).lastIssue ?? '';
-    final isExpired = isBound &&
-        (_authStore.isExpired(platform) || liveIssue.contains(_issueKeyword(platform)));
+    final authStatus = ref.watch(platformAuthStatusProvider(platform));
+    final isBound = authStatus != PlatformAuthStatus.unbound;
+    final isExpired = authStatus == PlatformAuthStatus.needsRelogin;
     final boundTime = _authStore.getBoundTime(platform);
 
     return Container(
@@ -273,7 +274,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   onPressed: () async {
                     HapticFeedback.lightImpact();
                     await PddWebScreen.open(context);
-                    if (mounted) setState(() {});
+                    if (mounted) _refreshAuth();
                   },
                   style: FilledButton.styleFrom(
                     backgroundColor: brandColor.withValues(alpha: 0.12),
@@ -289,11 +290,11 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   onSelected: (val) async {
                     if (val == 'relogin') {
                       await PddWebScreen.open(context, url: 'https://mobile.yangkeduo.com/login.html');
-                      if (mounted) setState(() {});
+                      if (mounted) _refreshAuth();
                     } else if (val == 'unbind') {
                       await _authStore.unbind(platform);
                       if (mounted) {
-                        setState(() {});
+                        _refreshAuth();
                         ScaffoldMessenger.of(context).showSnackBar(
                           SnackBar(content: Text('已解除 $displayName 绑定')),
                         );
@@ -345,7 +346,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                       if (val == 'unbind') {
                         await _authStore.unbind(platform);
                         if (mounted) {
-                          setState(() {});
+                          _refreshAuth();
                           ScaffoldMessenger.of(context).showSnackBar(
                             SnackBar(content: Text('已解除 $displayName 绑定')),
                           );
@@ -381,14 +382,16 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                     initialUrl: 'https://page.cainiao.com/cn-yz/station-activity/index.html',
                   );
                   if (mounted) {
-                    ref.read(connectorManagerProvider).syncAll();
+                    ref.read(connectorManagerProvider).syncAll().then((_) {
+                      if (mounted) _refreshAuth();
+                    });
                   }
                 } else if (val == 'relogin') {
                   await _openLogin(platform: platform, displayName: displayName, brandColor: brandColor);
                 } else if (val == 'unbind') {
                   await _authStore.unbind(platform);
                   if (mounted) {
-                    setState(() {});
+                    _refreshAuth();
                     ScaffoldMessenger.of(context).showSnackBar(
                       SnackBar(content: Text('已解除 $displayName 绑定')),
                     );
@@ -453,19 +456,11 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     return null;
   }
 
-  /// 登录态失效提示在同步问题上对应的平台关键词
-  String _issueKeyword(String platform) {
-    switch (platform.toLowerCase()) {
-      case 'taobao':
-      case 'tmall':
-        return '淘宝';
-      case 'jd':
-        return '京东';
-      case 'pdd':
-        return '拼多多';
-      default:
-        return platform;
-    }
+
+  /// 登录、解绑、同步之后刷新平台状态：provider 会缓存结果，要先作废再重建。
+  void _refreshAuth() {
+    ref.invalidate(platformAuthStatusProvider);
+    setState(() {});
   }
 
   /// 平台登录入口：拼多多内置移动网页端直接打开，其他平台使用专属登录
@@ -476,7 +471,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   }) async {
     if (platform.toLowerCase() == 'pdd') {
       await PddWebScreen.open(context, url: 'https://mobile.yangkeduo.com/login.html');
-      if (mounted) setState(() {});
+      if (mounted) _refreshAuth();
       return;
     }
 
@@ -488,11 +483,13 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       brandColor: brandColor,
     );
     if (ok == true && mounted) {
-      setState(() {});
       // 授权成功后清理旧失效提示并立即同步：刷新状态并补齐取件码
       final manager = ref.read(connectorManagerProvider);
       manager.clearLastIssue();
-      manager.syncAll();
+      _refreshAuth();
+      manager.syncAll().then((_) {
+        if (mounted) _refreshAuth();
+      });
     }
   }
 }
