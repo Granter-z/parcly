@@ -1,6 +1,7 @@
 /// 设置与多平台账号管理界面
 library;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -98,16 +99,19 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                     }
                   },
                 ),
-                const Divider(height: 1, indent: 56),
-                ListTile(
-                  leading: const Icon(Icons.bug_report_rounded, color: Color(0xFF8E8E93)),
-                  title: const Text('同步诊断', style: TextStyle(fontSize: 14.5, fontWeight: FontWeight.w600)),
-                  subtitle: const Text('淘宝原始返回采集与导出、拼多多会话诊断', style: TextStyle(fontSize: 12)),
-                  trailing: const Icon(Icons.chevron_right_rounded, size: 20, color: Colors.grey),
-                  onTap: () {
-                    Navigator.push(context, MaterialPageRoute(builder: (_) => const DiagnosticsScreen()));
-                  },
-                ),
+                // 同步诊断（含淘宝原始返回采集）只在调试版出现
+                if (kDebugMode) ...[
+                  const Divider(height: 1, indent: 56),
+                  ListTile(
+                    leading: const Icon(Icons.bug_report_rounded, color: Color(0xFF8E8E93)),
+                    title: const Text('同步诊断', style: TextStyle(fontSize: 14.5, fontWeight: FontWeight.w600)),
+                    subtitle: const Text('淘宝原始返回采集与导出、拼多多会话诊断', style: TextStyle(fontSize: 12)),
+                    trailing: const Icon(Icons.chevron_right_rounded, size: 20, color: Colors.grey),
+                    onTap: () {
+                      Navigator.push(context, MaterialPageRoute(builder: (_) => const DiagnosticsScreen()));
+                    },
+                  ),
+                ],
                 const Divider(height: 1, indent: 56),
                 ListTile(
                   leading: const Icon(Icons.cleaning_services_rounded, color: Colors.redAccent),

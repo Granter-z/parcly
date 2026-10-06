@@ -1,6 +1,7 @@
 /// 同步诊断界面：一键跑受控实验，判断「登录」与「访问」各自是否会引发会话冲突
 library;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../../../platform/connectors/sync_diagnostics.dart';
@@ -25,11 +26,12 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
   bool _captureOn = false;
   int _captureFiles = 0;
   bool _exporting = false;
+  bool _clearing = false;
 
   @override
   void initState() {
     super.initState();
-    _refreshCapture();
+    if (kDebugMode) _refreshCapture();
   }
 
   Future<void> _refreshCapture() async {
@@ -47,6 +49,7 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
     HapticFeedback.selectionClick();
     setState(() => _captureOn = value);
     try {
+      // 关闭时会自动清空已采集文件
       await _capture.setEnabled(value);
     } catch (e) {
       if (mounted) {
@@ -55,6 +58,24 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
           SnackBar(content: Text('保存开关失败：$e'), behavior: SnackBarBehavior.floating),
         );
       }
+    }
+    _refreshCapture();
+  }
+
+  Future<void> _clearCapture() async {
+    if (_clearing) return;
+    HapticFeedback.selectionClick();
+    setState(() => _clearing = true);
+    try {
+      final n = await _capture.clearAll();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('已清空 $n 个采集文件'), behavior: SnackBarBehavior.floating),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _clearing = false);
+      _refreshCapture();
     }
   }
 
@@ -136,8 +157,11 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          _taobaoCaptureCard(),
-          const SizedBox(height: 16),
+          // 采集开关只在调试版出现
+          if (kDebugMode) ...[
+            _taobaoCaptureCard(),
+            const SizedBox(height: 16),
+          ],
 
           // 实验说明
           Container(
@@ -243,48 +267,55 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
   }
 
   Widget _taobaoCaptureCard() {
-    return Container(
-      padding: const EdgeInsets.fromLTRB(16, 8, 8, 12),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SwitchListTile(
-            contentPadding: EdgeInsets.zero,
-            value: _captureOn,
-            onChanged: _toggleCapture,
-            activeTrackColor: const Color(0xFFFF5000),
-            title: const Text('淘宝原始返回采集', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
-            subtitle: const Text(
-              '打开后同步淘宝时，把订单列表、物流详情、驿站包裹、按运单号查询的返回脱敏后保存在本机'
-              '（手机号、姓名、地址已隐藏，运单号和取件码已打码，不含 Cookie），每类最多保留最近 20 份。',
-              style: TextStyle(fontSize: 12.5, height: 1.45, color: Color(0xFF3A3A3C)),
+    // 用 Material 当卡片背景，SwitchListTile 的水波纹才能画出来
+    return Material(
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(16),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 8, 8, 12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              value: _captureOn,
+              onChanged: _toggleCapture,
+              activeTrackColor: const Color(0xFFFF5000),
+              title: const Text('淘宝原始返回采集', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+              subtitle: const Text(
+                '打开后同步淘宝时，把订单列表、物流详情、驿站包裹、按运单号查询的返回脱敏后保存在本机缓存目录：'
+                '手机号、收件人姓名和地址字段已隐藏，订单号、运单号、取件码已打码，快递员只留姓，'
+                '不含 Cookie 和登录令牌；物流描述里的自由文本地址不处理。每类最多保留最近 20 份，关闭开关会自动清空。',
+                style: TextStyle(fontSize: 12.5, height: 1.45, color: Color(0xFF3A3A3C)),
+              ),
             ),
-          ),
-          Padding(
-            padding: const EdgeInsets.only(right: 8),
-            child: Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    '已采集 $_captureFiles 个文件',
-                    style: TextStyle(fontSize: 12.5, color: Colors.grey.shade700),
+            Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      '已采集 $_captureFiles 个文件',
+                      style: TextStyle(fontSize: 12.5, color: Colors.grey.shade700),
+                    ),
                   ),
-                ),
-                OutlinedButton.icon(
-                  onPressed: (_exporting || _captureFiles == 0) ? null : _exportCapture,
-                  icon: _exporting
-                      ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
-                      : const Icon(Icons.ios_share_rounded, size: 18),
-                  label: const Text('导出'),
-                ),
-              ],
+                  TextButton(
+                    onPressed: (_clearing || _exporting || _captureFiles == 0) ? null : _clearCapture,
+                    child: const Text('清空已采集'),
+                  ),
+                  const SizedBox(width: 4),
+                  OutlinedButton.icon(
+                    onPressed: (_exporting || _captureFiles == 0) ? null : _exportCapture,
+                    icon: _exporting
+                        ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
+                        : const Icon(Icons.ios_share_rounded, size: 18),
+                    label: const Text('导出'),
+                  ),
+                ],
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
