@@ -20,6 +20,72 @@ void _logTb(String msg) {
   debugPrint(msg);
 }
 
+/// 同步三步调用处的诊断探针：包一层 http.Client，记下最后一次请求的 HTTP 返回码、
+/// mtop `ret` 字段和异常类型。只用于打日志，日志里只放返回码 / ret / 条数 / 失败类别，
+/// 不放 URL、请求参数、响应正文（避免订单号、单号、token、cookie、手机号进日志）。
+class _StepProbe extends http.BaseClient {
+  _StepProbe(this._inner);
+
+  final http.Client _inner;
+  int requests = 0;
+  int? lastStatus;
+  String _lastBody = '';
+  Object? lastError;
+
+  @override
+  Future<http.StreamedResponse> send(http.BaseRequest request) async {
+    requests++;
+    try {
+      final resp = await _inner.send(request);
+      final bytes = await resp.stream.toBytes();
+      lastStatus = resp.statusCode;
+      lastError = null;
+      _lastBody = utf8.decode(bytes, allowMalformed: true);
+      return http.StreamedResponse(
+        http.ByteStream.fromBytes(bytes),
+        resp.statusCode,
+        contentLength: bytes.length,
+        request: resp.request,
+        headers: resp.headers,
+        isRedirect: resp.isRedirect,
+        persistentConnection: resp.persistentConnection,
+        reasonPhrase: resp.reasonPhrase,
+      );
+    } catch (e) {
+      lastError = e;
+      rethrow;
+    }
+  }
+
+  /// 外层 client 由同步流程统一关闭，这里不关
+  @override
+  void close() {}
+
+  /// mtop 的 `ret` 字段（如 `SUCCESS::调用成功`、`FAIL_SYS_TOKEN_EXPIRED::令牌过期`）；
+  /// 只保留大写错误码、冒号和中文提示，最多 80 字，没有时返回 `-`
+  String get ret {
+    final m = RegExp(r'"ret"\s*:\s*\[([^\]]*)\]').firstMatch(_lastBody);
+    if (m == null) return '-';
+    final v = m.group(1)!.replaceAll(RegExp(r'[^A-Z_:,\u4e00-\u9fff]'), '');
+    if (v.isEmpty) return '-';
+    return v.length > 80 ? v.substring(0, 80) : v;
+  }
+
+  bool get retOk => ret == '-' || ret.startsWith('SUCCESS');
+
+  bool bodyContains(String s) => _lastBody.contains(s);
+
+  /// 失败原因（只给类别）
+  String failReason({String? emptyReason}) {
+    final e = lastError;
+    if (e != null) return '网络异常(${e.runtimeType})';
+    if (requests == 0 || lastStatus == null) return '未发出请求或无响应';
+    if (lastStatus != 200) return 'HTTP $lastStatus';
+    if (!retOk) return 'ret 非成功';
+    return emptyReason ?? '解析结果为空';
+  }
+}
+
 class _CainiaoItem {
   final String pickupCode;
   final String trackingNumber;
@@ -120,11 +186,21 @@ class TaobaoH5Connector implements PlatformConnector {
     final client = http.Client();
     try {
       // 1. 获取买家最近订单列表
-      final orders = await _fetchBoughtOrders(client, cookies);
+      final orderProbe = _StepProbe(client);
+      final orders = await _fetchBoughtOrders(orderProbe, cookies);
+      _logTb('[Taobao Step1 OrderList] http=${orderProbe.lastStatus ?? '-'} ret=${orderProbe.ret} '
+          'orders=${orders.length} reqs=${orderProbe.requests}'
+          '${orders.isEmpty ? ' fail=${orderProbe.failReason(emptyReason: '订单列表为空或解析失败')}' : ''}');
+      var orderIndex = 0;
       for (final order in orders) {
         if (_cancelled) break;
+        orderIndex++;
         // 2. 针对在途/派送中订单，解析移动端 SSR 物流详情
-        final parcel = await _fetchSsrLogistics(client, cookies, order.orderId);
+        final ssrProbe = _StepProbe(client);
+        final parcel = await _fetchSsrLogistics(ssrProbe, cookies, order.orderId);
+        _logTb('[Taobao Step2 SsrDetail] $orderIndex/${orders.length} http=${ssrProbe.lastStatus ?? '-'} '
+            'ret=${ssrProbe.ret} parcel=${parcel != null ? 1 : 0}'
+            '${parcel == null ? ' fail=${ssrProbe.failReason(emptyReason: ssrProbe.bodyContains('__ICE_SUSPENSE_LOADER__') ? '有数据标记但未解析出物流' : '页面无数据标记（改版或跳登录）')}' : ''}');
         if (_cancelled) break;
         if (parcel != null) {
           yield Package(
@@ -150,9 +226,15 @@ class TaobaoH5Connector implements PlatformConnector {
         try {
           final pendingTns = _getActiveTrackingNumbers();
           _logTb('[Cainiao] Stage 3 targeted checking for ${pendingTns.length} tracking numbers: $pendingTns');
+          var tnIndex = 0;
           for (final tn in pendingTns) {
             if (_cancelled) break;
-            final item = await _queryCainiaoByMailNo(client, cookies, tn);
+            tnIndex++;
+            final mailProbe = _StepProbe(client);
+            final item = await _queryCainiaoByMailNo(mailProbe, cookies, tn);
+            _logTb('[Cainiao Step3 MailNo] $tnIndex/${pendingTns.length} http=${mailProbe.lastStatus ?? '-'} '
+                'ret=${mailProbe.ret} items=${item != null ? 1 : 0} code=${item != null && item.pickupCode.isNotEmpty ? 1 : 0}'
+                '${item == null ? ' fail=${mailProbe.failReason(emptyReason: '无到站信息或解析失败')}' : ''}');
             if (item != null && item.pickupCode.isNotEmpty) {
               _logTb('[Cainiao Targeted] MailNo: $tn -> ShelfCode: ${item.pickupCode}, Station: ${item.stationName}');
               yield Package(
