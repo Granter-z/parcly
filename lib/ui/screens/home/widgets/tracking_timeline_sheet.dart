@@ -4,20 +4,21 @@
 /// 1. 顶部承运商与运单号条：品牌名称 + 运单号 + 一键复制
 /// 2. 订单与收货信息卡片：订单编号 + 一键复制 + 收货地址（支持折叠展开）
 /// 3. 商品与取件凭证栏：商品图文预览，待取件时呈现 Hero 提货码徽章
-/// 4. 真实物流时间轴：
-///    - 最新节点高亮绿点脉冲，绿色状态与时间戳，加粗轨迹描述
-///    - 历史节点灰点串联
-///    - 物流客服/派送员电话号码高亮为可点击的蓝色链接（一键拨打）
+/// 4. 真实物流时间轴（P12：三平台共用 [TrackingTimeline] 组件）：
+///    - 数据经 timelineForDisplay 容错解析、去重、按时间倒序
+///    - 最新节点绿色高亮，历史节点灰点串联
+///    - 电话号码可点击拨打，取件码加粗
+///    - 没有轨迹时如实显示空状态，不再编造节点
 library;
 
-import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:url_launcher/url_launcher.dart';
+import '../../../../core/engine/timeline_view.dart';
 import '../../../../core/models/package.dart';
 import '../../../../core/models/package_status.dart';
 import '../../../components/hero_pickup_badge.dart';
 import '../../../components/platform_badge.dart';
+import '../../../components/tracking_timeline.dart';
 
 class TrackingTimelineSheet extends StatefulWidget {
   final Package package;
@@ -41,6 +42,36 @@ class TrackingTimelineSheet extends StatefulWidget {
 class _TrackingTimelineSheetState extends State<TrackingTimelineSheet> {
   bool _isAddressExpanded = false;
 
+  /// 整理好的时间轴节点（最新在前），只在包裹变化时重新计算。
+  late List<TimelineNode> _timeline;
+
+  /// 从最新节点里提取的驿站/派送员电话，没有则为 null。
+  String? _stationPhone;
+
+  @override
+  void initState() {
+    super.initState();
+    _prepareTimeline();
+  }
+
+  @override
+  void didUpdateWidget(covariant TrackingTimelineSheet oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.package.rawTimelineJson != widget.package.rawTimelineJson ||
+        oldWidget.package.pickupCode != widget.package.pickupCode) {
+      _prepareTimeline();
+    }
+  }
+
+  void _prepareTimeline() {
+    final pkg = widget.package;
+    _timeline = timelineForDisplay(pkg.rawTimelineJson);
+    _stationPhone = extractStationPhone(
+      nodes: _timeline,
+      pickupCode: pkg.pickupCode,
+    );
+  }
+
   void _copyToClipboard(String text, String label) {
     if (text.isEmpty) return;
     Clipboard.setData(ClipboardData(text: text));
@@ -52,14 +83,6 @@ class _TrackingTimelineSheetState extends State<TrackingTimelineSheet> {
         duration: const Duration(seconds: 2),
       ),
     );
-  }
-
-  void _callPhone(String phone) async {
-    final cleanPhone = phone.replaceAll(RegExp(r'[\s-]'), '');
-    final uri = Uri.parse('tel:$cleanPhone');
-    try {
-      await launchUrl(uri, mode: LaunchMode.externalApplication);
-    } catch (_) {}
   }
 
   /// 取件凭证栏的站点文案：优先用简洁的驿站名，避免整段收货地址把取件码挤出屏幕
@@ -79,7 +102,7 @@ class _TrackingTimelineSheetState extends State<TrackingTimelineSheet> {
     final trackingNo = pkg.trackingNumber;
     final orderSn = pkg.displayOrderSn;
     final address = pkg.location.trim();
-    final timelineList = pkg.parsedTimeline;
+    final stationPhone = _stationPhone;
 
     return DraggableScrollableSheet(
       initialChildSize: 0.82,
@@ -368,6 +391,11 @@ class _TrackingTimelineSheetState extends State<TrackingTimelineSheet> {
                                     maxLines: 2,
                                     overflow: TextOverflow.ellipsis,
                                   ),
+                                  // 驿站/派送员电话：从最新轨迹节点里提取，点一下直接拨打
+                                  if (stationPhone != null) ...[
+                                    const SizedBox(height: 6),
+                                    _buildCallButton(stationPhone),
+                                  ],
                                 ],
                               ),
                             ),
@@ -398,21 +426,11 @@ class _TrackingTimelineSheetState extends State<TrackingTimelineSheet> {
                       ),
                     ),
 
-                    if (timelineList.isNotEmpty)
-                      ...List.generate(timelineList.length, (idx) {
-                        final node = timelineList[idx];
-                        final isLatest = idx == 0;
-                        final isLast = idx == timelineList.length - 1;
-                        return _buildOfficialTimelineItem(
-                          tag: node['tag'] ?? '',
-                          time: node['time'] ?? '',
-                          text: node['text'] ?? '',
-                          isLatest: isLatest,
-                          isLast: isLast,
-                        );
-                      })
-                    else
-                      ..._buildFallbackSteps(pkg),
+                    TrackingTimeline(
+                      nodes: _timeline,
+                      pickupCode: pkg.pickupCode,
+                      statusLabel: pkg.status.label,
+                    ),
                   ],
                 ),
               ),
@@ -458,241 +476,44 @@ class _TrackingTimelineSheetState extends State<TrackingTimelineSheet> {
     );
   }
 
-  /// 官方风格时间轴节点（第一条绿色高亮，后续为灰色）
-  Widget _buildOfficialTimelineItem({
-    required String tag,
-    required String time,
-    required String text,
-    required bool isLatest,
-    required bool isLast,
-  }) {
-    const greenColor = Color(0xFF00B578);
-    final dotColor = isLatest ? greenColor : const Color(0xFFC4C4C4);
-    final textColor = isLatest ? greenColor : const Color(0xFF2C2C2E);
-
-    return IntrinsicHeight(
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // 时间轴左侧：节点图标与垂直连接线
-          SizedBox(
-            width: 22,
-            child: Column(
-              children: [
-                if (isLatest)
-                  Container(
-                    width: 16,
-                    height: 16,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: greenColor.withValues(alpha: 0.2),
-                    ),
-                    child: Center(
-                      child: Container(
-                        width: 9,
-                        height: 9,
-                        decoration: const BoxDecoration(
-                          shape: BoxShape.circle,
-                          color: greenColor,
-                        ),
-                      ),
-                    ),
-                  )
-                else
-                  Container(
-                    margin: const EdgeInsets.only(top: 4),
-                    width: 8,
-                    height: 8,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: dotColor,
-                    ),
-                  ),
-                if (!isLast)
-                  Expanded(
-                    child: Container(
-                      width: 1.5,
-                      color: const Color(0xFFE5E5EA),
-                    ),
-                  ),
-              ],
-            ),
+  /// 取件凭证卡片里的拨号按钮
+  Widget _buildCallButton(String phone) {
+    return InkWell(
+      key: const ValueKey('station_phone_call_button'),
+      onTap: () {
+        HapticFeedback.lightImpact();
+        launchPhoneCall(phone);
+      },
+      borderRadius: BorderRadius.circular(8),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(
+            color: const Color(0xFF007AFF).withValues(alpha: 0.35),
           ),
-          const SizedBox(width: 10),
-
-          // 时间轴右侧：状态/时间标头 + 详细轨迹（电话号码可点击）
-          Expanded(
-            child: Padding(
-              padding: const EdgeInsets.only(bottom: 22),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  // 状态与时间标头
-                  Row(
-                    children: [
-                      if (tag.isNotEmpty) ...[
-                        Text(
-                          tag,
-                          style: TextStyle(
-                            fontSize: 13.5,
-                            fontWeight: isLatest ? FontWeight.bold : FontWeight.w600,
-                            color: isLatest ? greenColor : const Color(0xFF3A3A3C),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                      ],
-                      Text(
-                        time,
-                        style: TextStyle(
-                          fontSize: 12.5,
-                          fontWeight: isLatest ? FontWeight.w600 : FontWeight.normal,
-                          color: isLatest ? greenColor : const Color(0xFF8E8E93),
-                          fontFamily: 'monospace',
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 5),
-
-                  // 轨迹描述正文（解析电话号码高亮）
-                  _buildTraceRichText(text, isLatest ? textColor : const Color(0xFF333333)),
-                ],
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.phone_rounded, size: 14, color: Color(0xFF007AFF)),
+            const SizedBox(width: 4),
+            Flexible(
+              child: Text(
+                '联系电话 $phone',
+                style: const TextStyle(
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w600,
+                  color: Color(0xFF007AFF),
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
               ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
-  }
-
-  /// 解析描述中的电话号码并标蓝可点击
-  Widget _buildTraceRichText(String text, Color baseColor) {
-    final phoneRegex = RegExp(r'(\b1\d{10}\b|\b0\d{2,3}[-\s]?\d{7,8}\b|\b95\d{3,5}\b)');
-    final spans = <TextSpan>[];
-    int start = 0;
-
-    for (final match in phoneRegex.allMatches(text)) {
-      if (match.start > start) {
-        spans.add(TextSpan(
-          text: text.substring(start, match.start),
-          style: TextStyle(
-            fontSize: 13,
-            color: baseColor,
-            height: 1.45,
-          ),
-        ));
-      }
-      final phone = match.group(0)!;
-      spans.add(TextSpan(
-        text: phone,
-        style: const TextStyle(
-          fontSize: 13,
-          color: Color(0xFF1890FF),
-          fontWeight: FontWeight.w600,
-          decoration: TextDecoration.underline,
-        ),
-        recognizer: TapGestureRecognizer()..onTap = () => _callPhone(phone),
-      ));
-      start = match.end;
-    }
-
-    if (start < text.length) {
-      spans.add(TextSpan(
-        text: text.substring(start),
-        style: TextStyle(
-          fontSize: 13,
-          color: baseColor,
-          height: 1.45,
-        ),
-      ));
-    }
-
-    return RichText(text: TextSpan(children: spans));
-  }
-
-  /// 兜底时间轴（若未提取到多节点轨迹时呈现智能阶段）
-  List<Widget> _buildFallbackSteps(Package pkg) {
-    final steps = <Map<String, String>>[];
-
-    if (pkg.status == PackageStatus.pendingShipment) {
-      steps.add({
-        'tag': '待发货',
-        'time': '等待中',
-        'text': pkg.description.isNotEmpty ? pkg.description : '商品已下单成功，等待商家打包发货',
-      });
-      steps.add({
-        'tag': '已下单',
-        'time': '已完成',
-        'text': '订单支付完成，等待系统推送出库',
-      });
-
-      return List.generate(steps.length, (idx) {
-        final s = steps[idx];
-        return _buildOfficialTimelineItem(
-          tag: s['tag'] ?? '',
-          time: s['time'] ?? '',
-          text: s['text'] ?? '',
-          isLatest: idx == 0,
-          isLast: idx == steps.length - 1,
-        );
-      });
-    }
-
-    if (pkg.status == PackageStatus.pickedUp) {
-      steps.add({
-        'tag': '已签收',
-        'time': '今日',
-        'text': '包裹已在 ${pkg.displayLocation} 妥投签收',
-      });
-    }
-
-    if (pkg.status == PackageStatus.rejected) {
-      steps.add({
-        'tag': '已拒收',
-        'time': '已终止',
-        'text': pkg.description.isNotEmpty
-            ? pkg.description
-            : '包裹已拒收/退回发件人，无需再前往驿站取件',
-      });
-    }
-
-    if (pkg.status.isArrived || pkg.status == PackageStatus.pickedUp) {
-      steps.add({
-        'tag': '已到达',
-        'time': '今日',
-        'text': '快件已到达 ${pkg.displayLocation}${pkg.pickupCode.isNotEmpty ? "，取件凭证：${pkg.pickupCode}" : ""}，请及时提货',
-      });
-    }
-
-    if (pkg.status == PackageStatus.delivering) {
-      steps.add({
-        'tag': '派送中',
-        'time': '派送中',
-        'text': '快递员正在为您派送包裹，请保持手机畅通',
-      });
-    }
-
-    steps.add({
-      'tag': pkg.status.label,
-      'time': '运输中',
-      'text': pkg.description.isNotEmpty ? pkg.description : '快件正在运送中，发往目的地交付中心',
-    });
-
-    steps.add({
-      'tag': '已发货',
-      'time': '已发货',
-      'text': '商家已发货，包裹已被快递公司揽收处理',
-    });
-
-    return List.generate(steps.length, (idx) {
-      final s = steps[idx];
-      return _buildOfficialTimelineItem(
-        tag: s['tag'] ?? '',
-        time: s['time'] ?? '',
-        text: s['text'] ?? '',
-        isLatest: idx == 0,
-        isLast: idx == steps.length - 1,
-      );
-    });
   }
 }
