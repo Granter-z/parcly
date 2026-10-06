@@ -1,0 +1,23 @@
+build/
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+.kotlin/
+*.lock
+*.iml
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 测试用例与测试固件（仅本地验证，不上传远程仓库）
+test/
+
+# 历史过时工具与分析脚本
+bin/
+diagnose_error.sh
+
