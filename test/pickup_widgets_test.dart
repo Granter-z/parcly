@@ -88,4 +88,18 @@ void main() {
     expect(fake.state.single.status, PackageStatus.arrived);
     expect(fake.state.single.pickedUpAt, isNull);
   });
+
+  test('restorePackage：包裹已删除时不恢复，不会多出一份', () {
+    final fake = FakePackageList([]);
+    fake.restorePackage(pkg());
+    expect(fake.state, isEmpty);
+  });
+
+  test('restorePackage：撤销窗口里状态已被改掉（不是已取）时不覆盖', () {
+    final original = pkg();
+    final fake = FakePackageList([original.copyWith(status: PackageStatus.archived)]);
+    fake.restorePackage(original);
+    expect(fake.state.single.status, PackageStatus.archived);
+    expect(fake.state.length, 1);
+  });
 }

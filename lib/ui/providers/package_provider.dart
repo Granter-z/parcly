@@ -561,7 +561,9 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
   /// 撤销「已取件」：把包裹恢复成标记前的样子（首页 5 秒撤销用）。
   /// 只替换同 id 的那一条；包裹已经不在列表里就什么也不做。
   void restorePackage(Package original) {
-    if (!state.any((p) => p.id == original.id)) return;
+    // 包裹已被删除，或撤销窗口里状态又被别处改过（不再是已取），就不覆盖，避免冲掉新数据。
+    final current = state.where((p) => p.id == original.id).firstOrNull;
+    if (current == null || current.status != PackageStatus.pickedUp) return;
     state = [
       for (final p in state)
         if (p.id == original.id) original else p,
