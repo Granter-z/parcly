@@ -259,7 +259,6 @@ class Package {
     String? platform,
     String? stationName,
     bool clearStationName = false,
-    bool clearPickedUpAt = false,
     String? rawTimelineJson,
     String? fingerprint,
   }) {
@@ -274,7 +273,7 @@ class Package {
       urgency: urgency ?? this.urgency,
       status: status ?? this.status,
       addedAt: addedAt ?? this.addedAt,
-      pickedUpAt: clearPickedUpAt ? null : (pickedUpAt ?? this.pickedUpAt),
+      pickedUpAt: pickedUpAt ?? this.pickedUpAt,
       archivedAt: archivedAt ?? this.archivedAt,
       notifiedArrived: notifiedArrived ?? this.notifiedArrived,
       statusHistory: statusHistory ?? this.statusHistory,
