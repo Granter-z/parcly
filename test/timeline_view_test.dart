@@ -22,6 +22,20 @@ void main() {
       expect(timelineForDisplay('[]'), isEmpty);
     });
 
+    test('字段值是对象或数组时当作空，不把原始结构显示出来', () {
+      final list = timelineForDisplay(jsonEncode([
+        {'tag': '运输中', 'time': '2026-10-06 10:00:00', 'text': {'desc': '到达分拨中心'}},
+        {'tag': ['派送中'], 'time': '2026-10-06 09:00:00', 'text': '快件派送中'},
+        {'tag': {'a': 1}, 'time': '2026-10-06 08:00:00', 'text': ['x']},
+      ]));
+      expect(list.length, 2);
+      expect(list[0].tag, '运输中');
+      expect(list[0].text, '');
+      expect(list[1].tag, '');
+      expect(list[1].text, '快件派送中');
+      expect(list.any((n) => n.text.contains('{') || n.tag.contains('[')), isFalse);
+    });
+
     test('单个坏节点只跳过自己，不会让整条时间轴变空', () {
       final raw = jsonEncode([
         _n('2026-10-06 14:00:00', '快件已到达【测试市示例驿站】'),
