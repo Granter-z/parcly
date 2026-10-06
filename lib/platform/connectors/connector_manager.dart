@@ -121,7 +121,7 @@ class ConnectorManager {
             }
           }
         } catch (e, stack) {
-          debugPrint('[ConnectorManager] Error syncing ${connector.platformId}: $e\n$stack');
+          debugPrint('[ConnectorManager] Error syncing ${connector.platformId}: ${e.runtimeType}\n$stack');
           final msg = '${connector.displayName}同步响应异常，已保留旧数据';
           _lastIssue = _lastIssue == null ? msg : '$_lastIssue；$msg';
         } finally {
