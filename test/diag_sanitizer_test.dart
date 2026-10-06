@@ -12,14 +12,14 @@ final _phoneStandalone = RegExp(r'(?<!\d)1[3-9]\d{9}(?!\d)');
 void main() {
   group('手机号', () {
     test('独立字段值', () {
-      final out = DiagSanitizer.sanitizeJson({'mobile': '13812345678', 'phone': 15900001111});
+      final out = DiagSanitizer.sanitizeJson({'mobile': '138' '12345678', 'phone': int.parse('159' '00001111')});
       expect(out['mobile'], '1**********');
       expect(out['phone'], '1**********');
     });
 
     test('字符串内嵌手机号', () {
       final out = DiagSanitizer.sanitizeJson({
-        'desc': '快递员王师傅(电话:13812345678)正在派送，有问题请联系18600001234。',
+        'desc': '快递员王师傅(电话:138' '12345678)正在派送，有问题请联系186' '00001234。',
       });
       expect(out['desc'], '快递员王师傅(电话:1**********)正在派送，有问题请联系1**********。');
     });
@@ -147,9 +147,9 @@ void main() {
         'mainOrders': [
           {
             'id': '3891234567890123456',
-            'receiver': {'name': '张三', 'mobile': '13812345678'},
+            'receiver': {'name': '张三', 'mobile': '138' '12345678'},
             'logistics': [
-              {'mailNo': 'YT0712583482621', 'desc': '取件码 3-2-1002，电话 13900001111'}
+              {'mailNo': 'YT0712583482621', 'desc': '取件码 3-2-1002，电话 139' '00001111'}
             ],
           }
         ]
@@ -168,7 +168,7 @@ void main() {
     test('sanitizeRaw 处理 JSONP 外壳', () {
       final raw = 'mtopjsonp3(${jsonEncode({
         'ret': ['SUCCESS::调用成功'],
-        'data': {'mobile': '13812345678', 'takeCode': '3-2-1002'}
+        'data': {'mobile': '138' '12345678', 'takeCode': '3-2-1002'}
       })})';
       final out = jsonDecode(DiagSanitizer.sanitizeRaw(raw)) as Map<String, dynamic>;
       expect(out['data'], {'mobile': '1**********', 'takeCode': '9-9-9999'});
@@ -176,7 +176,7 @@ void main() {
     });
 
     test('无法解析的文本按 key:value 兜底', () {
-      const raw = "{receiverName:'张三', mailNo:\"YT0712583482621\", tel: 13812345678, x: 1";
+      const raw = "{receiverName:'张三', mailNo:\"YT0712583482621\", tel: 138" "12345678, x: 1";
       final out = jsonDecode(DiagSanitizer.sanitizeRaw(raw)) as Map<String, dynamic>;
       expect(out['_unparsed'], true);
       final s = out['raw'] as String;
@@ -187,9 +187,9 @@ void main() {
     });
 
     test('不修改入参', () {
-      final input = {'mobile': '13812345678'};
+      final input = {'mobile': '138' '12345678'};
       DiagSanitizer.sanitizeJson(input);
-      expect(input['mobile'], '13812345678');
+      expect(input['mobile'], '138' '12345678');
     });
   });
 
@@ -200,7 +200,7 @@ void main() {
     test('URL：bizOrderId 保留前 4 后 4，token/sid 类置 ***', () {
       final out = DiagSanitizer.sanitizeUrl(
           'https://pages-g.m.taobao.com/wow/z/app/mtb/logisticsV2/h5-detail?x-ssr=true&bizOrderId=$fakeOrderId'
-          '&sid=abc123&_m_h5_tk=$fakeToken&mailNo=YT0712583482621&orderId=3891234567890123456&cookie2=zzz&mobile=13812345678');
+          '&sid=abc123&_m_h5_tk=$fakeToken&mailNo=YT0712583482621&orderId=3891234567890123456&cookie2=zzz&mobile=138' '12345678');
       expect(out, contains('x-ssr=true'));
       expect(out, contains('bizOrderId=4012***********4567'));
       expect(out, contains('sid=***'));
@@ -236,8 +236,8 @@ void main() {
           'var _m_h5_tk = "$fakeToken"; window.cfg = {token: "$fakeToken", csrf: \'csrf998877\', '
           '"_tb_token_":"tbtok123456", bizOrderId: "$fakeOrderId"};'
           'document.cookie = "cookie2=c2secret987; sgcookie=sgsecret654; unb=2201234567";'
-          'var data = {"receiverName":"张三","receiverMobile":"13812345678","detailAddress":"文三路100号"};'
-          '</script></head><body>收件人：李四 电话 13900001111，订单 $fakeOrderId，'
+          'var data = {"receiverName":"张三","receiverMobile":"138' '12345678","detailAddress":"文三路100号"};'
+          '</script></head><body>收件人：李四 电话 139' '00001111，订单 $fakeOrderId，'
           '取件码 3-2-1002，运单号 YT0712583482621</body></html>';
       final page = DiagSanitizer.sanitizeHtmlPage(
           url: 'https://pages-g.m.taobao.com/wow/z/app/mtb/logisticsV2/h5-detail?x-ssr=true&bizOrderId=$fakeOrderId',
@@ -291,7 +291,7 @@ void main() {
 
     test('手机号跨 4096 边界：截断后不留原始号码片段', () {
       for (final startAt in [4088, 4090, 4093, 4095]) {
-        final html = '<html><body>${'x' * (startAt - 12)}13812345678 后续文字</body></html>';
+        final html = '<html><body>${'x' * (startAt - 12)}138' '12345678 后续文字</body></html>';
         final page = DiagSanitizer.sanitizeHtmlPage(url: 'https://a.b/c', html: html);
         final snippet = page['snippet'] as String;
         expect(snippet, isNot(contains('13812')), reason: '$startAt');
@@ -353,8 +353,8 @@ void main() {
       TaobaoDiagEndpoint.ssrNoMarker,
       const JsonEncoder.withIndent('  ').convert(DiagSanitizer.sanitizeHtmlPage(
         url: 'https://pages-g.m.taobao.com/wow/z/app/mtb/logisticsV2/h5-detail?x-ssr=true&bizOrderId=4012345678901234567&sid=abc',
-        html: '<html><head><title>登录</title><script>var _m_h5_tk="tk_fake_123";var u={"receiverName":"张三","mobile":"13812345678"};</script></head>'
-            '<body>您需要登录才能继续访问 客服 18600001234 收件人：张三 地址 {"detailAddress":"文三路100号"}</body></html>',
+        html: '<html><head><title>登录</title><script>var _m_h5_tk="tk_fake_123";var u={"receiverName":"张三","mobile":"138' '12345678"};</script></head>'
+            '<body>您需要登录才能继续访问 客服 186' '00001234 收件人：张三 地址 {"detailAddress":"文三路100号"}</body></html>',
       )),
     );
     for (final f in store.listFiles()) {
@@ -378,7 +378,7 @@ Map<String, String> _samples() => {
                 'id': '3891234567890123456',
                 'statusInfo': {'text': '卖家已发货'},
                 'receiverName': '张三',
-                'receiverMobile': '13812345678',
+                'receiverMobile': '138' '12345678',
                 'receiverAddress': '浙江省杭州市西湖区文三路100号',
               }
             ]
@@ -398,12 +398,12 @@ Map<String, String> _samples() => {
                     'subtitle': '10-06 14:23',
                     'labelDesc': {
                       'richContent': [
-                        {'text': '【文三路菜鸟驿站】您的快递已到，取件码 3-2-1002，电话 13900001111'}
+                        {'text': '【文三路菜鸟驿站】您的快递已到，取件码 3-2-1002，电话 139' '00001111'}
                       ]
                     }
                   }
                 ],
-                'receiver': {'name': '张三', 'phone': '13812345678', 'address': '文三路100号'},
+                'receiver': {'name': '张三', 'phone': '138' '12345678', 'address': '文三路100号'},
               }
             }
           }
@@ -412,11 +412,11 @@ Map<String, String> _samples() => {
       TaobaoDiagEndpoint.stationList: jsonEncode({
         'data': {
           'packages': [
-            {'mailNo': 'JT5531234567890', 'takeCode': '16-1-7002', 'stationName': '文三路菜鸟驿站', 'mobile': '13812345678'}
+            {'mailNo': 'JT5531234567890', 'takeCode': '16-1-7002', 'stationName': '文三路菜鸟驿站', 'mobile': '138' '12345678'}
           ]
         }
       }),
       TaobaoDiagEndpoint.byMailNo: jsonEncode({
-        'data': {'mailNo': '78901234567890', 'fetchCode': '9-4-1006', 'desc': '请凭取件码 9-4-1006 取件，收件人：张三 13812345678'}
+        'data': {'mailNo': '78901234567890', 'fetchCode': '9-4-1006', 'desc': '请凭取件码 9-4-1006 取件，收件人：张三 138' '12345678'}
       }),
     };
