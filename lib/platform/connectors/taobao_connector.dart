@@ -94,6 +94,8 @@ class TaobaoH5Connector implements PlatformConnector {
     _logTb('[Taobao] Starting sync with cookies (len: ${cookies.length})');
 
     // ── 阶段 1：直连淘宝内嵌菜鸟驿站（Cainiao Station）抓取待取件包裹与真实货架码 ──
+    // 本次同步菜鸟列表里的包裹，阶段 2 用来「以菜鸟为准」（淘宝已签收但驿站还挂着）
+    final cainiaoPackages = <Package>[];
     try {
       final cainiaoItems = await _fetchCainiaoStationPackages(cookies);
       if (_cancelled) return;
@@ -101,7 +103,7 @@ class TaobaoH5Connector implements PlatformConnector {
       _logTb('[Cainiao] 阶段 1 产出待取件包裹 ${cainiaoItems.length} 个');
       for (final item in cainiaoItems) {
         if (_cancelled) return;
-        yield Package(
+        final cn = Package(
           id: 'CN_${item.trackingNumber}',
           trackingNumber: item.trackingNumber,
           courier: _resolveCourier(item.courier),
@@ -114,6 +116,8 @@ class TaobaoH5Connector implements PlatformConnector {
           status: PackageStatus.arrived,
           addedAt: DateTime.now(),
         );
+        cainiaoPackages.add(cn);
+        yield cn;
       }
     } catch (e) {
       _logTb('[Cainiao] 阶段 1 异常：${e.runtimeType}');
@@ -136,9 +140,11 @@ class TaobaoH5Connector implements PlatformConnector {
       var parsedCount = 0;
       var failedCount = 0;
       var skippedSigned = 0;
+      var cainiaoOverrides = 0;
       for (final order in withLogistics) {
         if (_cancelled) break;
-        if (shouldSkipSignedDetail(findLocalTaobaoPackage(local, order.orderId))) {
+        final localPkg = findLocalTaobaoPackage(local, order.orderId);
+        if (shouldSkipSignedDetail(localPkg)) {
           skippedSigned++;
           continue;
         }
@@ -149,7 +155,7 @@ class TaobaoH5Connector implements PlatformConnector {
         } else {
           parsedCount++;
           final status = parcel.derivedStatus ?? _resolveStatus(parcel.stateLabel);
-          yield Package(
+          final tbPkg = Package(
             id: taobaoPackageId(order.orderId),
             trackingNumber: parcel.mailNo.isNotEmpty ? parcel.mailNo : order.orderId,
             courier: _resolveCourier(parcel.cpName),
@@ -165,15 +171,22 @@ class TaobaoH5Connector implements PlatformConnector {
             addedAt: DateTime.now(),
             rawTimelineJson: parcel.rawTimelineJson,
           );
+          // 淘宝已签收但菜鸟驿站还挂着且有取件码 → 以菜鸟为准（用户手动已取 / 归档的不改）
+          final finalPkg = applyCainiaoPriority(tbPkg, cainiaoPackages, local: localPkg);
+          if (!identical(finalPkg, tbPkg)) cainiaoOverrides++;
+          yield finalPkg;
         }
       }
       _logTb('[Taobao] 物流详情：已签收且本地有轨迹跳过 $skippedSigned 个，'
-          '请求 ${parsedCount + failedCount} 个，解析成功 $parsedCount 个，失败 $failedCount 个');
+          '请求 ${parsedCount + failedCount} 个，解析成功 $parsedCount 个，失败 $failedCount 个，'
+          '已签收但菜鸟仍待取改回待取件 $cainiaoOverrides 个');
 
       // ── 阶段 3：针对待取件但取件码仍为后5位或空的包裹，以运单号定向查询菜鸟货架码 ──
       if (_getActiveTrackingNumbers != null) {
         try {
-          final pendingTns = _getActiveTrackingNumbers();
+          final activeTns = _getActiveTrackingNumbers();
+          // 打码单号（含 *）查不到菜鸟，直接跳过
+          final pendingTns = queryableTrackingNumbers(activeTns);
           var targetedHits = 0;
           for (final tn in pendingTns) {
             if (_cancelled) break;
@@ -195,7 +208,8 @@ class TaobaoH5Connector implements PlatformConnector {
               );
             }
           }
-          _logTb('[Cainiao] 阶段 3 按运单号查货架码：查询 ${pendingTns.length} 个，拿到取件码 $targetedHits 个');
+          _logTb('[Cainiao] 阶段 3 按运单号查货架码：跳过打码单号 ${activeTns.length - pendingTns.length} 个，'
+              '查询 ${pendingTns.length} 个，拿到取件码 $targetedHits 个');
         } catch (e) {
           _logTb('[Cainiao] 阶段 3 异常：${e.runtimeType}');
         }

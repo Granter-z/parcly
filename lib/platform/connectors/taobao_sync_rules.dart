@@ -5,6 +5,8 @@
 /// 不另存「已请求」标记，本地没有或轨迹为空时照常请求。
 library;
 
+import '../../core/engine/logistics_status_engine.dart';
+import '../../core/engine/package_identity.dart';
 import '../../core/models/package.dart';
 import '../../core/models/package_status.dart';
 
@@ -36,4 +38,28 @@ bool shouldSkipSignedDetail(Package? local) {
   if (local == null) return false;
   if (local.status != PackageStatus.pickedUp && local.status != PackageStatus.archived) return false;
   return local.parsedTimeline.isNotEmpty;
+}
+
+/// 阶段 3 按运单号查菜鸟货架码：打码单号（含 `*`）查不到，直接跳过。
+List<String> queryableTrackingNumbers(Iterable<String> trackingNumbers) =>
+    [for (final tn in trackingNumbers) if (tn.trim().isNotEmpty && !isMaskedTrackingNumber(tn)) tn.trim()];
+
+/// 以菜鸟为准：淘宝详情判为已签收，但本次同步菜鸟驿站列表里还挂着这个件（打码单号恰好对上一个、
+/// 同快递公司、露出位数达标）且有取件码 → 改回待取件并带上菜鸟的取件码、驿站和完整单号。
+/// 驿站代签不等于用户取了。用户在 App 里手动点过已取 / 已归档（[local]）的不改。
+Package applyCainiaoPriority(Package taobao, List<Package> cainiao, {Package? local}) {
+  if (taobao.status != PackageStatus.pickedUp) return taobao;
+  if (!isMaskedTrackingNumber(taobao.trackingNumber)) return taobao;
+  if (local != null && isUserHandledPickup(local)) return taobao;
+  final idx = findUniqueMaskedMatch(cainiao, taobao);
+  if (idx == -1) return taobao;
+  final cn = cainiao[idx];
+  if (cn.pickupCode.trim().isEmpty) return taobao;
+  return taobao.copyWith(
+    status: PackageStatus.arrived,
+    trackingNumber: cn.trackingNumber,
+    pickupCode: cn.pickupCode,
+    stationName: (cn.stationName ?? '').isNotEmpty ? cn.stationName : taobao.stationName,
+    urgency: LogisticsStatusEngine.urgencyFor(status: PackageStatus.arrived, pickupCode: cn.pickupCode),
+  );
 }

@@ -4,6 +4,7 @@ import 'package:hive/hive.dart';
 import '../../main.dart';
 import '../../core/debug/debug_trace.dart';
 import '../../core/debug/metrics.dart';
+import '../../core/engine/package_identity.dart';
 import '../../core/engine/timeline_merge.dart';
 import '../../platform/storage/hive_package.dart';
 import '../../app/hero_decision.dart';
@@ -52,7 +53,7 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
           var pkg = hivePkg.toPackage();
           // 清理无意义的幽灵残留数据（如 description == 'OCR' 且无商品名、无取件码的无效卡片）
           if (pkg.description == 'OCR' && pkg.pickupCode.isEmpty && (pkg.goodsName == null || pkg.goodsName == 'OCR')) {
-            debugPrint('[PackageListNotifier] Pruning phantom empty OCR package: ${pkg.id}');
+            debugPrint('[PackageListNotifier] Pruning phantom empty OCR package: ${packageIdForLog(pkg.id)}');
             continue;
           }
           // 清理存量误导入的餐饮外卖与秒送即时订单（非快递包裹）
@@ -113,10 +114,7 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
             }
           }
           loaded.add(pkg);
-          debugPrint('[PackageListNotifier] loaded: id=${pkg.id}'
-              ' tracking=${pkg.trackingNumber}'
-              ' code=${pkg.pickupCode}'
-              ' status=${pkg.status.label}');
+          debugPrint('[PackageListNotifier] loaded: id=${packageIdForLog(pkg.id)} status=${pkg.status.label}');
         } catch (e) {
           debugPrint('[PackageListNotifier] FAILED to convert HivePackage: $e');
         }
@@ -137,18 +135,13 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
 
   void addPackage(Package package) {
     if (PlatformAuthStore().isBlacklisted(package.id, trackingNumber: package.trackingNumber)) {
-      debugPrint('[PackageListNotifier] Package ${package.id} / ${package.trackingNumber} is in deleted blacklist, skipping');
+      debugPrint('[PackageListNotifier] Package ${packageIdForLog(package.id)} is in deleted blacklist, skipping');
       return;
     }
-    debugPrint('[PackageListNotifier] addPackage called (id: ${package.id})');
+    debugPrint('[PackageListNotifier] addPackage called (id: ${packageIdForLog(package.id)})');
     DebugTrace.separator('ADD PACKAGE START');
     debugPrint('[PackageListNotifier] incoming: courier=${package.courier.displayName} '
-        'tracking="${package.trackingNumber}" '
-        'code=${package.pickupCode} '
-        'location=${package.location} '
-        'station=${package.originalStation} '
-        'status=${package.status.label} '
-        'fingerprint=${package.transitFingerprint}');
+        'status=${package.status.label}');
     debugPrint('[PackageListNotifier] state before: ${state.length} packages');
 
     // ── Step 1: Dedupe ───────────────────────────────────────
@@ -158,9 +151,8 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
       // ── Step 2a: Merge ─────────────────────────────────────
       DebugTrace.separator('MERGE EXISTING PACKAGE');
       final existing = state[existingIndex];
-      debugPrint('[PackageListNotifier] existing package found! Merging (id: ${existing.id})');
-      debugPrint('[PackageListNotifier] existing: id=${existing.id} '
-          'tracking=${existing.trackingNumber} '
+      debugPrint('[PackageListNotifier] existing package found! Merging (id: ${packageIdForLog(existing.id)})');
+      debugPrint('[PackageListNotifier] existing: id=${packageIdForLog(existing.id)} '
           'status=${existing.status.label} '
           'notifiedArrived=${existing.notifiedArrived}');
 
@@ -192,12 +184,16 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
           : (hasSpecificGoodsName ? existing.goodsName : (package.goodsName ?? existing.goodsName));
 
       final updated = existing.copyWith(
+        // 旧的 TB_<打码运单号> / CN_<运单号> 换成 TB_<订单号>；用户状态（已取、归档、pickedUpAt）随 existing 带过去，
+        // _sync 会删掉 Hive 里的旧 key
+        id: resolveMergedPackageId(existing, package),
         // 承运商与运单号：新数据更权威时（非默认值）覆盖
         courier: package.courier != CourierType.other ? package.courier : existing.courier,
-        trackingNumber: package.trackingNumber.isNotEmpty &&
-                package.trackingNumber != package.id.replaceFirst('PDD_', '')
-            ? package.trackingNumber
-            : existing.trackingNumber,
+        trackingNumber: keepFullTrackingNumber(
+            existing.trackingNumber,
+            package.trackingNumber.isNotEmpty && package.trackingNumber != package.id.replaceFirst('PDD_', '')
+                ? package.trackingNumber
+                : existing.trackingNumber),
         goodsName: updatedGoodsName,
         goodsImageUrl: existing.goodsImageUrl ?? package.goodsImageUrl,
         platform: hasSpecificPlatform ? existing.platform : (package.platform ?? existing.platform),
@@ -249,18 +245,15 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
         urgency: _higherUrgency(existing.urgency, package.urgency),
         addedAt: package.addedAt.isAfter(existing.addedAt) ? package.addedAt : existing.addedAt,
         status: resolvedStatus,
-        // 首次进入拒收态时记录结束时间，供已完成列表按时间排序
-        pickedUpAt: resolvedStatus == PackageStatus.rejected
-            ? (existing.pickedUpAt ?? DateTime.now())
-            : null,
+        // 同步从不清 pickedUpAt（它标记用户手动点过已取）；首次进入拒收态时记录结束时间，供已完成列表排序
+        pickedUpAt: existing.pickedUpAt ?? (resolvedStatus == PackageStatus.rejected ? DateTime.now() : null),
         transitFingerprint: package.transitFingerprint ?? existing.transitFingerprint,
         // 时间轴取并集：避免某次详情页加载不全时把完整轨迹覆盖成残缺版本
         rawTimelineJson: _mergeTimelineJson(existing.rawTimelineJson, package.rawTimelineJson),
       );
 
       debugPrint('[PackageListNotifier] merged: status=${updated.status.label} '
-          'urgency=${updated.urgency.label} '
-          'location=${updated.location}');
+          'urgency=${updated.urgency.label}');
 
       state = [
         for (int i = 0; i < state.length; i++)
@@ -285,7 +278,7 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
       // ── Step 2b: Create ────────────────────────────────────
       DebugTrace.separator('CREATE NEW PACKAGE');
       debugPrint('[PackageListNotifier] no existing package found, creating new');
-      debugPrint('[PackageListNotifier] new: id=${package.id} tracking=${package.trackingNumber}');
+      debugPrint('[PackageListNotifier] new: id=${packageIdForLog(package.id)}');
 
       state = [...state, package];
 
@@ -336,18 +329,29 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
     final idIdx = state.indexWhere((p) => p.id == package.id);
     if (idIdx != -1) {
       Metrics.inc('dedupe.hit');
-      debugPrint('[PackageListNotifier] → HIT: index=$idIdx id=${state[idIdx].id} (id match)');
+      debugPrint('[PackageListNotifier] → HIT: index=$idIdx (id match)');
       return idIdx;
     }
 
     // 2) 运单号精确匹配（同一运单号必然是同一包裹）
     if (incomingTracking.isNotEmpty) {
-      final idx = state.indexWhere((p) => p.trackingNumber.trim() == incomingTracking);
+      // 打码单号相同不代表同一包裹：两个不同的淘宝订单不合并
+      final idx = state.indexWhere((p) =>
+          p.trackingNumber.trim() == incomingTracking &&
+          !(isMaskedTrackingNumber(incomingTracking) && isDistinctTaobaoOrder(p, package)));
       if (idx != -1) {
         Metrics.inc('dedupe.hit');
-        debugPrint('[PackageListNotifier] → HIT: index=$idx id=${state[idx].id} (tracking match)');
+        debugPrint('[PackageListNotifier] → HIT: index=$idx (tracking match)');
         return idx;
       }
+    }
+
+    // 2b) 打码单号 ↔ 完整单号（淘宝详情页打码、菜鸟完整）：同快递公司、露出位数达标、恰好命中一个
+    final maskedIdx = findUniqueMaskedMatch(state, package);
+    if (maskedIdx != -1) {
+      Metrics.inc('dedupe.hit');
+      debugPrint('[PackageListNotifier] → HIT: index=$maskedIdx (masked tracking match)');
+      return maskedIdx;
     }
 
     // 3) 取件码 + 平台一致（仅当取件码非空时才作为身份）
@@ -358,7 +362,7 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
           (p.platform ?? '') == (package.platform ?? ''));
       if (idx != -1) {
         Metrics.inc('dedupe.hit');
-        debugPrint('[PackageListNotifier] → HIT: index=$idx id=${state[idx].id} (pickupCode match)');
+        debugPrint('[PackageListNotifier] → HIT: index=$idx (pickupCode match)');
         return idx;
       }
     }
@@ -442,6 +446,8 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
       if (idx == null) {
         indexByTracking[tn] = result.length;
         result.add(p);
+      } else if (isMaskedTrackingNumber(tn) && isDistinctTaobaoOrder(result[idx], p)) {
+        result.add(p); // 打码单号相同的两个淘宝订单是两个包裹
       } else {
         result[idx] = _mergeDuplicatePair(result[idx], p);
         mergedCount++;
