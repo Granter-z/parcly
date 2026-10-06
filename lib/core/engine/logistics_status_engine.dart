@@ -6,6 +6,7 @@
 /// 3. 严格禁止引入 Flutter SDK、Platform 或 UI 依赖。
 library;
 
+import '../models/package.dart';
 import '../models/package_status.dart';
 
 /// 内部事件动作分类
@@ -298,10 +299,60 @@ class LogisticsStatusEngine {
     return LogisticsNodeAction.unknown;
   }
 
+  // ── 取件码展示与急件（P11-b 后续，产品经理、技术负责人 10-07 定）────────────────
+  //
+  // 签收后不显示取件码、不标急件。过滤只在这一层做：连接器和存储里的原始 pickupCode 保留不动，
+  // 界面、排序、提醒统一读这里给出的「有效取件码」和「是否急件」（或 Package 上的同名扩展 getter）。
+
+  /// 取件已结束：已签收 / 已归档 / 已拒收，不再需要取件码。
+  static bool isPickupClosed(PackageStatus status) => status.isCompleted;
+
+  /// 有效取件码：取件已结束时为空串，否则为去掉首尾空白的原始取件码。
+  static String effectivePickupCode({required PackageStatus status, required String pickupCode}) =>
+      isPickupClosed(status) ? '' : pickupCode.trim();
+
+  /// 是否急件：取件未结束，且已到站或已拿到取件码（待发货除外）。
+  ///
+  /// 和首页「待取件」口径一致（已到达，或未完成且已有取件码）。
+  static bool isUrgent({required PackageStatus status, required String pickupCode}) {
+    if (isPickupClosed(status) || status == PackageStatus.pendingShipment) return false;
+    if (status == PackageStatus.arrived) return true;
+    return effectivePickupCode(status: status, pickupCode: pickupCode).isNotEmpty;
+  }
+
+  /// 统一的紧急程度：急件 → urgent；取件已结束 → low；其余沿用 [fallback]，
+  /// 但 fallback 是 urgent 时降为 normal（急件只由本规则给出，避免历史合并留下的 urgent 残留）。
+  static UrgencyLevel urgencyFor({
+    required PackageStatus status,
+    required String pickupCode,
+    UrgencyLevel fallback = UrgencyLevel.normal,
+  }) {
+    if (isUrgent(status: status, pickupCode: pickupCode)) return UrgencyLevel.urgent;
+    if (isPickupClosed(status)) return UrgencyLevel.low;
+    return fallback == UrgencyLevel.urgent ? UrgencyLevel.normal : fallback;
+  }
+
   static bool _containsAny(String source, List<String> targets) {
     for (final target in targets) {
       if (source.contains(target)) return true;
     }
     return false;
   }
+}
+
+/// 界面读取取件码与急件的入口（纯 Dart）。
+///
+/// 前端显示取件码读 [displayPickupCode]（不要直接读 `pickupCode`）；判断急件读 [isUrgentNow]；
+/// 需要紧急级别时读 [effectiveUrgency]（存储里的 `urgency` 可能是历史合并留下的 urgent）。
+extension PackagePickupDisplay on Package {
+  /// 要显示的取件码：已签收 / 已归档 / 已拒收时为空串
+  String get displayPickupCode =>
+      LogisticsStatusEngine.effectivePickupCode(status: status, pickupCode: pickupCode);
+
+  /// 当前是否急件：已签收 / 已归档 / 已拒收时为 false
+  bool get isUrgentNow => LogisticsStatusEngine.isUrgent(status: status, pickupCode: pickupCode);
+
+  /// 当前紧急级别（由引擎按状态和取件码推导）
+  UrgencyLevel get effectiveUrgency =>
+      LogisticsStatusEngine.urgencyFor(status: status, pickupCode: pickupCode, fallback: urgency);
 }

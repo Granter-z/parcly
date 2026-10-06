@@ -147,6 +147,7 @@ class TaobaoH5Connector implements PlatformConnector {
           failedCount++;
         } else {
           parsedCount++;
+          final status = parcel.derivedStatus ?? _resolveStatus(parcel.stateLabel);
           yield Package(
             id: taobaoPackageId(order.orderId),
             trackingNumber: parcel.mailNo.isNotEmpty ? parcel.mailNo : order.orderId,
@@ -157,8 +158,9 @@ class TaobaoH5Connector implements PlatformConnector {
             stationName: parcel.stationName.isNotEmpty ? parcel.stationName : '菜鸟驿站',
             location: parcel.location,
             platform: 'taobao',
-            urgency: parcel.pickupCode.isNotEmpty ? UrgencyLevel.urgent : UrgencyLevel.normal,
-            status: parcel.derivedStatus ?? _resolveStatus(parcel.stateLabel),
+            // 急件由引擎统一判定：已签收时即使轨迹里有旧取件码也不标急件
+            urgency: LogisticsStatusEngine.urgencyFor(status: status, pickupCode: parcel.pickupCode),
+            status: status,
             addedAt: DateTime.now(),
             rawTimelineJson: parcel.rawTimelineJson,
           );
