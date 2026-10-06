@@ -73,8 +73,13 @@ DateTime? parseContractTime(String raw) {
   return valid ? dt : null;
 }
 
-/// 把任意值转成去掉首尾空白的字符串；null 视为空串。
-String _asText(Object? value) => value == null ? '' : value.toString().trim();
+/// 把标量值转成去掉首尾空白的字符串；null、对象、数组都视为空串，
+/// 免得界面上出现 `{desc: …}` 这样的原始结构。
+String _asText(Object? value) {
+  if (value is String) return value.trim();
+  if (value is num || value is bool) return value.toString();
+  return '';
+}
 
 /// 把 rawTimelineJson 整理成展示用的节点列表（最新在前、已去重）。
 ///
