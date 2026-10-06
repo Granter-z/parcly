@@ -8,6 +8,7 @@ import '../../../platform/storage/platform_auth_store.dart';
 import '../../../platform/connectors/connector_manager.dart';
 import '../../providers/package_provider.dart';
 import '../../providers/platform_auth_status_provider.dart';
+import '../login/platform_login_flow.dart';
 import '../login/platform_login_screen.dart';
 import '../pdd/pdd_web_screen.dart';
 
@@ -469,27 +470,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     required String displayName,
     required Color brandColor,
   }) async {
-    if (platform.toLowerCase() == 'pdd') {
-      await PddWebScreen.open(context, url: 'https://mobile.yangkeduo.com/login.html');
-      if (mounted) _refreshAuth();
-      return;
-    }
-
-    if (!mounted) return;
-    final ok = await PlatformLoginScreen.show(
-      context,
-      platform: platform,
-      displayName: displayName,
-      brandColor: brandColor,
-    );
-    if (ok == true && mounted) {
-      // 授权成功后清理旧失效提示并立即同步：刷新状态并补齐取件码
-      final manager = ref.read(connectorManagerProvider);
-      manager.clearLastIssue();
-      _refreshAuth();
-      manager.syncAll().then((_) {
-        if (mounted) _refreshAuth();
-      });
-    }
+    await openPlatformLogin(context, ref,
+        platform: platform, displayName: displayName, brandColor: brandColor);
+    if (mounted) _refreshAuth();
   }
+
 }

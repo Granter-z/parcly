@@ -8,10 +8,12 @@ export '../../core/engine/platform_auth_status.dart' show PlatformAuthStatus;
 
 /// 某个平台的登录状态（未绑定 / 正常 / 需重登）。
 ///
-/// PlatformAuthStore 和 ConnectorManager 都不会主动通知变化，
-/// 同步结束、重新登录、解绑之后调用 `ref.invalidate(platformAuthStatusProvider)` 刷新。
+/// 每次同步开始、结束都会自动重算（监听 syncStateProvider）。
+/// PlatformAuthStore 本身不通知变化，所以重新登录、解绑之后要调用
+/// `ref.invalidate(platformAuthStatusProvider)`。
 final platformAuthStatusProvider =
     Provider.family<PlatformAuthStatus, String>((ref, platform) {
+  ref.watch(syncStateProvider);
   final store = PlatformAuthStore();
   return resolvePlatformAuthStatus(
     platform: platform,
