@@ -387,7 +387,7 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
 
   /// 取件码可信度评分：越高越可信，0 表示不是取件码
   ///
-  /// 用于避免快递平台的隐私号 / 掩码手机号（如 195****8491）覆盖真实的驿站取件码，
+  /// 用于避免快递平台的隐私号 / 掩码手机号（如 138****0000）覆盖真实的驿站取件码，
   /// 同时保证同一包裹在不同平台拿到不同形态凭据时，选出更直接可用的那个（货架码 > 单号后N位）。
   int _pickupCodeScore(String code) {
     final c = code.trim();
