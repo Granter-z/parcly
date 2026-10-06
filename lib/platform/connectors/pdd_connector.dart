@@ -1154,7 +1154,7 @@ class PddH5Connector implements PlatformConnector {
     }
     latestText = latestText.replaceAll(RegExp(r'\s+'), ' ').trim();
 
-    // 5) 驿站名（支持“菜鸟驿站 | 测试小区北门店”、“已派送至【xxx】”）
+    // 5) 驿站名（支持“菜鸟驿站 | 示例小区北门店”、“已派送至【xxx】”）
     var stationName = '';
     final pipeStation = RegExp(
       r'(?:菜鸟驿站|多多驿站|兔喜生活|中通快递超市|顺丰速运|韵达超市|妈妈驿站)\s*[|｜·]\s*([^\n\r,，。】\]]{2,30})',
