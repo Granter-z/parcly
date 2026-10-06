@@ -103,13 +103,9 @@ class DiagSanitizer {
   static Map<String, dynamic> sanitizeHtmlPage({required String url, required String html, int? statusCode}) {
     final idValues = <String>{};
     final cleanUrl = sanitizeUrl(url, idValues);
-    final titleMatch = RegExp(r'<title[^>]*>([\s\S]*?)</title>', caseSensitive: false).firstMatch(html);
-    final title = titleMatch?.group(1)?.trim() ?? '';
     final head = html.length > htmlSanitizeWindow ? html.substring(0, htmlSanitizeWindow) : html;
-    final visible = head
-        .replaceAll(RegExp(r'<script[\s\S]*?</script>', caseSensitive: false), ' ')
-        .replaceAll(RegExp(r'<style[\s\S]*?</style>', caseSensitive: false), ' ')
-        .replaceAll(RegExp(r'<[^>]+>'), ' ')
+    final title = _extractTitle(head);
+    final visible = _stripTags(_removeBlocks(_removeBlocks(head, 'script'), 'style'))
         .replaceAll(RegExp(r'\s+'), ' ')
         .trim();
     return {
@@ -121,6 +117,45 @@ class DiagSanitizer {
       'text': _truncateSanitized(_sanitizeHtmlText(visible, idValues)),
     };
   }
+
+  /// `<title ...>…</title>` 的文本；没有闭合标签时返回空串（indexOf 实现，线性）
+  static String _extractTitle(String html) {
+    final lower = html.toLowerCase();
+    final start = lower.indexOf('<title');
+    if (start == -1) return '';
+    final gt = lower.indexOf('>', start);
+    if (gt == -1) return '';
+    final end = lower.indexOf('</title', gt + 1);
+    if (end == -1) return '';
+    return html.substring(gt + 1, end).trim();
+  }
+
+  /// 去掉 `<tag …>…</tag>` 块；没有闭合时一直删到结尾（浏览器也这样处理未闭合的 script）。线性。
+  static String _removeBlocks(String html, String tag) {
+    final lower = html.toLowerCase();
+    final open = '<$tag';
+    final close = '</$tag';
+    final sb = StringBuffer();
+    var pos = 0;
+    while (true) {
+      final s = lower.indexOf(open, pos);
+      if (s == -1) break;
+      sb.write(html.substring(pos, s));
+      sb.write(' ');
+      final e = lower.indexOf(close, s + open.length);
+      if (e == -1) {
+        pos = html.length;
+        break;
+      }
+      final gt = lower.indexOf('>', e);
+      pos = gt == -1 ? html.length : gt + 1;
+    }
+    if (pos < html.length) sb.write(html.substring(pos));
+    return sb.toString();
+  }
+
+  /// 去标签：`[^<>]` 让每次尝试最多扫到下一个 `<`，整体线性（原 `<[^>]+>` 在大量 `<` 无 `>` 时是平方复杂度）
+  static String _stripTags(String s) => s.replaceAll(RegExp(r'<[^<>]*>'), ' ');
 
   /// 截到 [htmlSnippetLength]，并处理末尾残留的未闭合敏感字段
   static String _truncateSanitized(String sanitized) {

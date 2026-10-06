@@ -309,6 +309,39 @@ void main() {
     });
   });
 
+  group('L1 性能：去标签 / title / script 线性复杂度', () {
+    int ms(void Function() f) {
+      final sw = Stopwatch()..start();
+      f();
+      return sw.elapsedMilliseconds;
+    }
+
+    const url = 'https://pages-g.m.taobao.com/wow/z/app/mtb/logisticsV2/h5-detail?bizOrderId=4012345678901234567';
+    final cases = <String, String>{
+      '"<" x 32K': '<' * 32768,
+      '"<" x 1M': '<' * (1 << 20),
+      '"<title>" 未闭合 x 1M': '<title>' * ((1 << 20) ~/ 7),
+      '"<script" 未闭合 x 1M': '<script' * ((1 << 20) ~/ 7),
+      '"<style>a" x 1M': '<style>a' * ((1 << 20) ~/ 8),
+      '"<a " 无 ">" x 1M': '<a ' * ((1 << 20) ~/ 3),
+    };
+    cases.forEach((name, html) {
+      test('$name 在 1 秒内', () {
+        final t = ms(() => DiagSanitizer.sanitizeHtmlPage(url: url, html: html));
+        expect(t, lessThan(1000), reason: '$name: ${t}ms');
+      });
+    });
+
+    test('去标签、title、未闭合 script 的结果不变', () {
+      final page = DiagSanitizer.sanitizeHtmlPage(
+          url: 'https://a.b/c',
+          html: '<html><head><TITLE lang="zh"> 物流详情 </TITLE><style>.a{}</style></head>'
+              '<body><div class="x">您的包裹</div><p>已到站</p><script>var a = 1 < 2;');
+      expect(page['title'], '物流详情');
+      expect(page['text'], '物流详情 您的包裹 已到站');
+    });
+  });
+
   group('DiagFileStore', () {
     late Directory tmp;
     setUp(() => tmp = Directory.systemTemp.createTempSync('diag_store_'));
