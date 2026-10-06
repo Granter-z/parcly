@@ -6,18 +6,25 @@ build/
 .pub-cache/
 .pub/
 .kotlin/
-*.lock
 *.iml
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
-
-# 测试用例与测试固件（仅本地验证，不上传远程仓库）
-test/
+local.properties
 
 # 历史过时工具与分析脚本
 bin/
 diagnose_error.sh
 
+# ── 真实数据（未脱敏），永远不提交 ──
+# 仓库是公开的：进 git 的样本必须先脱敏，放 test/fixtures/。
+# 原始日志、采集导出、真实截图一律放下面这些位置。
+private/
+test/fixtures_private/
+tb_log*.txt
+*_raw.json
+*.diag.zip
+diag_export*/
+real_world/
