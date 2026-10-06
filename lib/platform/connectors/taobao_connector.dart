@@ -11,6 +11,7 @@ import '../../core/engine/logistics_status_engine.dart';
 import '../../core/models/package.dart';
 import '../../core/models/package_status.dart';
 import '../../core/sanitizer/goods_name_cleaner.dart';
+import '../diagnostics/taobao_raw_capture.dart';
 import '../storage/platform_auth_store.dart';
 import '../webview/platform_cookie.dart';
 import 'platform_connector.dart';
@@ -225,6 +226,7 @@ class TaobaoH5Connector implements PlatformConnector {
         dataRaw: jsonEncode(dataObj),
       );
       if (rawJson == null || rawJson.isEmpty) return items;
+      TaobaoRawCapture.instance.capture(TaobaoDiagEndpoint.stationList, rawJson);
 
       final s = stripJsonp(rawJson);
       final root = jsonDecode(s) as Map<String, dynamic>;
@@ -487,6 +489,7 @@ class TaobaoH5Connector implements PlatformConnector {
       // 1) 优先解析网络钩子截获的官方多包裹接口响应
       if (_capturedCainiaoJson.isNotEmpty) {
         for (final jsonStr in _capturedCainiaoJson) {
+          TaobaoRawCapture.instance.capture(TaobaoDiagEndpoint.cainiaoHook, jsonStr);
           list.addAll(_parseCainiaoJson(jsonStr));
         }
       }
@@ -729,6 +732,7 @@ class TaobaoH5Connector implements PlatformConnector {
     );
 
     if (rawJson == null) return [];
+    TaobaoRawCapture.instance.capture(TaobaoDiagEndpoint.orderList, rawJson);
 
     final orders = <_TbOrder>[];
     try {
@@ -794,6 +798,7 @@ class TaobaoH5Connector implements PlatformConnector {
       final jsonSub = html.substring(idx + marker.length);
       final endIdx = jsonSub.indexOf('</script>');
       final jsonClean = endIdx != -1 ? jsonSub.substring(0, endIdx).trim() : jsonSub;
+      TaobaoRawCapture.instance.capture(TaobaoDiagEndpoint.ssrDetail, jsonClean);
 
       final dataObj = jsonDecode(jsonClean) as Map<String, dynamic>;
       final result = dataObj['result'] as Map<String, dynamic>?;
@@ -915,6 +920,7 @@ class TaobaoH5Connector implements PlatformConnector {
         dataRaw: jsonEncode({'mailNo': mailNo}),
       );
       if (rawJson == null || rawJson.isEmpty) return null;
+      TaobaoRawCapture.instance.capture(TaobaoDiagEndpoint.byMailNo, rawJson);
       _logTb('[Cainiao MailNo Query] $mailNo -> len=${rawJson.length}');
 
       final s = stripJsonp(rawJson);
