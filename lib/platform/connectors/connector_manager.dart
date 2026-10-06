@@ -37,6 +37,8 @@ class ConnectorManager {
               .where((tn) => tn.isNotEmpty && !tn.contains('-'))
               .toList();
         },
+        // 已签收订单只请求一次详情：连接器请求前查本地包裹
+        getLocalPackages: () => _ref.read(packageListProvider),
       ),
       JdH5Connector(),
       PddH5Connector(),

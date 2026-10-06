@@ -15,6 +15,7 @@ import '../../core/sanitizer/goods_name_cleaner.dart';
 import '../storage/platform_auth_store.dart';
 import '../webview/platform_cookie.dart';
 import 'platform_connector.dart';
+import 'taobao_sync_rules.dart';
 
 void _logTb(String msg) {
   debugPrint(msg);
@@ -37,6 +38,7 @@ class _CainiaoItem {
 class TaobaoH5Connector implements PlatformConnector {
   final PlatformAuthStore _authStore;
   final List<String> Function()? _getActiveTrackingNumbers;
+  final List<Package> Function()? _getLocalPackages;
   static const _appKey = '12574478';
   static const _ua =
       'Mozilla/5.0 (Linux; Android 14; 25102RKBEC Build/UP1A.231005.007) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36';
@@ -44,8 +46,10 @@ class TaobaoH5Connector implements PlatformConnector {
   TaobaoH5Connector({
     PlatformAuthStore? authStore,
     List<String> Function()? getActiveTrackingNumbers,
+    List<Package> Function()? getLocalPackages,
   })  : _authStore = authStore ?? PlatformAuthStore(),
-        _getActiveTrackingNumbers = getActiveTrackingNumbers;
+        _getActiveTrackingNumbers = getActiveTrackingNumbers,
+        _getLocalPackages = getLocalPackages;
 
   @override
   String get platformId => 'taobao';
@@ -126,10 +130,17 @@ class TaobaoH5Connector implements PlatformConnector {
       final withLogistics = orders.where((o) => o.hasLogistics).toList();
       _logTb('[Taobao] 订单 ${orders.length} 个，有「查看物流」${withLogistics.length} 个，'
           '跳过 ${orders.length - withLogistics.length} 个');
+      // 已签收订单只请求一次：本地已有、已签收且轨迹不为空的跳过（不另存标记）
+      final local = _getLocalPackages?.call() ?? const <Package>[];
       var parsedCount = 0;
       var failedCount = 0;
+      var skippedSigned = 0;
       for (final order in withLogistics) {
         if (_cancelled) break;
+        if (shouldSkipSignedDetail(findLocalTaobaoPackage(local, order.orderId))) {
+          skippedSigned++;
+          continue;
+        }
         final parcel = await _fetchSsrLogistics(client, cookies, order.orderId);
         if (_cancelled) break;
         if (parcel == null) {
@@ -137,7 +148,7 @@ class TaobaoH5Connector implements PlatformConnector {
         } else {
           parsedCount++;
           yield Package(
-            id: 'TB_${parcel.mailNo.isNotEmpty ? parcel.mailNo : order.orderId}',
+            id: taobaoPackageId(order.orderId),
             trackingNumber: parcel.mailNo.isNotEmpty ? parcel.mailNo : order.orderId,
             courier: _resolveCourier(parcel.cpName),
             goodsName: order.goodsName,
@@ -153,7 +164,8 @@ class TaobaoH5Connector implements PlatformConnector {
           );
         }
       }
-      _logTb('[Taobao] 物流详情：请求 ${parsedCount + failedCount} 个，解析成功 $parsedCount 个，失败 $failedCount 个');
+      _logTb('[Taobao] 物流详情：已签收且本地有轨迹跳过 $skippedSigned 个，'
+          '请求 ${parsedCount + failedCount} 个，解析成功 $parsedCount 个，失败 $failedCount 个');
 
       // ── 阶段 3：针对待取件但取件码仍为后5位或空的包裹，以运单号定向查询菜鸟货架码 ──
       if (_getActiveTrackingNumbers != null) {
