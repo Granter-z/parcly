@@ -793,7 +793,10 @@ class TaobaoH5Connector implements PlatformConnector {
       final html = response.body;
       const marker = "__ICE_SUSPENSE_LOADER__']['undefined'] = ";
       final idx = html.indexOf(marker);
-      if (idx == -1) return null;
+      if (idx == -1) {
+        TaobaoRawCapture.instance.captureSsrNoMarker(url: url, html: html, statusCode: response.statusCode);
+        return null;
+      }
 
       final jsonSub = html.substring(idx + marker.length);
       final endIdx = jsonSub.indexOf('</script>');

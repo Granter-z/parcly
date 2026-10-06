@@ -193,6 +193,76 @@ void main() {
     });
   });
 
+  group('SSR 页面找不到数据标记', () {
+    const fakeToken = 'a1b2c3d4e5f6deadbeef_1759812345678';
+    const fakeOrderId = '4012345678901234567';
+
+    test('URL：bizOrderId 保留前 4 后 4，token/sid 类置 ***', () {
+      final out = DiagSanitizer.sanitizeUrl(
+          'https://pages-g.m.taobao.com/wow/z/app/mtb/logisticsV2/h5-detail?x-ssr=true&bizOrderId=$fakeOrderId'
+          '&sid=abc123&_m_h5_tk=$fakeToken&mailNo=YT0712583482621&orderId=3891234567890123456&cookie2=zzz&mobile=13812345678');
+      expect(out, contains('x-ssr=true'));
+      expect(out, contains('bizOrderId=4012***********4567'));
+      expect(out, contains('sid=***'));
+      expect(out, contains('_m_h5_tk=***'));
+      expect(out, contains('mailNo=YT07*******2621'));
+      expect(out, contains('orderId=3891***********3456'));
+      expect(out, contains('cookie2=***'));
+      expect(out, contains('mobile=1**********'));
+      expect(out, isNot(contains(fakeOrderId)));
+      expect(out, isNot(contains(fakeToken)));
+    });
+
+    test('登录页片段：保留 title 和可见文本', () {
+      const html = '<!DOCTYPE html><html><head><meta charset="utf-8"><title>手机淘宝网 - 登录</title>'
+          '<style>.a{color:red}</style></head><body><div class="tip">您需要登录才能继续访问</div>'
+          '<script>window.__redirect = "https://login.m.taobao.com/login.htm?redirectURL=x&ssid=s1234567";</script>'
+          '</body></html>';
+      final page = DiagSanitizer.sanitizeHtmlPage(
+          url: 'https://pages-g.m.taobao.com/wow/z/app/mtb/logisticsV2/h5-detail?bizOrderId=$fakeOrderId',
+          html: html,
+          statusCode: 200);
+      expect(page['title'], '手机淘宝网 - 登录');
+      expect(page['length'], html.length);
+      expect(page['status'], 200);
+      expect(page['text'], '手机淘宝网 - 登录 您需要登录才能继续访问');
+      expect(page['snippet'], contains('您需要登录才能继续访问'));
+      expect(page['snippet'], contains('ssid=***'));
+      expect(page['url'], contains('bizOrderId=4012***********4567'));
+    });
+
+    test('含手机号、姓名地址、假 token、假订单号的 HTML：存下来的结果里搜不到原值', () {
+      const html = '<html><head><title>物流详情</title><script>'
+          'var _m_h5_tk = "$fakeToken"; window.cfg = {token: "$fakeToken", csrf: \'csrf998877\', '
+          '"_tb_token_":"tbtok123456", bizOrderId: "$fakeOrderId"};'
+          'document.cookie = "cookie2=c2secret987; sgcookie=sgsecret654; unb=2201234567";'
+          'var data = {"receiverName":"张三","receiverMobile":"13812345678","detailAddress":"文三路100号"};'
+          '</script></head><body>收件人：李四 电话 13900001111，订单 $fakeOrderId，'
+          '取件码 3-2-1002，运单号 YT0712583482621</body></html>';
+      final page = DiagSanitizer.sanitizeHtmlPage(
+          url: 'https://pages-g.m.taobao.com/wow/z/app/mtb/logisticsV2/h5-detail?x-ssr=true&bizOrderId=$fakeOrderId',
+          html: html);
+      final saved = jsonEncode(page);
+      for (final raw in [
+        fakeToken, fakeOrderId, 'csrf998877', 'tbtok123456', 'c2secret987', 'sgsecret654', '2201234567',
+        '张三', '李四', '文三路100号', '3-2-1002', 'YT0712583482621',
+      ]) {
+        expect(saved, isNot(contains(raw)), reason: raw);
+      }
+      expect(_phoneStandalone.hasMatch(saved), isFalse);
+      expect(page['title'], '物流详情');
+      expect(page['snippet'], contains('4012***********4567'));
+      expect(page['text'], contains('取件码 9-9-9999'));
+    });
+
+    test('超过 4KB 只保留前 4KB', () {
+      final html = '<html><title>t</title>${'x' * 10000}</html>';
+      final page = DiagSanitizer.sanitizeHtmlPage(url: 'https://a.b/c', html: html);
+      expect((page['snippet'] as String).length, DiagSanitizer.htmlSnippetLength);
+      expect(page['length'], html.length);
+    });
+  });
+
   group('DiagFileStore', () {
     late Directory tmp;
     setUp(() => tmp = Directory.systemTemp.createTempSync('diag_store_'));
@@ -233,6 +303,14 @@ void main() {
     for (final e in samples.entries) {
       await store.write(e.key, DiagSanitizer.sanitizeRaw(e.value));
     }
+    await store.write(
+      TaobaoDiagEndpoint.ssrNoMarker,
+      const JsonEncoder.withIndent('  ').convert(DiagSanitizer.sanitizeHtmlPage(
+        url: 'https://pages-g.m.taobao.com/wow/z/app/mtb/logisticsV2/h5-detail?x-ssr=true&bizOrderId=4012345678901234567&sid=abc',
+        html: '<html><head><title>登录</title><script>var _m_h5_tk="tk_fake_123";var u={"receiverName":"张三","mobile":"13812345678"};</script></head>'
+            '<body>您需要登录才能继续访问 客服 18600001234 收件人：张三 地址 {"detailAddress":"文三路100号"}</body></html>',
+      )),
+    );
     for (final f in store.listFiles()) {
       final text = f.readAsStringSync();
       expect(_phoneStandalone.hasMatch(text), isFalse, reason: f.path);

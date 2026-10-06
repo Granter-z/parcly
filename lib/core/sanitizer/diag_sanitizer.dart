@@ -83,6 +83,123 @@ class DiagSanitizer {
     return s;
   }
 
+  /// HTML 片段默认保留的长度（字符）
+  static const int htmlSnippetLength = 4096;
+
+  /// SSR 页面找不到数据标记时（页面改版 / 跳登录页）的落盘内容：
+  /// `{url, title, status, length, snippet, text}`。
+  ///
+  /// - url：query 里的 token/sid/cookie 类参数值置 ***，订单号/运单号类参数保留前 4 后 4，其余参数值做文本脱敏；
+  /// - title：`<title>` 文本；
+  /// - snippet：页面源码前 [htmlSnippetLength] 字符；
+  /// - text：去掉 script/style/标签后的可见文本前 [htmlSnippetLength] 字符；
+  /// - snippet/text 都会：替换脚本里的 token/cookie 类字段值、按 key 打码姓名地址类 JSON 片段、
+  ///   再做手机号/运单号/取件码/带标注人名的文本脱敏，并把 URL 里出现过的订单号原值一并替换。
+  static Map<String, dynamic> sanitizeHtmlPage({required String url, required String html, int? statusCode}) {
+    final idValues = <String>{};
+    final cleanUrl = sanitizeUrl(url, idValues);
+    final titleMatch = RegExp(r'<title[^>]*>([\s\S]*?)</title>', caseSensitive: false).firstMatch(html);
+    final title = titleMatch?.group(1)?.trim() ?? '';
+    final head = html.length > htmlSnippetLength ? html.substring(0, htmlSnippetLength) : html;
+    final visible = html
+        .replaceAll(RegExp(r'<script[\s\S]*?</script>', caseSensitive: false), ' ')
+        .replaceAll(RegExp(r'<style[\s\S]*?</style>', caseSensitive: false), ' ')
+        .replaceAll(RegExp(r'<[^>]+>'), ' ')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+    final text = visible.length > htmlSnippetLength ? visible.substring(0, htmlSnippetLength) : visible;
+    return {
+      'url': cleanUrl,
+      'title': _sanitizeHtmlText(title, idValues),
+      if (statusCode != null) 'status': statusCode,
+      'length': html.length,
+      'snippet': _sanitizeHtmlText(head, idValues),
+      'text': _sanitizeHtmlText(text, idValues),
+    };
+  }
+
+  /// URL 脱敏：凭据类参数值置 ***，订单号/运单号/用户 id 类参数按运单号规则打码，其余参数值做文本脱敏。
+  /// 被打码的订单号原值会加入 [idValuesOut]，供页面正文里同值替换。
+  static String sanitizeUrl(String url, [Set<String>? idValuesOut]) {
+    final qIdx = url.indexOf('?');
+    if (qIdx == -1) return sanitizeText(url);
+    final base = url.substring(0, qIdx);
+    var query = url.substring(qIdx + 1);
+    var fragment = '';
+    final hashIdx = query.indexOf('#');
+    if (hashIdx != -1) {
+      fragment = query.substring(hashIdx);
+      query = query.substring(0, hashIdx);
+    }
+    final parts = query.split('&').map((pair) {
+      final eq = pair.indexOf('=');
+      if (eq <= 0) return pair;
+      final key = pair.substring(0, eq);
+      final value = pair.substring(eq + 1);
+      if (value.isEmpty) return pair;
+      final k = _norm(Uri.decodeQueryComponent(key));
+      if (_isSecretParam(k)) return '$key=$masked';
+      if (_isIdParam(k)) {
+        idValuesOut?.add(value);
+        return '$key=${maskMailNo(value)}';
+      }
+      return '$key=${sanitizeText(value)}';
+    }).join('&');
+    return '${sanitizeText(base)}?$parts${sanitizeText(fragment)}';
+  }
+
+  /// 凭据类字段名（已 _norm）：淘宝常见 Cookie 名、token/csrf/sid 类
+  static bool _isCredentialKey(String k) =>
+      _isSecretKey(k) ||
+      k.endsWith('sid') ||
+      k.contains('csrf') ||
+      (k.contains('ticket') && !_isPickupCodeKey(k)) ||
+      const {
+        'unb', 'sgcookie', 'cookie2', 'tbtoken', 'mh5tk', 'mh5tkenc', 'cna', 'isg', 'tfstk',
+        'umidtoken', 'lgc', 'tracknick', 'uc1', 'uc3', 'uc4', 'skt', 'dnk', 'existshop', 'nk',
+      }.contains(k);
+
+  /// URL 里的凭据类参数（比脚本多几个只在 URL 里才是凭据的短名）
+  static bool _isSecretParam(String k) =>
+      _isCredentialKey(k) || const {'sign', 'auth', 'authcode', 'code', 'st', 'sn'}.contains(k);
+
+  /// 订单号 / 运单号 / 用户 id 类参数（已 _norm）
+  static bool _isIdParam(String k) =>
+      _isMailNoKey(k) ||
+      k.contains('orderid') ||
+      k.contains('orderno') ||
+      const {'userid', 'buyerid', 'uid', 'tradeid', 'bizid', 'id'}.contains(k);
+
+  /// 脚本里 `name=value` / `"name":"value"` / `name: 'value'` 形态的字段
+  static final RegExp _scriptKvReg = RegExp(
+      r'''(["']?)([A-Za-z_][\w\-]*)\1(\s*[:=]\s*)(?:"([^"]*)"|'([^']*)'|([^"'&;,\s<>(){}\[\]]+))''');
+
+  static String _sanitizeHtmlText(String text, Set<String> idValues) {
+    if (text.isEmpty) return text;
+    // 内嵌 URL（跳转地址、脚本里的接口地址）按 URL 规则处理
+    var s = text.replaceAllMapped(
+        RegExp(r'''https?://[^\s"'<>]+'''), (m) => sanitizeUrl(m.group(0)!, idValues));
+    for (final v in idValues) {
+      if (v.length >= 4 && s.contains(v)) s = s.replaceAll(v, maskMailNo(v));
+    }
+    // 凭据字段：cookie 串、脚本变量、JSON 字段
+    s = s.replaceAllMapped(_scriptKvReg, (m) {
+      final k = _norm(m.group(2)!);
+      final quote = m.group(4) != null ? '"' : (m.group(5) != null ? "'" : '');
+      final value = m.group(4) ?? m.group(5) ?? m.group(6) ?? '';
+      String? nv;
+      if (_isCredentialKey(k)) {
+        nv = value.isEmpty ? value : masked;
+      } else if (_isIdParam(k) && k != 'id' && value.length >= 8) {
+        nv = maskMailNo(value);
+      }
+      if (nv == null) return m.group(0)!;
+      return '${m.group(1)}${m.group(2)}${m.group(1)}${m.group(3)}$quote$nv$quote';
+    });
+    // 姓名/地址类 JSON 片段 + 文本级脱敏
+    return _sanitizeUnparsedText(s);
+  }
+
   /// 运单号：保留前 4 位和后 4 位，中间换成 *；不足 9 位全部换成 *。
   static String maskMailNo(String v) {
     final s = v.trim();

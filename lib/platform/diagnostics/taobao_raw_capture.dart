@@ -11,6 +11,7 @@
 library;
 
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:archive/archive.dart';
@@ -30,6 +31,9 @@ class TaobaoDiagEndpoint {
 
   /// 物流详情 SSR 页（logisticsV2/h5-detail）里截出的 JSON
   static const ssrDetail = 'logisticsV2_h5detail';
+
+  /// 物流详情 SSR 页找不到数据标记时（页面改版 / 跳登录页）的页面片段
+  static const ssrNoMarker = 'ssr_detail_nomarker';
 
   /// 驿站多包裹列表 mtop.cainiao.pickup.plus.queryMultiStaPackages4Xy
   static const stationList = 'queryMultiStaPackages4Xy';
@@ -147,15 +151,29 @@ class TaobaoRawCapture {
   /// 同步流程里拿到响应后调用；不 await、不抛异常，开关关闭时立即返回。
   void capture(String endpoint, String? raw) {
     if (_enabled == false || raw == null || raw.isEmpty) return;
-    _queue = _queue.then((_) => _doCapture(endpoint, raw)).catchError((Object e) {
+    _enqueue(endpoint, () => compute(DiagSanitizer.sanitizeRaw, raw));
+  }
+
+  /// SSR 物流详情页找不到数据标记时调用，存脱敏后的 url/title/页面片段。
+  void captureSsrNoMarker({required String url, required String html, int? statusCode}) {
+    if (_enabled == false) return;
+    // 只把前 256KB 送进后台 isolate，title 和前 4KB 足够定位
+    final head = html.length > 262144 ? html.substring(0, 262144) : html;
+    final length = html.length;
+    _enqueue(TaobaoDiagEndpoint.ssrNoMarker,
+        () => compute(_ssrNoMarkerJson, [url, head, '$length', '${statusCode ?? ''}']));
+  }
+
+  void _enqueue(String endpoint, Future<String> Function() produce) {
+    _queue = _queue.then((_) => _doCapture(endpoint, produce)).catchError((Object e) {
       debugPrint('[TaobaoRawCapture] $endpoint capture failed: $e');
     });
   }
 
-  Future<void> _doCapture(String endpoint, String raw) async {
+  Future<void> _doCapture(String endpoint, Future<String> Function() produce) async {
     try {
       if (!await loadEnabled()) return;
-      final sanitized = await compute(DiagSanitizer.sanitizeRaw, raw);
+      final sanitized = await produce();
       final s = await store();
       final file = await s.write(endpoint, sanitized);
       debugPrint('[TaobaoRawCapture] saved ${file.uri.pathSegments.last} (${sanitized.length} chars)');
@@ -192,4 +210,15 @@ class TaobaoRawCapture {
     ));
     return true;
   }
+}
+
+/// 后台 isolate 里生成 ssr_detail_nomarker 文件内容；args = [url, html, 原始长度, 状态码]
+String _ssrNoMarkerJson(List<String> args) {
+  final page = DiagSanitizer.sanitizeHtmlPage(
+    url: args[0],
+    html: args[1],
+    statusCode: int.tryParse(args[3]),
+  );
+  page['length'] = int.tryParse(args[2]) ?? page['length'];
+  return const JsonEncoder.withIndent('  ').convert(page);
 }
