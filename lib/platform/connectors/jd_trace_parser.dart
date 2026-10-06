@@ -1,6 +1,8 @@
 /// 京东物流轨迹与链接解析辅助工具 - 纯 Dart
 library;
 
+import '../../core/parser/trace_time.dart';
+
 /// 根据订单信息构建完整京东物流详情页 URL
 String buildJdLogisticsUrl({
   required String orderId,
@@ -39,8 +41,9 @@ const _logisticsKeywords = [
   '投递', '取件', '出库', '配送', '妥投', '物流', '运输',
 ];
 
-/// 从 DOM 纯文本中按行状态机解析时间轴节点（{tag, time, text}）
-List<Map<String, String>> parseJdDomTimeline(String rawText) {
+/// 从 DOM 纯文本中按行状态机解析时间轴节点（{tag, time, text}）。
+/// 节点时间经 [normalizeTraceTime] 规范成 yyyy-MM-dd HH:mm:ss，解析不出时间的节点不写入；[now] 供测试注入。
+List<Map<String, String>> parseJdDomTimeline(String rawText, {DateTime? now}) {
   var text = rawText.trim();
   if (text.startsWith('"') && text.endsWith('"')) {
     text = text.substring(1, text.length - 1).replaceAll(r'\n', '\n');
@@ -73,7 +76,7 @@ List<Map<String, String>> parseJdDomTimeline(String rawText) {
     final match = _timeRegex.firstMatch(line);
     if (match != null && line.length <= 25) {
       flush();
-      currentTimestamp = match.group(1);
+      currentTimestamp = normalizeTraceTime(match.group(1), now: now);
       continue;
     }
 

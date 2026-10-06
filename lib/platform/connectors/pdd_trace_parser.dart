@@ -3,6 +3,8 @@ library;
 
 import 'dart:convert';
 
+import '../../core/parser/trace_time.dart';
+
 /// 推荐流与商品广告识别正则：遇此特征立即阻断 DOM 时间轴收集
 final _recStreamRegex = RegExp(
   r'(即将恢复|本店已拼|全店总售|已抢|券后|立减|未发货秒退|24小时发货|限\d+件|退货包运费|推荐商品|\d+\.\d+$)',
@@ -28,8 +30,9 @@ const _logisticsKeywords = [
   '顺丰', '邮政', '京东',
 ];
 
-/// 从 DOM 纯文本中按行解析时间轴，并在遭遇推荐流时立即截断
-List<Map<String, String>> parsePddDomTimeline(String rawText) {
+/// 从 DOM 纯文本中按行解析时间轴，并在遭遇推荐流时立即截断。
+/// 节点时间经 [normalizeTraceTime] 规范成 yyyy-MM-dd HH:mm:ss，解析不出时间的节点不写入；[now] 供测试注入。
+List<Map<String, String>> parsePddDomTimeline(String rawText, {DateTime? now}) {
   var text = rawText.trim();
   if (text.startsWith('"') && text.endsWith('"')) {
     text = text.substring(1, text.length - 1).replaceAll(r'\n', '\n');
@@ -68,7 +71,7 @@ List<Map<String, String>> parsePddDomTimeline(String rawText) {
     final dm = _dateRegex.firstMatch(line);
     if (dm != null && line.length <= 25) {
       flush();
-      currentTime = dm.group(1);
+      currentTime = normalizeTraceTime(dm.group(1), now: now);
       continue;
     }
 
@@ -145,8 +148,9 @@ const _descCandidateKeys = {
   'content', 'track_desc', 'logistics_desc', 'sub_desc',
 };
 
-/// 递归扫描任意 JSON 树，通过候选键集合提取时间轴节点
-List<Map<String, String>> extractPddTimelineFromJson(dynamic root) {
+/// 递归扫描任意 JSON 树，通过候选键集合提取时间轴节点。
+/// 节点时间经 [normalizeTraceTime] 规范化，解析不出时间的节点不写入；[now] 供测试注入。
+List<Map<String, String>> extractPddTimelineFromJson(dynamic root, {DateTime? now}) {
   final nodes = <Map<String, String>>[];
   final seen = <String>{};
 
@@ -172,13 +176,16 @@ List<Map<String, String>> extractPddTimelineFromJson(dynamic root) {
       }
 
       if (foundTime.isNotEmpty && foundDesc.isNotEmpty && foundTime != foundDesc) {
-        final key = '$foundTime|$foundDesc';
-        if (seen.add(key)) {
-          nodes.add({
-            'tag': '',
-            'time': foundTime,
-            'text': foundDesc,
-          });
+        final time = normalizeTraceTime(foundTime, now: now);
+        if (time != null) {
+          final key = '$time|$foundDesc';
+          if (seen.add(key)) {
+            nodes.add({
+              'tag': '',
+              'time': time,
+              'text': foundDesc,
+            });
+          }
         }
         return;
       }
