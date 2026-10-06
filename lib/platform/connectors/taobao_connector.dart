@@ -10,6 +10,7 @@ import 'package:webview_flutter/webview_flutter.dart';
 import '../../core/engine/logistics_status_engine.dart';
 import '../../core/models/package.dart';
 import '../../core/models/package_status.dart';
+import '../../core/parser/taobao_trace_parser.dart';
 import '../../core/sanitizer/goods_name_cleaner.dart';
 import '../storage/platform_auth_store.dart';
 import '../webview/platform_cookie.dart';
@@ -120,12 +121,21 @@ class TaobaoH5Connector implements PlatformConnector {
     try {
       // 1. 获取买家最近订单列表
       final orders = await _fetchBoughtOrders(client, cookies);
-      for (final order in orders) {
+      // 2. 只对订单列表里有「查看物流」按钮的订单请求 SSR 物流详情；
+      //    饿了么等订单（bizType 5000）没有这个按钮，请求详情只会返回 JUMP_302
+      final withLogistics = orders.where((o) => o.hasLogistics).toList();
+      _logTb('[Taobao] 订单 ${orders.length} 个，有「查看物流」${withLogistics.length} 个，'
+          '跳过 ${orders.length - withLogistics.length} 个');
+      var parsedCount = 0;
+      var failedCount = 0;
+      for (final order in withLogistics) {
         if (_cancelled) break;
-        // 2. 针对在途/派送中订单，解析移动端 SSR 物流详情
         final parcel = await _fetchSsrLogistics(client, cookies, order.orderId);
         if (_cancelled) break;
-        if (parcel != null) {
+        if (parcel == null) {
+          failedCount++;
+        } else {
+          parsedCount++;
           yield Package(
             id: 'TB_${parcel.mailNo.isNotEmpty ? parcel.mailNo : order.orderId}',
             trackingNumber: parcel.mailNo.isNotEmpty ? parcel.mailNo : order.orderId,
@@ -143,6 +153,7 @@ class TaobaoH5Connector implements PlatformConnector {
           );
         }
       }
+      _logTb('[Taobao] 物流详情：请求 ${parsedCount + failedCount} 个，解析成功 $parsedCount 个，失败 $failedCount 个');
 
       // ── 阶段 3：针对待取件但取件码仍为后5位或空的包裹，以运单号定向查询菜鸟货架码 ──
       if (_getActiveTrackingNumbers != null) {
@@ -198,8 +209,9 @@ class TaobaoH5Connector implements PlatformConnector {
           _logTb('[Cainiao] StationList error: $e');
         }
       }
-    } catch (_) {
-      // 网络/解析异常容错
+    } catch (e) {
+      // 网络/解析异常容错；只记异常类型，异常文本可能带请求 URL（含订单号）
+      _logTb('[Taobao] Stage 2/3 中断：${e.runtimeType}');
     } finally {
       client.close();
     }
@@ -766,14 +778,27 @@ class TaobaoH5Connector implements PlatformConnector {
               pic = itemInfo?['pic']?.toString() ?? '';
             }
 
-            orders.add(_TbOrder(orderId: id, statusText: statusText, goodsName: title, goodsPic: pic));
+            orders.add(_TbOrder(
+              orderId: id,
+              statusText: statusText,
+              goodsName: title,
+              goodsPic: pic,
+              hasLogistics: TaobaoTraceParser.orderHasLogistics(orderMap),
+            ));
           }
         }
+      } else {
+        _logTb('[Taobao] 订单列表没有 mainOrders 结构');
       }
-    } catch (_) {}
+    } catch (e) {
+      _logTb('[Taobao] 订单列表解析失败：${e.runtimeType}（已解析 ${orders.length} 个）');
+    }
     return orders;
   }
 
+  /// 请求物流详情 SSR 页并交给 [TaobaoTraceParser] 解析。
+  ///
+  /// 每个返回 null 的分支都打一行原因日志（只记步骤、原因和数量，不记订单号/运单号/Cookie）。
   Future<_TbParcel?> _fetchSsrLogistics(http.Client client, String cookies, String orderId) async {
     try {
       final url = 'https://pages-g.m.taobao.com/wow/z/app/mtb/logisticsV2/h5-detail?x-ssr=true&bizOrderId=$orderId';
@@ -785,123 +810,50 @@ class TaobaoH5Connector implements PlatformConnector {
           'Cookie': cookies,
         },
       );
-
-      final html = response.body;
-      const marker = "__ICE_SUSPENSE_LOADER__']['undefined'] = ";
-      final idx = html.indexOf(marker);
-      if (idx == -1) return null;
-
-      final jsonSub = html.substring(idx + marker.length);
-      final endIdx = jsonSub.indexOf('</script>');
-      final jsonClean = endIdx != -1 ? jsonSub.substring(0, endIdx).trim() : jsonSub;
-
-      final dataObj = jsonDecode(jsonClean) as Map<String, dynamic>;
-      final result = dataObj['result'] as Map<String, dynamic>?;
-      final data = result?['data'] as Map<String, dynamic>?;
-      final logistics = (data?['newLogistics']?['fields'] ?? data?['logisticsDetailH5']?['fields']) as Map<String, dynamic>?;
-      if (logistics == null) return null;
-
-      final company = logistics['logisticCompany'] as Map<String, dynamic>?;
-      final mailNo = logistics['mailNo']?.toString() ?? company?['mailNo']?.toString() ?? '';
-      final cpName = company?['name']?.toString() ?? '';
-
-      // 解析取件码与阶段
-      String pickupCode = '';
-      String stationName = '菜鸟驿站';
-      String stateLabel = '';
-      String location = '';
-
-      final stages = logistics['multiStage'] as List<dynamic>?;
-      final timelineNodes = <Map<String, String>>[];
-      if (stages != null && stages.isNotEmpty) {
-        final first = stages[0] as Map<String, dynamic>;
-        stateLabel = first['title']?.toString() ?? '';
-        final textDesc = _stageText(first);
-
-        // 正则提取取件码（例如：取件码 3-2-1002，A-108，8899）
-        final codeReg = RegExp(r'(?:取件码|提货码|凭码)[:：\s]*([A-Za-z0-9\-]+)');
-        final match = codeReg.firstMatch(textDesc);
-        if (match != null) {
-          pickupCode = match.group(1) ?? '';
-        }
-
-        if (textDesc.contains('驿站') || textDesc.contains('快递柜') || textDesc.contains('自提点')) {
-          final stationMatch = RegExp(r'([\u4e00-\u9fa5A-Za-z0-9]+(?:驿站|快递柜|超市|自提点))').firstMatch(textDesc);
-          if (stationMatch != null) {
-            stationName = stationMatch.group(1) ?? '菜鸟驿站';
-          }
-        }
-
-        // 全量解析多阶段物流轨迹为时间轴节点（tag/time/text），供引擎推导与时间轴展示
-        for (final s in stages) {
-          if (s is! Map<String, dynamic>) continue;
-          final titleVal = s['title'];
-          final tag = titleVal != null ? titleVal.toString().trim() : '';
-          final text = _stageText(s);
-          final time = (s['subtitle'] ?? s['time'] ?? s['timeDesc'] ?? s['date'] ?? s['timeStr'] ?? '').toString().trim();
-          if (text.isEmpty && tag.isEmpty) continue;
-          timelineNodes.add({'tag': tag, 'time': time, 'text': text});
-        }
+      if (response.statusCode != 200) {
+        _logTb('[Taobao SSR] 物流详情 HTTP ${response.statusCode}，跳过');
+        return null;
       }
 
-      // 优先以时间轴推导真实状态（与拼多多通道同一套引擎）
+      final trace = TaobaoTraceParser.parseHtml(response.body, log: _logTb);
+      if (trace == null) return null; // 原因已由解析器打出
+
+      final nodes = trace.nodes;
+      final stateLabel = trace.stateLabel;
+      final stationName = trace.stationName.isNotEmpty ? trace.stationName : '菜鸟驿站';
+
+      // 优先以时间轴推导真实状态（与拼多多通道同一套引擎）；节点时间已规范成 yyyy-MM-dd HH:mm:ss
       String? rawTimelineJson;
       PackageStatus? derivedStatus;
-      if (timelineNodes.isNotEmpty) {
-        rawTimelineJson = jsonEncode(timelineNodes);
+      if (nodes.isNotEmpty) {
+        rawTimelineJson = jsonEncode(nodes);
         final derived = LogisticsStatusEngine.derive(
-          events: timelineNodes,
+          events: nodes,
           isPendingShipment: _isPendingLabel(stateLabel),
-          isOrderSigned: _isSignedLabel(stateLabel),
-          pickupCode: pickupCode,
+          isOrderSigned: _isSignedLabel(stateLabel) || trace.lgStatus == 'SIGN',
+          pickupCode: trace.pickupCode,
           stationName: stationName,
         );
         derivedStatus = derived.status;
+      } else {
+        _logTb('[Taobao SSR] 物流详情没有可用的轨迹节点，只产出运单信息');
       }
 
       return _TbParcel(
-        mailNo: mailNo,
-        cpName: cpName,
+        mailNo: trace.mailNo,
+        cpName: trace.cpName,
         stateLabel: stateLabel,
-        pickupCode: pickupCode,
+        pickupCode: trace.pickupCode,
         stationName: stationName,
-        location: location,
+        location: '',
         rawTimelineJson: rawTimelineJson,
         derivedStatus: derivedStatus,
       );
-    } catch (_) {
+    } catch (e) {
+      // 只记异常类型：ClientException 等的文本会带请求 URL（含订单号）
+      _logTb('[Taobao SSR] 物流详情请求或解析异常：${e.runtimeType}');
       return null;
     }
-  }
-
-  /// 从淘宝 SSR 物流轨迹节点中提取纯文本描述。
-  ///
-  /// 淘宝的 `labelDesc` 是对象而非字符串：`{richContent:[{text:"..."}]}` 或
-  /// `{text:"..."}`；直接 `toString()` 会把整个对象序列化成垃圾文本，导致取件码
-  /// 与驿站名正则匹配不到。这里按官方结构递归拼接出可读文本。
-  String _stageText(Map<String, dynamic> stage) {
-    final labelDesc = stage['labelDesc'];
-    if (labelDesc is Map) {
-      final rich = labelDesc['richContent'];
-      if (rich is List) {
-        final sb = StringBuffer();
-        for (final r in rich) {
-          if (r is Map) {
-            final t = r['text']?.toString() ?? '';
-            if (t.isNotEmpty) sb.write(t);
-          }
-        }
-        if (sb.isNotEmpty) return sb.toString();
-      }
-      final t = labelDesc['text']?.toString() ?? '';
-      if (t.isNotEmpty) return t;
-    } else if (labelDesc is String) {
-      final t = labelDesc.trim();
-      if (t.isNotEmpty) return t;
-    }
-    final text = stage['text']?.toString() ?? '';
-    if (text.isNotEmpty) return text;
-    return stage['desc']?.toString() ?? '';
   }
 
   /// 针对已知运单号直接调用阿里/菜鸟官方 mtop 接口查询到站取件信息
@@ -1162,7 +1114,16 @@ class _TbOrder {
   final String goodsName;
   final String goodsPic;
 
-  _TbOrder({required this.orderId, required this.statusText, required this.goodsName, required this.goodsPic});
+  /// 订单列表 statusInfo.operations 里有「查看物流」
+  final bool hasLogistics;
+
+  _TbOrder({
+    required this.orderId,
+    required this.statusText,
+    required this.goodsName,
+    required this.goodsPic,
+    required this.hasLogistics,
+  });
 }
 
 class _TbParcel {
