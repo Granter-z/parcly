@@ -10,6 +10,7 @@ Package pkg(
   String location = '',
   DateTime? addedAt,
   List<StatusTransition> history = const [],
+  String code = '',
 }) =>
     Package(
       id: id,
@@ -21,6 +22,7 @@ Package pkg(
       stationName: station,
       location: location,
       statusHistory: history,
+      pickupCode: code,
     );
 
 List<String> ids(StationGroup g) => [for (final p in g.packages) p.id];
@@ -35,6 +37,24 @@ void main() {
       ]);
       expect(groups.length, 1);
       expect(ids(groups.single), ['a']);
+    });
+
+    test('还在途但已经有取件码的也算待取件，待发货的不算', () {
+      final groups = groupPackagesByStation([
+        pkg('a', station: 'S', status: PackageStatus.transit, code: '6-2-3021'),
+        pkg('b', station: 'S', status: PackageStatus.pendingShipment, code: '6-2-3022'),
+      ]);
+      expect(ids(groups.single), ['a']);
+    });
+
+    test('同叫「菜鸟驿站」但位置不同的分成两组', () {
+      final groups = groupPackagesByStation([
+        pkg('a', station: '菜鸟驿站', location: '东门'),
+        pkg('b', station: '菜鸟驿站', location: '西门'),
+        pkg('c', station: '菜鸟驿站', location: '东门'),
+      ]);
+      expect(groups.map((g) => g.name), ['菜鸟驿站 · 东门', '菜鸟驿站 · 西门']);
+      expect(ids(groups.first), ['a', 'c']);
     });
 
     test('空格、全角、大小写不同的驿站名算同一个，显示名用第一次出现的写法', () {

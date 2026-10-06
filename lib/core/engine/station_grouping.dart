@@ -35,11 +35,21 @@ DateTime arrivalTimeOf(Package p) {
 bool isNearlyOverdue(Package p, DateTime now) =>
     now.difference(arrivalTimeOf(p)) > nearlyOverdueAfter;
 
-/// 包裹的驿站显示名：优先 stationName，其次 location，都没有返回空串。
+/// 包裹的驿站显示名：stationName 和 location 都有时拼成「驿站 · 位置」
+/// （同叫「菜鸟驿站」的不同网点要分开），只有一个就用那个，都没有返回空串。
 String stationLabelOf(Package p) {
   final s = (p.stationName ?? '').trim();
-  if (s.isNotEmpty) return s;
-  return p.location.trim();
+  final l = p.location.trim();
+  if (s.isNotEmpty && l.isNotEmpty && s != l) return '$s · $l';
+  return s.isNotEmpty ? s : l;
+}
+
+/// 算不算「待取件」：已到达，或者还没完成但已经拿到取件码（和首页原来的排序口径一致）。
+bool isAwaitingPickup(Package p) {
+  if (p.status == PackageStatus.arrived) return true;
+  return p.status.isPending &&
+      p.status != PackageStatus.pendingShipment &&
+      p.pickupCode.trim().isNotEmpty;
 }
 
 /// 比较用的驿站名：去掉所有空白，全角字符转半角，英文转小写。
@@ -56,20 +66,20 @@ String normalizeStationName(String raw) {
   return buf.toString().toLowerCase();
 }
 
-/// 把待取件（status == arrived）的包裹按驿站分组。
+/// 把待取件（见 [isAwaitingPickup]）的包裹按驿站分组。
 ///
 /// - 规范化后同名的算同一个驿站，显示名用组里第一个出现的写法；
 /// - 组内按到站时间从早到晚；
 /// - 组按最早到站时间从早到晚（等得越久越靠前）；
 /// - 没有驿站信息的放进「未知驿站」，永远排最后；
-/// - 其他状态的包裹不参与分组。
+/// - 不是待取件的包裹不参与分组。
 List<StationGroup> groupPackagesByStation(List<Package> packages) {
   final named = <String, List<Package>>{};
   final labels = <String, String>{};
   final unknown = <Package>[];
 
   for (final p in packages) {
-    if (p.status != PackageStatus.arrived) continue;
+    if (!isAwaitingPickup(p)) continue;
     final label = stationLabelOf(p);
     final key = normalizeStationName(label);
     if (key.isEmpty) {

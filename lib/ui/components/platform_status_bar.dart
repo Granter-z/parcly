@@ -92,7 +92,8 @@ class _PlatformChip extends ConsumerWidget {
                 height: 10,
                 child: CircularProgressIndicator(strokeWidth: 1.5, color: info.brandColor),
               )
-            : _dot(info.brandColor);
+            // 正常用绿勾，不用品牌色：拼多多/京东的品牌红和「需重登」的红点太像。
+            : const Icon(Icons.check_circle, size: 12, color: Color(0xFF2E7D32));
         label = info.shortName;
         textColor = Colors.grey.shade800;
     }

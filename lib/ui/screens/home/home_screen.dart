@@ -7,11 +7,13 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../providers/package_provider.dart';
 import '../../../platform/connectors/connector_manager.dart';
-import '../../components/staggered_entrance.dart';
 import '../settings/settings_screen.dart';
 import '../pdd/pdd_web_screen.dart';
-import 'widgets/hero_stats_dashboard.dart';
-import 'widgets/modern_package_card.dart';
+import '../../../core/engine/station_grouping.dart';
+import '../../components/platform_status_bar.dart';
+import '../../providers/platform_auth_status_provider.dart';
+import '../login/platform_login_flow.dart';
+import 'widgets/pickup_widgets.dart';
 import 'widgets/completed_packages_sheet.dart';
 
 class HomeScreen extends ConsumerStatefulWidget {
@@ -22,6 +24,103 @@ class HomeScreen extends ConsumerStatefulWidget {
 }
 
 class _HomeScreenState extends ConsumerState<HomeScreen> {
+  static const _collapsedTransitCount = 3;
+
+  /// 折叠起来的驿站分组（按组名记）
+  final Set<String> _collapsedStations = {};
+  bool _transitExpanded = false;
+
+  Widget _sectionTitle(String title, int count, {Widget? trailing}) {
+    return SliverToBoxAdapter(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 14, 12, 6),
+        child: Row(
+          children: [
+            Text(
+              '$title $count',
+              style: const TextStyle(fontSize: 17, fontWeight: FontWeight.bold, color: Color(0xFF1C1C1E)),
+            ),
+            const Spacer(),
+            if (trailing != null) trailing,
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _hint(String text) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+      child: Text(text, style: const TextStyle(fontSize: 14, color: Color(0xFF8E8E93))),
+    );
+  }
+
+  List<Widget> _buildStationGroup(StationGroup group, DateTime now) {
+    final collapsed = _collapsedStations.contains(group.name);
+    return [
+      SliverPadding(
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        sliver: SliverToBoxAdapter(
+          child: StationGroupHeader(
+            group: group,
+            collapsed: collapsed,
+            onToggle: () => setState(() {
+              collapsed ? _collapsedStations.remove(group.name) : _collapsedStations.add(group.name);
+            }),
+          ),
+        ),
+      ),
+      if (!collapsed)
+        SliverPadding(
+          padding: const EdgeInsets.fromLTRB(20, 0, 20, 4),
+          sliver: SliverList.separated(
+            itemCount: group.packages.length,
+            separatorBuilder: (_, __) => const SizedBox(height: 10),
+            itemBuilder: (context, i) => PickupCodeCard(
+              key: ValueKey(group.packages[i].id),
+              package: group.packages[i],
+              now: now,
+            ),
+          ),
+        ),
+    ];
+  }
+
+  /// 三个平台都没绑定时的整页引导
+  Widget _buildBindGuide() {
+    return Container(
+      margin: const EdgeInsets.all(20),
+      padding: const EdgeInsets.all(24),
+      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(20)),
+      child: Column(
+        children: [
+          const Icon(Icons.inventory_2_outlined, size: 48, color: Color(0xFF8E8E93)),
+          const SizedBox(height: 12),
+          const Text(
+            '绑定拼多多 / 京东 / 淘宝，包裹自动出现在这里',
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: Color(0xFF1C1C1E)),
+          ),
+          const SizedBox(height: 16),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            alignment: WrapAlignment.center,
+            children: [
+              for (final p in kPlatforms)
+                FilledButton.tonal(
+                  style: FilledButton.styleFrom(foregroundColor: p.brandColor),
+                  onPressed: () => openPlatformLogin(context, ref,
+                      platform: p.id, displayName: p.displayName, brandColor: p.brandColor),
+                  child: Text('绑定${p.shortName}'),
+                ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
   /// 执行同步：首批在途件到达或首个通道完成即提前停转圈，后台静默继续抓取
   Future<void> _runSync() async {
     final manager = ref.read(connectorManagerProvider);
@@ -69,6 +168,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   Widget build(BuildContext context) {
     final pendingPackages = ref.watch(pendingPackagesProvider);
     final completedPackages = ref.watch(completedPackagesProvider);
+    final stationGroups = groupPackagesByStation(pendingPackages);
+    final pickupCount = stationGroups.fold<int>(0, (n, g) => n + g.packages.length);
+    final inTransit = pendingPackages.where((p) => !isAwaitingPickup(p)).toList();
+    final allUnbound = kPlatforms.every(
+        (p) => ref.watch(platformAuthStatusProvider(p.id)) == PlatformAuthStatus.unbound);
     const weekdays = ['一', '二', '三', '四', '五', '六', '日'];
     final now = DateTime.now();
     final todayStr = '${now.month}月${now.day}日 星期${weekdays[now.weekday - 1]}';
@@ -159,239 +263,88 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 ),
               ),
 
-              // 顶部 Hero 统计卡片
+              // ① 平台登录状态条
               const SliverToBoxAdapter(
                 child: Padding(
-                  padding: EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-                  child: HeroStatsDashboard(),
+                  padding: EdgeInsets.fromLTRB(16, 0, 16, 8),
+                  child: PlatformStatusBar(),
                 ),
               ),
 
-              // 拼多多内置商城快捷入口
-              SliverToBoxAdapter(
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(20, 0, 20, 10),
-                  child: InkWell(
-                    onTap: () {
-                      HapticFeedback.lightImpact();
-                      PddWebScreen.open(context);
-                    },
-                    borderRadius: BorderRadius.circular(16),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          colors: [
-                            const Color(0xFFE02E24).withValues(alpha: 0.08),
-                            const Color(0xFFFF5722).withValues(alpha: 0.03),
+              if (allUnbound)
+                SliverToBoxAdapter(child: _buildBindGuide())
+              else ...[
+                // ② 待取件（按驿站分组）
+                _sectionTitle('待取件', pickupCount),
+                if (stationGroups.isEmpty)
+                  SliverToBoxAdapter(
+                    child: _hint(pendingPackages.isEmpty ? '暂时没有要取的包裹，下拉可以同步' : '暂时没有要取的包裹'),
+                  )
+                else
+                  for (final group in stationGroups) ..._buildStationGroup(group, now),
+
+                // ③ 在途
+                if (inTransit.isNotEmpty) ...[
+                  _sectionTitle(
+                    '在途',
+                    inTransit.length,
+                    trailing: inTransit.length > _collapsedTransitCount
+                        ? TextButton(
+                            onPressed: () => setState(() => _transitExpanded = !_transitExpanded),
+                            child: Text(_transitExpanded ? '收起' : '展开全部'),
+                          )
+                        : null,
+                  ),
+                  SliverPadding(
+                    padding: const EdgeInsets.symmetric(horizontal: 20),
+                    sliver: SliverToBoxAdapter(
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                        child: Column(
+                          children: [
+                            for (final p in (_transitExpanded
+                                ? inTransit
+                                : inTransit.take(_collapsedTransitCount)))
+                              InTransitRow(package: p),
                           ],
-                          begin: Alignment.centerLeft,
-                          end: Alignment.centerRight,
                         ),
-                        borderRadius: BorderRadius.circular(16),
-                        border: Border.all(
-                          color: const Color(0xFFE02E24).withValues(alpha: 0.22),
-                          width: 1,
-                        ),
-                      ),
-                      child: Row(
-                        children: [
-                          Container(
-                            width: 36,
-                            height: 36,
-                            decoration: BoxDecoration(
-                              color: const Color(0xFFE02E24),
-                              borderRadius: BorderRadius.circular(10),
-                            ),
-                            child: const Icon(
-                              Icons.local_fire_department_rounded,
-                              color: Colors.white,
-                              size: 20,
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          const Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Row(
-                                  children: [
-                                    Text(
-                                      '拼多多 · 内置商城',
-                                      style: TextStyle(
-                                        fontSize: 14,
-                                        fontWeight: FontWeight.bold,
-                                        color: Color(0xFF1C1C1E),
-                                      ),
-                                    ),
-                                    SizedBox(width: 6),
-                                    Text(
-                                      '免App防互踢',
-                                      style: TextStyle(
-                                        fontSize: 11,
-                                        fontWeight: FontWeight.w600,
-                                        color: Color(0xFFE02E24),
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                                SizedBox(height: 2),
-                                Text(
-                                  '直接浏览下单，在途包裹与取件码自动同步',
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    color: Color(0xFF8E8E93),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                          const Icon(
-                            Icons.arrow_forward_ios_rounded,
-                            size: 13,
-                            color: Color(0xFFE02E24),
-                          ),
-                        ],
                       ),
                     ),
                   ),
-                ),
-              ),
+                ],
+              ],
 
-              // 列表标题栏
-              SliverToBoxAdapter(
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(20, 14, 20, 8),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Text(
-                        '待取与在途快件 (${pendingPackages.length})',
-                        style: const TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold,
-                          color: Color(0xFF2C2C2E),
-                        ),
-                      ),
-                      if (completedPackages.isNotEmpty)
-                        InkWell(
-                          onTap: () {
-                            HapticFeedback.lightImpact();
-                            CompletedPackagesSheet.show(context);
-                          },
-                          borderRadius: BorderRadius.circular(12),
-                          child: Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
-                            child: Row(
-                              children: [
-                                Text(
-                                  '已完成 (${completedPackages.length})',
-                                  style: const TextStyle(
-                                    fontSize: 13,
-                                    color: Color(0xFF007AFF),
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                ),
-                                const Icon(
-                                  Icons.chevron_right_rounded,
-                                  size: 16,
-                                  color: Color(0xFF007AFF),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                    ],
-                  ),
-                ),
-              ),
-
-              // 在途包裹主列表 / 空状态
-              if (pendingPackages.isEmpty)
+              // ④ 已取 / 已归档入口
+              if (completedPackages.isNotEmpty)
                 SliverToBoxAdapter(
-                  child: Container(
-                    margin: const EdgeInsets.all(20),
-                    padding: const EdgeInsets.all(32),
-                    decoration: BoxDecoration(
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
+                    child: Material(
                       color: Colors.white,
-                      borderRadius: BorderRadius.circular(20),
-                    ),
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        const Icon(
-                          Icons.inbox_outlined,
-                          size: 56,
-                          color: Color(0xFF8E8E93),
-                        ),
-                        const SizedBox(height: 12),
-                        const Text(
-                          '暂无待取快件',
-                          style: TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.bold,
-                            color: Color(0xFF1C1C1E),
-                          ),
-                        ),
-                        const SizedBox(height: 6),
-                        const Text(
-                          '下拉同步，或前往平台绑定页聚合在途包裹与取件码',
-                          textAlign: TextAlign.center,
-                          style: TextStyle(
-                            fontSize: 13,
-                            color: Color(0xFF8E8E93),
-                          ),
-                        ),
-                        const SizedBox(height: 18),
-                        FilledButton.tonalIcon(
-                          onPressed: () => _runSync(),
-                          icon: const Icon(Icons.sync_rounded, size: 16),
-                          label: const Text('一键同步'),
-                        ),
-                      ],
-                    ),
-                  ),
-                )
-              else
-                SliverPadding(
-                  padding: const EdgeInsets.fromLTRB(20, 4, 20, 100),
-                  sliver: SliverList(
-                    delegate: SliverChildBuilderDelegate(
-                      (context, index) {
-                        final pkg = pendingPackages[index];
-                        return Padding(
-                          padding: const EdgeInsets.only(bottom: 14),
-                          child: StaggeredEntrance(
-                            index: index,
-                            child: ModernPackageCard(package: pkg),
-                          ),
-                        );
-                      },
-                      childCount: pendingPackages.length,
+                      borderRadius: BorderRadius.circular(14),
+                      child: ListTile(
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                        leading: const Icon(Icons.check_circle_outline_rounded, color: Color(0xFF34C759)),
+                        title: Text('已取 / 已归档 ${completedPackages.length}',
+                            style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+                        trailing: const Icon(Icons.chevron_right_rounded),
+                        onTap: () {
+                          HapticFeedback.lightImpact();
+                          CompletedPackagesSheet.show(context);
+                        },
+                      ),
                     ),
                   ),
                 ),
+              const SliverToBoxAdapter(child: SizedBox(height: 48)),
             ],
           ),
         ),
       ),
-      // 右下角“已完成”悬浮胶囊
-      floatingActionButton: completedPackages.isNotEmpty
-          ? FloatingActionButton.extended(
-              onPressed: () {
-                HapticFeedback.lightImpact();
-                CompletedPackagesSheet.show(context);
-              },
-              backgroundColor: const Color(0xFF1C1C1E),
-              foregroundColor: Colors.white,
-              elevation: 4,
-              icon: const Icon(Icons.check_circle_outline_rounded, size: 18),
-              label: Text(
-                '已完成 ${completedPackages.length}',
-                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
-              ),
-            )
-          : null,
     );
   }
 }
