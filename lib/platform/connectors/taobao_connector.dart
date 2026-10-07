@@ -13,9 +13,12 @@ import '../../core/models/package_status.dart';
 import '../../core/parser/taobao_trace_parser.dart';
 import '../../core/sanitizer/goods_name_cleaner.dart';
 import '../storage/platform_auth_store.dart';
+import '../sync/sync_history_manager.dart';
 import '../webview/platform_cookie.dart';
 import 'platform_connector.dart';
 import 'taobao_sync_rules.dart';
+import 'concurrent_limiter.dart';
+import 'sync_optimizer.dart';
 
 void _logTb(String msg) {
   debugPrint(msg);
@@ -39,6 +42,7 @@ class TaobaoH5Connector implements PlatformConnector {
   final PlatformAuthStore _authStore;
   final List<String> Function()? _getActiveTrackingNumbers;
   final List<Package> Function()? _getLocalPackages;
+  final SyncHistoryManager _syncHistory = SyncHistoryManager();
   static const _appKey = '12574478';
   static const _ua =
       'Mozilla/5.0 (Linux; Android 14; 25102RKBEC Build/UP1A.231005.007) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36';
@@ -135,21 +139,59 @@ class TaobaoH5Connector implements PlatformConnector {
       final withLogistics = orders.where((o) => o.hasLogistics).toList();
       _logTb('[Taobao] 订单 ${orders.length} 个，有「查看物流」${withLogistics.length} 个，'
           '跳过 ${orders.length - withLogistics.length} 个');
+
       // 已签收订单只请求一次：本地已有、已签收且轨迹不为空的跳过（不另存标记）
       final local = _getLocalPackages?.call() ?? const <Package>[];
-      var parsedCount = 0;
-      var failedCount = 0;
+
+      // ⚡ 优化：智能跳过最近已同步的订单（24小时内）
+      final needFetchOrders = SyncOptimizer.filterNeedsFetch<_TbOrder>(
+        orders: withLogistics,
+        localPackages: local,
+        getOrderId: (order) => order.orderId,
+        getStatus: (order) => PackageStatus.transit, // 从订单列表无法准确判断状态，默认在途
+        recentThreshold: const Duration(hours: 24),
+      );
+
+      // 保留旧的已签收跳过逻辑（作为额外的过滤）
+      final finalNeedFetch = <_TbOrder>[];
       var skippedSigned = 0;
-      var cainiaoOverrides = 0;
-      for (final order in withLogistics) {
-        if (_cancelled) break;
+      for (final order in needFetchOrders) {
         final localPkg = findLocalTaobaoPackage(local, order.orderId);
         if (shouldSkipSignedDetail(localPkg)) {
           skippedSigned++;
           continue;
         }
-        final parcel = await _fetchSsrLogistics(client, cookies, order.orderId);
+        finalNeedFetch.add(order);
+      }
+
+      _logTb('[Taobao] 智能跳过（24h内已同步）${withLogistics.length - needFetchOrders.length} 个，'
+          '已签收且本地有轨迹跳过 $skippedSigned 个，需拉取详情 ${finalNeedFetch.length} 个');
+
+      // ⚡ 优化：并发拉取订单详情（限制并发数为 3）
+      final executor = ThrottledExecutor(
+        maxConcurrent: 3,
+        minDelay: const Duration(milliseconds: 100),
+        maxDelay: const Duration(milliseconds: 300),
+      );
+
+      final detailTasks = needFetchOrders.map((order) {
+        return () => _fetchSsrLogistics(client, cookies, order.orderId).then((parcel) {
+          return {'order': order, 'parcel': parcel};
+        });
+      }).toList();
+
+      final results = await executor.executeAll(detailTasks);
+
+      var parsedCount = 0;
+      var failedCount = 0;
+      var cainiaoOverrides = 0;
+
+      for (final result in results) {
         if (_cancelled) break;
+
+        final order = result['order'] as _TbOrder;
+        final parcel = result['parcel'] as _TbParcel?;
+
         if (parcel == null) {
           failedCount++;
         } else {
@@ -172,12 +214,14 @@ class TaobaoH5Connector implements PlatformConnector {
             rawTimelineJson: parcel.rawTimelineJson,
           );
           // 淘宝已签收但菜鸟驿站还挂着且有取件码 → 以菜鸟为准（用户手动已取 / 归档的不改）
+          final localPkg = findLocalTaobaoPackage(local, order.orderId);
           final finalPkg = applyCainiaoPriority(tbPkg, cainiaoPackages, local: localPkg);
           if (!identical(finalPkg, tbPkg)) cainiaoOverrides++;
           yield finalPkg;
         }
       }
-      _logTb('[Taobao] 物流详情：已签收且本地有轨迹跳过 $skippedSigned 个，'
+
+      _logTb('[Taobao] 物流详情（并发拉取）：已签收且本地有轨迹跳过 $skippedSigned 个，'
           '请求 ${parsedCount + failedCount} 个，解析成功 $parsedCount 个，失败 $failedCount 个，'
           '已签收但菜鸟仍待取改回待取件 $cainiaoOverrides 个');
 
@@ -787,6 +831,8 @@ class TaobaoH5Connector implements PlatformConnector {
               final itemInfo = sub['itemInfo'] as Map<String, dynamic>?;
               title = GoodsNameCleaner.clean(itemInfo?['title']?.toString() ?? '');
               pic = itemInfo?['pic']?.toString() ?? '';
+              // 淘宝返回协议相对 URL（//img.alicdn.com/...），不补 scheme 会导致 Image.network 加载失败
+              if (pic.startsWith('//')) pic = 'https:$pic';
             }
 
             orders.add(_TbOrder(
@@ -1042,6 +1088,10 @@ class TaobaoH5Connector implements PlatformConnector {
         if (isTokenErr && attempt < 2) {
           await Future.delayed(const Duration(milliseconds: 150));
           continue;
+        }
+        if (isTokenErr) {
+          // 令牌多轮轮换重试后仍过期：登录态实质失效，落盘标记供设置页展示「已失效」
+          await _markSessionExpired();
         }
         return body;
       }

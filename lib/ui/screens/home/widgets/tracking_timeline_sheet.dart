@@ -305,8 +305,9 @@ class _TrackingTimelineSheetState extends State<TrackingTimelineSheet> {
                           if (pkg.goodsImageUrl != null && pkg.goodsImageUrl!.isNotEmpty)
                             ClipRRect(
                               borderRadius: BorderRadius.circular(8),
+                              // 兜底历史数据：旧 URL 可能缺协议 scheme（//img.alicdn.com/...），直接请求必然失败
                               child: Image.network(
-                                pkg.goodsImageUrl!,
+                                pkg.goodsImageUrl!.startsWith('//') ? 'https:${pkg.goodsImageUrl!}' : pkg.goodsImageUrl!,
                                 width: 50,
                                 height: 50,
                                 fit: BoxFit.cover,

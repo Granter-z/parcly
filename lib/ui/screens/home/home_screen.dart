@@ -7,6 +7,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../providers/package_provider.dart';
 import '../../../platform/connectors/connector_manager.dart';
+import '../../../platform/sync/background_sync_service.dart';
+import '../../../platform/keep_alive/keep_alive_service.dart';
 import '../../components/staggered_entrance.dart';
 import '../settings/settings_screen.dart';
 import '../pdd/pdd_web_screen.dart';
@@ -22,6 +24,27 @@ class HomeScreen extends ConsumerStatefulWidget {
 }
 
 class _HomeScreenState extends ConsumerState<HomeScreen> {
+  BackgroundSyncService? _backgroundSyncService;
+
+  @override
+  void initState() {
+    super.initState();
+    // 延迟初始化后台同步服务和保活服务（等待 ref 可用）
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _backgroundSyncService = BackgroundSyncService(ref);
+      _backgroundSyncService!.initialize();
+
+      // 初始化保活服务（通过 Provider 自动启动）
+      ref.read(keepAliveServiceProvider);
+    });
+  }
+
+  @override
+  void dispose() {
+    _backgroundSyncService?.dispose();
+    super.dispose();
+  }
+
   /// 执行同步：首批在途件到达或首个通道完成即提前停转圈，后台静默继续抓取
   Future<void> _runSync() async {
     final manager = ref.read(connectorManagerProvider);

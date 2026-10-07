@@ -9,6 +9,8 @@ import '../../../platform/connectors/connector_manager.dart';
 import '../../providers/package_provider.dart';
 import '../login/platform_login_screen.dart';
 import '../pdd/pdd_web_screen.dart';
+import 'background_sync_test_screen.dart';
+import 'keep_alive_status_screen.dart';
 
 class SettingsScreen extends ConsumerStatefulWidget {
   const SettingsScreen({super.key});
@@ -95,6 +97,34 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                         ),
                       );
                     }
+                  },
+                ),
+                const Divider(height: 1, indent: 56),
+                ListTile(
+                  leading: const Icon(Icons.favorite_rounded, color: Color(0xFF4CAF50)),
+                  title: const Text('平台保活状态', style: TextStyle(fontSize: 14.5, fontWeight: FontWeight.w600)),
+                  subtitle: const Text('查看登录态健康度与保活记录', style: TextStyle(fontSize: 12)),
+                  trailing: const Icon(Icons.chevron_right_rounded, size: 20, color: Colors.grey),
+                  onTap: () {
+                    HapticFeedback.lightImpact();
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (_) => const KeepAliveStatusScreen()),
+                    );
+                  },
+                ),
+                const Divider(height: 1, indent: 56),
+                ListTile(
+                  leading: const Icon(Icons.bug_report_rounded, color: Color(0xFFFF9500)),
+                  title: const Text('后台同步测试工具', style: TextStyle(fontSize: 14.5, fontWeight: FontWeight.w600)),
+                  subtitle: const Text('测试后台同步与到件通知功能', style: TextStyle(fontSize: 12)),
+                  trailing: const Icon(Icons.chevron_right_rounded, size: 20, color: Colors.grey),
+                  onTap: () {
+                    HapticFeedback.lightImpact();
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (_) => const BackgroundSyncTestScreen()),
+                    );
                   },
                 ),
                 const Divider(height: 1, indent: 56),

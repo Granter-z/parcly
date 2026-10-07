@@ -23,6 +23,7 @@ import '../storage/platform_auth_store.dart';
 import '../webview/platform_cookie.dart';
 import 'pdd_trace_parser.dart';
 import 'platform_connector.dart';
+import 'concurrent_limiter.dart';
 
 class PddH5Connector implements PlatformConnector {
   final PlatformAuthStore _authStore;
@@ -309,17 +310,30 @@ class PddH5Connector implements PlatformConnector {
     try {
       await _controller?.clearCache();
     } catch (_) {}
-    var orderIndex = 0;
-    for (final entry in pendingCodes.entries) {
-      // 订单之间留出适度间隔，避免高频请求
-      if (orderIndex > 0) {
-        await Future.delayed(const Duration(milliseconds: 300));
-      }
-      orderIndex++;
-      final detail = await _fetchOrderDetail(entry.key, base: entry.value.pkg);
+
+    // ⚡ 优化：并发拉取订单详情（限制并发数为 3）
+    final executor = ThrottledExecutor(
+      maxConcurrent: 3,
+      minDelay: const Duration(milliseconds: 200),
+      maxDelay: const Duration(milliseconds: 400),
+    );
+
+    final detailTasks = pendingCodes.entries.map((entry) {
+      return () => _fetchOrderDetail(entry.key, base: entry.value.pkg).then((detail) {
+        return {'orderSn': entry.key, 'order': entry.value, 'detail': detail};
+      });
+    }).toList();
+
+    final results = await executor.executeAll(detailTasks);
+
+    for (final result in results) {
+      final orderSn = result['orderSn'] as String;
+      final orderEntry = result['order'] as _PddOrder;
+      final detail = result['detail'] as PddDetailResult?;
+
       if (detail == null) continue;
 
-      final base = entry.value.pkg;
+      final base = orderEntry.pkg;
 
       // ── 关键：由软件基于时间轴事件序列推导货物真实状态、时间轴稳定性与下次同步周期 ──
       final events = detail.parsedTimelineNodes;
@@ -334,7 +348,7 @@ class PddH5Connector implements PlatformConnector {
       final derivedStatus = derived.status;
       final syncInterval = derived.recommendedSyncInterval;
 
-      debugPrint('[PDD NewMode] 订单 ${entry.key} 时间轴推导完成 => '
+      debugPrint('[PDD NewMode] 订单 $orderSn 时间轴推导完成 => '
           '货物状态: 【${derivedStatus.label}】 '
           '稳定性: 【${derived.stabilityName}】 '
           '建议同步间隔: ${syncInterval.inMinutes >= 60 ? "${syncInterval.inHours}小时" : "${syncInterval.inMinutes}分钟"} '
@@ -343,7 +357,7 @@ class PddH5Connector implements PlatformConnector {
       final effectiveDescription = detail.latestText.isNotEmpty ? detail.latestText : base.description;
       final cachedTimeline = _richerTimeline(detail.rawTimelineJson, base.rawTimelineJson);
 
-      _timelineCache[entry.key] = _TimelineCache(
+      _timelineCache[orderSn] = _TimelineCache(
         base.description,
         cachedTimeline,
         effectiveDescription,

@@ -291,10 +291,12 @@ class ModernPackageCard extends ConsumerWidget {
 
   Widget _buildProductImage(String? url) {
     if (url != null && url.isNotEmpty) {
+      // 兜底历史数据：淘宝曾存过 //img.alicdn.com/... 这类缺协议 scheme 的 URL，直接请求必然失败
+      final normalized = url.startsWith('//') ? 'https:$url' : url;
       return ClipRRect(
         borderRadius: BorderRadius.circular(12),
         child: Image.network(
-          url,
+          normalized,
           width: 54,
           height: 54,
           fit: BoxFit.cover,

@@ -164,15 +164,27 @@ class Package {
   }
 
   String get displayLocation {
-    if (stationName != null && stationName!.isNotEmpty) {
+    // 包裹未到达时，不显示驿站相关信息
+    if (!status.isArrived) {
+      if (location.isNotEmpty) return location;
+      if (status == PackageStatus.pendingShipment) return '等待商家发货';
+      return '运输途中';
+    }
+
+    // 包裹已到达：优先显示驿站信息
+    if (stationName != null && stationName!.isNotEmpty && stationName != '未知驿站') {
+      // 确定是驿站
       if (location.isNotEmpty) return '$stationName · $location';
       return stationName!;
     }
+
+    // 包裹已到达但不是驿站：显示取货地点
     if (location.isNotEmpty && originalStation.isNotEmpty) return '$originalStation · $location';
     if (location.isNotEmpty) return location;
     if (originalStation.isNotEmpty) return originalStation;
-    if (status == PackageStatus.pendingShipment) return '等待商家发货';
-    return '未知驿站';
+
+    // 已到达但无明确地点信息
+    return '请查看物流详情';
   }
 
   /// 获取解析后的完整时间轴节点列表

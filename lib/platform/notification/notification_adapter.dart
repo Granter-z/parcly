@@ -39,7 +39,7 @@ class NotificationAdapter {
     DebugTrace.separator('SHOW ARRIVED NOTIFICATION');
     print('package: ${package.courier.shortName} ${package.pickupCode}');
 
-    final title = '快递到了！';
+    final title = _buildArrivedTitle(package);
     final body = _buildArrivedBody(package);
     final notificationId = _arrivedBaseId + package.id.hashCode.abs() % 10000;
 
@@ -51,16 +51,42 @@ class NotificationAdapter {
     );
   }
 
+  String _buildArrivedTitle(Package package) {
+    // 优先显示商品名，如果没有则显示「快递到了！」
+    if (package.goodsName != null && package.goodsName!.trim().isNotEmpty) {
+      final goodsName = package.goodsName!.trim();
+      // 商品名过长时截断（通知标题最多显示约 40 个字符）
+      return goodsName.length > 18 ? '${goodsName.substring(0, 18)}...' : goodsName;
+    }
+    return '快递到了！';
+  }
+
   String _buildArrivedBody(Package package) {
     final courier = package.courier.shortName;
+    final parts = <String>[];
 
+    // 显示快递公司
+    parts.add(courier);
+
+    // 显示取件码
     if (package.pickupCode.isNotEmpty) {
-      return '$courier 取件码：${package.pickupCode}';
-    } else if (package.location.isNotEmpty) {
-      return '$courier 已到 ${package.location}，请尽快取件';
-    } else {
-      return '$courier 已到达，请尽快取件';
+      parts.add('取件码：${package.pickupCode}');
     }
+
+    // 显示驿站名（如果有）
+    if (package.stationName != null && package.stationName!.trim().isNotEmpty) {
+      final stationName = package.stationName!.trim();
+      // 驿站名过长时截断
+      final displayStation = stationName.length > 12 ? '${stationName.substring(0, 12)}...' : stationName;
+      parts.add(displayStation);
+    }
+
+    // 如果没有取件码，显示地址信息
+    if (package.pickupCode.isEmpty && package.location.isNotEmpty) {
+      parts.add('已到 ${package.location}');
+    }
+
+    return parts.join(' · ');
   }
 
   Future<void> scheduleReminderNotification(Package package) async {

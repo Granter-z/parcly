@@ -16,6 +16,7 @@ import '../storage/platform_auth_store.dart';
 import 'jd_delivery_filter.dart';
 import 'jd_trace_parser.dart';
 import 'platform_connector.dart';
+import 'concurrent_limiter.dart';
 
 void _logJd(String msg) {
   debugPrint(msg);
@@ -187,12 +188,32 @@ class JdH5Connector implements PlatformConnector {
 
       _logJd('[JD] Final valid shopping orders: ${validOrders.length}');
 
+      // ⚡ 优化：并发拉取物流详情（限制并发数为 3）
+      final executor = ThrottledExecutor(
+        maxConcurrent: 3,
+        minDelay: const Duration(milliseconds: 150),
+        maxDelay: const Duration(milliseconds: 350),
+      );
+
+      final detailTasks = validOrders.values.where((o) => o.progressLink.isNotEmpty).map((o) {
+        return () => _fetchLogisticsDetail(o.orderId, o.progressLink).then((detail) {
+          return {'orderId': o.orderId, 'detail': detail};
+        });
+      }).toList();
+
+      final results = await executor.executeAll(detailTasks);
+
+      // 构建 orderId -> detail 的映射
+      final detailMap = <String, _JdLogisticsDetail?>{};
+      for (final result in results) {
+        final orderId = result['orderId'] as String;
+        final detail = result['detail'] as _JdLogisticsDetail?;
+        detailMap[orderId] = detail;
+      }
+
       for (final o in validOrders.values) {
-        // 优先深挖物流跟踪页，抓取完整轨迹；再由引擎推导状态
-        _JdLogisticsDetail? detail;
-        if (o.progressLink.isNotEmpty) {
-          detail = await _fetchLogisticsDetail(o.orderId, o.progressLink);
-        }
+        // 从映射中获取物流详情
+        final detail = detailMap[o.orderId];
 
         final timelineJson = (detail != null && detail.timelineNodes.isNotEmpty)
             ? jsonEncode(detail.timelineNodes)
