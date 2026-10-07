@@ -8,6 +8,7 @@ import '../../../../core/models/package.dart';
 import '../../../../core/models/package_status.dart';
 import '../../../providers/package_provider.dart';import '../../../components/spring_card.dart';
 import '../../../components/platform_badge.dart';
+import '../../../components/staggered_entrance.dart';
 import 'tracking_timeline_sheet.dart';
 
 class CompletedPackagesSheet extends ConsumerWidget {
@@ -28,6 +29,9 @@ class CompletedPackagesSheet extends ConsumerWidget {
     final theme = Theme.of(context);
 
     return DraggableScrollableSheet(
+      // expand 必须为 false：否则控件会撑满整屏，模态遮罩高度被压成 0，
+      // 点击抽屉上方留白就无法收回抽屉。
+      expand: false,
       initialChildSize: 0.65,
       minChildSize: 0.35,
       maxChildSize: 0.9,
@@ -83,98 +87,114 @@ class CompletedPackagesSheet extends ConsumerWidget {
                         padding: const EdgeInsets.all(16),
                         itemCount: completedPackages.length,
                         separatorBuilder: (_, __) => const SizedBox(height: 12),
-                        itemBuilder: (context, index) {
-                          final pkg = completedPackages[index];
-                          return SpringCard(
-                            padding: const EdgeInsets.all(14),
-                            borderRadius: BorderRadius.circular(14),
-                            onTap: () => TrackingTimelineSheet.show(context, pkg),
-                            onLongPress: () {
-                              HapticFeedback.mediumImpact();
-                              showModalBottomSheet(
-                                context: context,
-                                builder: (ctx) => SafeArea(
-                                  child: Wrap(
-                                    children: [
-                                      ListTile(
-                                        leading: const Icon(Icons.delete_outline_rounded, color: Colors.red),
-                                        title: const Text('删除该包裹', style: TextStyle(color: Colors.red)),
-                                        onTap: () {
-                                          Navigator.pop(ctx);
-                                          ref.read(packageListProvider.notifier).removePackage(pkg.id);
-                                        },
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              );
-                            },
-                            child: Row(
-                              children: [
-                                PlatformBadge(platform: pkg.platform),
-                                const SizedBox(width: 10),
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
-                                      Text(
-                                        pkg.goodsName ?? pkg.description.ifEmpty('快件包裹'),
-                                        style: const TextStyle(
-                                          fontWeight: FontWeight.w600,
-                                          fontSize: 14,
-                                        ),
-                                        maxLines: 1,
-                                        overflow: TextOverflow.ellipsis,
-                                      ),
-                                      const SizedBox(height: 2),
-                                      Text(
-                                        '${pkg.courier.displayName} · ${pkg.trackingNumber}',
-                                        style: TextStyle(
-                                          fontSize: 11.5,
-                                          color: Colors.grey.shade600,
-                                          fontFamily: 'monospace',
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                                const SizedBox(width: 8),
-                                if (pkg.status == PackageStatus.rejected)
-                                  // 拒收：实心红底白字标签，与已取件的绿色文字明显区分
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                                    decoration: BoxDecoration(
-                                      color: const Color(0xFFFF3B30),
-                                      borderRadius: BorderRadius.circular(6),
-                                    ),
-                                    child: const Text(
-                                      '已拒收',
-                                      style: TextStyle(
-                                        fontSize: 11.5,
-                                        color: Colors.white,
-                                        fontWeight: FontWeight.bold,
-                                      ),
-                                    ),
-                                  )
-                                else
-                                  Text(
-                                    pkg.status.label,
-                                    style: const TextStyle(
-                                      fontSize: 12,
-                                      color: Color(0xFF34C759),
-                                      fontWeight: FontWeight.bold,
-                                    ),
-                                  ),
-                              ],
-                            ),
-                          );
-                        },
+                        itemBuilder: (context, index) => StaggeredEntrance(
+                          index: index,
+                          child: _CompletedPackageCard(
+                            package: completedPackages[index],
+                          ),
+                        ),
                       ),
               ),
             ],
           ),
         );
       },
+    );
+  }
+}
+
+/// 已完成列表里的单张卡片：点击进入物流轨迹抽屉，长按可删除。
+class _CompletedPackageCard extends ConsumerWidget {
+  final Package package;
+
+  const _CompletedPackageCard({required this.package});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final pkg = package;
+
+    return SpringCard(
+      padding: const EdgeInsets.all(14),
+      borderRadius: BorderRadius.circular(14),
+      onTap: () => TrackingTimelineSheet.show(context, pkg),
+      onLongPress: () {
+        HapticFeedback.mediumImpact();
+        showModalBottomSheet(
+          context: context,
+          builder: (ctx) => SafeArea(
+            child: Wrap(
+              children: [
+                ListTile(
+                  leading: const Icon(Icons.delete_outline_rounded, color: Colors.red),
+                  title: const Text('删除该包裹', style: TextStyle(color: Colors.red)),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    ref.read(packageListProvider.notifier).removePackage(pkg.id);
+                  },
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+      child: Row(
+        children: [
+          PlatformBadge(platform: pkg.platform),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  pkg.goodsName ?? pkg.description.ifEmpty('快件包裹'),
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w600,
+                    fontSize: 14,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  '${pkg.courier.displayName} · ${pkg.trackingNumber}',
+                  style: TextStyle(
+                    fontSize: 11.5,
+                    color: Colors.grey.shade600,
+                    fontFamily: 'monospace',
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          if (pkg.status == PackageStatus.rejected)
+            // 拒收：实心红底白字标签，与已取件的绿色文字明显区分
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              decoration: BoxDecoration(
+                color: const Color(0xFFFF3B30),
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: const Text(
+                '已拒收',
+                style: TextStyle(
+                  fontSize: 11.5,
+                  color: Colors.white,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            )
+          else
+            Text(
+              pkg.status.label,
+              style: const TextStyle(
+                fontSize: 12,
+                color: Color(0xFF34C759),
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+        ],
+      ),
     );
   }
 }

@@ -16,6 +16,7 @@ import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../core/engine/timeline_view.dart';
+import '../theme/motion.dart';
 
 /// 时间轴配色，与原物流轨迹抽屉保持一致。
 class TrackingTimelineColors {
@@ -71,16 +72,46 @@ class TrackingTimeline extends StatefulWidget {
   State<TrackingTimeline> createState() => _TrackingTimelineState();
 }
 
-class _TrackingTimelineState extends State<TrackingTimeline> {
+class _TrackingTimelineState extends State<TrackingTimeline>
+    with TickerProviderStateMixin {
   /// 每个节点切分后的正文段落。
   List<List<TraceSegment>> _segments = const [];
 
   /// 每个节点里电话段对应的点击识别器（与 _segments 中电话段一一对应）。
   List<List<TapGestureRecognizer>> _recognizers = const [];
 
+  /// 打开抽屉时节点自上而下逐个淡入（只改透明度，不动布局）。
+  late final AnimationController _entranceController;
+
+  /// 最新节点高亮圆点：进场时脉冲两次后停在静息态。
+  late final AnimationController _pulseController;
+  late final Animation<double> _pulse;
+
   @override
   void initState() {
     super.initState();
+
+    _entranceController = AnimationController(
+      vsync: this,
+      duration: Motion.emphasized,
+    );
+    _pulseController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1100),
+    );
+    // 0 = 静息，1 = 完全高亮
+    _pulse = TweenSequence<double>([
+      TweenSequenceItem(tween: Tween(begin: 0.0, end: 1.0), weight: 28),
+      TweenSequenceItem(tween: Tween(begin: 1.0, end: 0.0), weight: 40),
+      TweenSequenceItem(tween: Tween(begin: 0.0, end: 0.6), weight: 16),
+      TweenSequenceItem(tween: Tween(begin: 0.6, end: 0.0), weight: 16),
+    ]).animate(CurvedAnimation(parent: _pulseController, curve: Motion.standard));
+
+    if (widget.nodes.isNotEmpty) {
+      _entranceController.forward();
+      _pulseController.forward();
+    }
+
     _prepare();
   }
 
@@ -97,7 +128,17 @@ class _TrackingTimelineState extends State<TrackingTimeline> {
   @override
   void dispose() {
     _disposeRecognizers();
+    _entranceController.dispose();
+    _pulseController.dispose();
     super.dispose();
+  }
+
+  /// 第 [index] 个节点的淡入进度：越靠下的节点越晚出现。
+  double _entranceOpacity(int index) {
+    final start = (index * 0.08).clamp(0.0, 0.6);
+    final end = (start + 0.4).clamp(0.0, 1.0);
+    return Interval(start, end, curve: Motion.standard)
+        .transform(_entranceController.value);
   }
 
   void _prepare() {
@@ -159,102 +200,137 @@ class _TrackingTimelineState extends State<TrackingTimeline> {
     required bool isLatest,
     required bool isLast,
   }) {
+    return AnimatedBuilder(
+      // Key 仍挂在节点根上：既有测试用它定位节点、并校验最新圆点的从属关系
+      key: ValueKey('tracking_timeline_node_$index'),
+      animation: _entranceController,
+      builder: (context, child) => Opacity(
+        opacity: _entranceOpacity(index),
+        child: child,
+      ),
+      child: IntrinsicHeight(
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _buildNodeRail(isLatest: isLatest, isLast: isLast),
+            const SizedBox(width: 10),
+            _buildNodeContent(
+              index: index,
+              node: node,
+              isLatest: isLatest,
+              isLast: isLast,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 节点左侧：圆点 + 竖向连接线。最新节点带一次进场脉冲。
+  Widget _buildNodeRail({required bool isLatest, required bool isLast}) {
+    const green = TrackingTimelineColors.latest;
+
+    return SizedBox(
+      width: 22,
+      child: Column(
+        children: [
+          if (isLatest)
+            AnimatedBuilder(
+              animation: _pulse,
+              builder: (context, child) => Transform.scale(
+                // 纯绘制缩放，不影响布局，也不打乱既有测试里的节点排序断言
+                scale: 1.0 + 0.5 * _pulse.value,
+                child: Container(
+                  key: const ValueKey('tracking_timeline_latest_dot'),
+                  width: 16,
+                  height: 16,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: green.withValues(alpha: 0.2 + 0.35 * _pulse.value),
+                  ),
+                  child: child,
+                ),
+              ),
+              child: Center(
+                child: Container(
+                  width: 9,
+                  height: 9,
+                  decoration: const BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: green,
+                  ),
+                ),
+              ),
+            )
+          else
+            Container(
+              margin: const EdgeInsets.only(top: 4),
+              width: 8,
+              height: 8,
+              decoration: const BoxDecoration(
+                shape: BoxShape.circle,
+                color: TrackingTimelineColors.historyDot,
+              ),
+            ),
+          if (!isLast)
+            Expanded(
+              child: Container(
+                width: 1.5,
+                color: TrackingTimelineColors.connector,
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  /// 节点右侧：标签 + 时间，下面是正文。
+  Widget _buildNodeContent({
+    required int index,
+    required TimelineNode node,
+    required bool isLatest,
+    required bool isLast,
+  }) {
     const green = TrackingTimelineColors.latest;
     final timeText = formatTimelineTime(node, now: widget.now);
 
-    return IntrinsicHeight(
-      key: ValueKey('tracking_timeline_node_$index'),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // 左侧：节点圆点与竖向连接线
-          SizedBox(
-            width: 22,
-            child: Column(
+    return Expanded(
+      child: Padding(
+        padding: EdgeInsets.only(bottom: isLast ? 4 : 22),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Wrap(
+              crossAxisAlignment: WrapCrossAlignment.center,
+              spacing: 8,
               children: [
-                if (isLatest)
-                  Container(
-                    key: const ValueKey('tracking_timeline_latest_dot'),
-                    width: 16,
-                    height: 16,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: green.withValues(alpha: 0.2),
-                    ),
-                    child: Center(
-                      child: Container(
-                        width: 9,
-                        height: 9,
-                        decoration: const BoxDecoration(
-                          shape: BoxShape.circle,
-                          color: green,
-                        ),
-                      ),
-                    ),
-                  )
-                else
-                  Container(
-                    margin: const EdgeInsets.only(top: 4),
-                    width: 8,
-                    height: 8,
-                    decoration: const BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: TrackingTimelineColors.historyDot,
+                if (node.tag.isNotEmpty)
+                  Text(
+                    node.tag,
+                    style: TextStyle(
+                      fontSize: 13.5,
+                      fontWeight: isLatest ? FontWeight.bold : FontWeight.w600,
+                      color: isLatest ? green : TrackingTimelineColors.historyTag,
                     ),
                   ),
-                if (!isLast)
-                  Expanded(
-                    child: Container(
-                      width: 1.5,
-                      color: TrackingTimelineColors.connector,
+                if (timeText.isNotEmpty)
+                  Text(
+                    timeText,
+                    style: TextStyle(
+                      fontSize: 12.5,
+                      fontWeight: isLatest ? FontWeight.w600 : FontWeight.normal,
+                      color: isLatest ? green : TrackingTimelineColors.historyTime,
+                      fontFamily: 'monospace',
                     ),
                   ),
               ],
             ),
-          ),
-          const SizedBox(width: 10),
-
-          // 右侧：标签 + 时间，下面是正文
-          Expanded(
-            child: Padding(
-              padding: EdgeInsets.only(bottom: isLast ? 4 : 22),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Wrap(
-                    crossAxisAlignment: WrapCrossAlignment.center,
-                    spacing: 8,
-                    children: [
-                      if (node.tag.isNotEmpty)
-                        Text(
-                          node.tag,
-                          style: TextStyle(
-                            fontSize: 13.5,
-                            fontWeight: isLatest ? FontWeight.bold : FontWeight.w600,
-                            color: isLatest ? green : TrackingTimelineColors.historyTag,
-                          ),
-                        ),
-                      if (timeText.isNotEmpty)
-                        Text(
-                          timeText,
-                          style: TextStyle(
-                            fontSize: 12.5,
-                            fontWeight: isLatest ? FontWeight.w600 : FontWeight.normal,
-                            color: isLatest ? green : TrackingTimelineColors.historyTime,
-                            fontFamily: 'monospace',
-                          ),
-                        ),
-                    ],
-                  ),
-                  if (node.text.isNotEmpty) ...[
-                    const SizedBox(height: 5),
-                    _buildTraceText(index, isLatest),
-                  ],
-                ],
-              ),
-            ),
-          ),
-        ],
+            if (node.text.isNotEmpty) ...[
+              const SizedBox(height: 5),
+              _buildTraceText(index, isLatest),
+            ],
+          ],
+        ),
       ),
     );
   }

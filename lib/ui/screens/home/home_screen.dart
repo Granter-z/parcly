@@ -9,11 +9,11 @@ import '../../providers/package_provider.dart';
 import '../../../platform/connectors/connector_manager.dart';
 import '../../../platform/sync/background_sync_service.dart';
 import '../../../platform/keep_alive/keep_alive_service.dart';
-import '../../components/staggered_entrance.dart';
+import '../../theme/motion.dart';
 import '../settings/settings_screen.dart';
 import '../pdd/pdd_web_screen.dart';
+import 'widgets/animated_package_list.dart';
 import 'widgets/hero_stats_dashboard.dart';
-import 'widgets/modern_package_card.dart';
 import 'widgets/completed_packages_sheet.dart';
 
 class HomeScreen extends ConsumerStatefulWidget {
@@ -86,6 +86,53 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     // 首批在途件到达即停圈，最长保护等待 3.5 秒
     final timeout = Future.delayed(const Duration(milliseconds: 3500));
     await Future.any([refreshCompleter.future, timeout]);
+  }
+
+  /// 无在途件的空状态卡片（供 AnimatedSwitcher 做进出场）
+  Widget _buildEmptyState() {
+    return Container(
+      key: const ValueKey('pending_empty_state'),
+      margin: const EdgeInsets.all(20),
+      padding: const EdgeInsets.all(32),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const Icon(
+            Icons.inbox_outlined,
+            size: 56,
+            color: Color(0xFF8E8E93),
+          ),
+          const SizedBox(height: 12),
+          const Text(
+            '暂无待取快件',
+            style: TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.bold,
+              color: Color(0xFF1C1C1E),
+            ),
+          ),
+          const SizedBox(height: 6),
+          const Text(
+            '下拉同步，或前往平台绑定页聚合在途包裹与取件码',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              fontSize: 13,
+              color: Color(0xFF8E8E93),
+            ),
+          ),
+          const SizedBox(height: 18),
+          FilledButton.tonalIcon(
+            onPressed: () => _runSync(),
+            icon: const Icon(Icons.sync_rounded, size: 16),
+            label: const Text('一键同步'),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -329,71 +376,25 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 ),
               ),
 
-              // 在途包裹主列表 / 空状态
-              if (pendingPackages.isEmpty)
-                SliverToBoxAdapter(
-                  child: Container(
-                    margin: const EdgeInsets.all(20),
-                    padding: const EdgeInsets.all(32),
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(20),
-                    ),
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        const Icon(
-                          Icons.inbox_outlined,
-                          size: 56,
-                          color: Color(0xFF8E8E93),
-                        ),
-                        const SizedBox(height: 12),
-                        const Text(
-                          '暂无待取快件',
-                          style: TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.bold,
-                            color: Color(0xFF1C1C1E),
-                          ),
-                        ),
-                        const SizedBox(height: 6),
-                        const Text(
-                          '下拉同步，或前往平台绑定页聚合在途包裹与取件码',
-                          textAlign: TextAlign.center,
-                          style: TextStyle(
-                            fontSize: 13,
-                            color: Color(0xFF8E8E93),
-                          ),
-                        ),
-                        const SizedBox(height: 18),
-                        FilledButton.tonalIcon(
-                          onPressed: () => _runSync(),
-                          icon: const Icon(Icons.sync_rounded, size: 16),
-                          label: const Text('一键同步'),
-                        ),
-                      ],
-                    ),
+              // 空状态：仅在无在途件时出现，与列表之间做淡入淡出 + 高度过渡
+              SliverToBoxAdapter(
+                child: AnimatedSwitcher(
+                  duration: Motion.normal,
+                  switchInCurve: Motion.standard,
+                  switchOutCurve: Motion.exit,
+                  transitionBuilder: (child, animation) => SizeTransition(
+                    sizeFactor: animation,
+                    axisAlignment: -1.0,
+                    child: FadeTransition(opacity: animation, child: child),
                   ),
-                )
-              else
-                SliverPadding(
-                  padding: const EdgeInsets.fromLTRB(20, 4, 20, 100),
-                  sliver: SliverList(
-                    delegate: SliverChildBuilderDelegate(
-                      (context, index) {
-                        final pkg = pendingPackages[index];
-                        return Padding(
-                          padding: const EdgeInsets.only(bottom: 14),
-                          child: StaggeredEntrance(
-                            index: index,
-                            child: ModernPackageCard(package: pkg),
-                          ),
-                        );
-                      },
-                      childCount: pendingPackages.length,
-                    ),
-                  ),
+                  child: pendingPackages.isEmpty
+                      ? _buildEmptyState()
+                      : const SizedBox.shrink(key: ValueKey('packages_present')),
                 ),
+              ),
+
+              // 在途包裹主列表：插入 / 移除 / 重排均带过渡动画
+              AnimatedPackageList(packages: pendingPackages),
             ],
           ),
         ),

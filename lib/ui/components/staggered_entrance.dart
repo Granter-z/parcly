@@ -1,7 +1,11 @@
 /// 流式交错入场动画组件 - 用于多平台增量数据返回时的优雅渐进呈现
 library;
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+
+import '../theme/motion.dart';
 
 class StaggeredEntrance extends StatefulWidget {
   final Widget child;
@@ -14,8 +18,8 @@ class StaggeredEntrance extends StatefulWidget {
     super.key,
     required this.child,
     required this.index,
-    this.duration = const Duration(milliseconds: 380),
-    this.baseDelay = const Duration(milliseconds: 45),
+    this.duration = Motion.emphasized,
+    this.baseDelay = Motion.stagger,
     this.verticalOffset = 24.0,
   });
 
@@ -29,6 +33,9 @@ class _StaggeredEntranceState extends State<StaggeredEntrance>
   late final Animation<double> _fadeAnimation;
   late final Animation<Offset> _slideAnimation;
 
+  /// 延迟启动的定时器：组件提前销毁时必须取消，避免对已释放的控制器动手。
+  Timer? _startTimer;
+
   @override
   void initState() {
     super.initState();
@@ -39,7 +46,7 @@ class _StaggeredEntranceState extends State<StaggeredEntrance>
 
     _fadeAnimation = CurvedAnimation(
       parent: _controller,
-      curve: Curves.easeOutCubic,
+      curve: Motion.standard,
     );
 
     _slideAnimation = Tween<Offset>(
@@ -47,11 +54,10 @@ class _StaggeredEntranceState extends State<StaggeredEntrance>
       end: Offset.zero,
     ).animate(CurvedAnimation(
       parent: _controller,
-      curve: Curves.easeOutBack,
+      curve: Motion.enter,
     ));
 
-    final totalDelay = widget.baseDelay * widget.index;
-    Future.delayed(totalDelay, () {
+    _startTimer = Timer(widget.baseDelay * widget.index, () {
       if (mounted) {
         _controller.forward();
       }
@@ -60,6 +66,7 @@ class _StaggeredEntranceState extends State<StaggeredEntrance>
 
   @override
   void dispose() {
+    _startTimer?.cancel();
     _controller.dispose();
     super.dispose();
   }

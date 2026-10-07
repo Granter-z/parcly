@@ -1,11 +1,14 @@
 /// 首页顶部概览仪表盘 - 聚合待取件、在途状态与一键多平台流式同步
 library;
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../../core/models/package_status.dart';
 import '../../../providers/package_provider.dart';
+import '../../../theme/motion.dart';
 import '../../../../platform/connectors/connector_manager.dart';
 
 class HeroStatsDashboard extends ConsumerStatefulWidget {
@@ -19,6 +22,10 @@ class _HeroStatsDashboardState extends ConsumerState<HeroStatsDashboard>
     with SingleTickerProviderStateMixin {
   late final AnimationController _spinController;
 
+  /// 同步刚结束时短暂展示「已同步」完成态
+  bool _justSynced = false;
+  Timer? _justSyncedTimer;
+
   @override
   void initState() {
     super.initState();
@@ -30,14 +37,28 @@ class _HeroStatsDashboardState extends ConsumerState<HeroStatsDashboard>
 
   @override
   void dispose() {
+    _justSyncedTimer?.cancel();
     _spinController.dispose();
     super.dispose();
+  }
+
+  /// 同步由 true 落回 false 时，闪一次完成态
+  void _flashSynced() {
+    _justSyncedTimer?.cancel();
+    setState(() => _justSynced = true);
+    _justSyncedTimer = Timer(const Duration(milliseconds: 1400), () {
+      if (mounted) setState(() => _justSynced = false);
+    });
   }
 
   @override
   Widget build(BuildContext context) {
     final pendingPackages = ref.watch(pendingPackagesProvider);
     final isSyncing = ref.watch(syncStateProvider);
+
+    ref.listen<bool>(syncStateProvider, (previous, next) {
+      if (previous == true && next == false) _flashSynced();
+    });
 
     if (isSyncing) {
       if (!_spinController.isAnimating) _spinController.repeat();
@@ -110,25 +131,37 @@ class _HeroStatsDashboardState extends ConsumerState<HeroStatsDashboard>
                         );
                       },
                 borderRadius: BorderRadius.circular(20),
-                child: Container(
+                child: AnimatedContainer(
+                  duration: Motion.fast,
                   padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4.5),
                   decoration: BoxDecoration(
-                    color: Colors.white.withValues(alpha: 0.12),
+                    color: _justSynced
+                        ? const Color(0xFF34C759).withValues(alpha: 0.28)
+                        : Colors.white.withValues(alpha: 0.12),
                     borderRadius: BorderRadius.circular(20),
                   ),
                   child: Row(
                     children: [
-                      RotationTransition(
-                        turns: _spinController,
-                        child: const Icon(
-                          Icons.sync_rounded,
-                          color: Colors.white,
+                      if (_justSynced)
+                        const Icon(
+                          Icons.check_circle_rounded,
+                          color: Color(0xFF34C759),
                           size: 14,
+                        )
+                      else
+                        RotationTransition(
+                          turns: _spinController,
+                          child: const Icon(
+                            Icons.sync_rounded,
+                            color: Colors.white,
+                            size: 14,
+                          ),
                         ),
-                      ),
                       const SizedBox(width: 4),
                       Text(
-                        isSyncing ? '同步中...' : '一键同步',
+                        _justSynced
+                            ? '已同步'
+                            : (isSyncing ? '同步中...' : '一键同步'),
                         style: const TextStyle(
                           color: Colors.white,
                           fontSize: 11.5,
@@ -152,8 +185,8 @@ class _HeroStatsDashboardState extends ConsumerState<HeroStatsDashboard>
               crossAxisAlignment: CrossAxisAlignment.baseline,
               textBaseline: TextBaseline.alphabetic,
               children: [
-                Text(
-                  '$toPickupCount',
+                _RollingNumber(
+                  value: toPickupCount,
                   style: const TextStyle(
                     color: Colors.white,
                     fontSize: 42,
@@ -178,8 +211,8 @@ class _HeroStatsDashboardState extends ConsumerState<HeroStatsDashboard>
                   color: Colors.white.withValues(alpha: 0.2),
                 ),
                 const SizedBox(width: 14),
-                Text(
-                  '$inTransitCount',
+                _RollingNumber(
+                  value: inTransitCount,
                   style: TextStyle(
                     color: Colors.white.withValues(alpha: 0.8),
                     fontSize: 26,
@@ -205,8 +238,8 @@ class _HeroStatsDashboardState extends ConsumerState<HeroStatsDashboard>
                     color: Colors.white.withValues(alpha: 0.2),
                   ),
                   const SizedBox(width: 12),
-                  Text(
-                    '$pendingShipmentCount',
+                  _RollingNumber(
+                    value: pendingShipmentCount,
                     style: TextStyle(
                       color: Colors.white.withValues(alpha: 0.8),
                       fontSize: 26,
@@ -247,6 +280,27 @@ class _HeroStatsDashboardState extends ConsumerState<HeroStatsDashboard>
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// 数字滚动组件：数值变化时在旧值与新值之间插值，避免整块数字硬跳。
+class _RollingNumber extends StatelessWidget {
+  final int value;
+  final TextStyle style;
+
+  const _RollingNumber({required this.value, required this.style});
+
+  @override
+  Widget build(BuildContext context) {
+    return TweenAnimationBuilder<double>(
+      tween: Tween<double>(end: value.toDouble()),
+      duration: Motion.emphasized,
+      curve: Motion.standard,
+      builder: (context, animated, _) => Text(
+        animated.round().toString(),
+        style: style,
       ),
     );
   }

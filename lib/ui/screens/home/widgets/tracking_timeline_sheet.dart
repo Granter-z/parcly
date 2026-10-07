@@ -105,6 +105,9 @@ class _TrackingTimelineSheetState extends State<TrackingTimelineSheet> {
     final stationPhone = _stationPhone;
 
     return DraggableScrollableSheet(
+      // expand 必须为 false：否则控件会撑满整屏，模态遮罩高度被压成 0，
+      // 点击抽屉上方留白就无法收回抽屉。
+      expand: false,
       initialChildSize: 0.82,
       minChildSize: 0.50,
       maxChildSize: 0.96,

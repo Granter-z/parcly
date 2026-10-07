@@ -10,6 +10,7 @@ import '../../../providers/package_provider.dart';
 import '../../../components/spring_card.dart';
 import '../../../components/hero_pickup_badge.dart';
 import '../../../components/platform_badge.dart';
+import '../../../theme/motion.dart';
 import 'tracking_timeline_sheet.dart';
 
 class ModernPackageCard extends ConsumerWidget {
@@ -237,10 +238,8 @@ class ModernPackageCard extends ConsumerWidget {
 
                 // 右侧：标记已取 / 查看轨迹
                 if (isArrived)
-                  InkWell(
-                    onTap: () {
-                      HapticFeedback.mediumImpact();
-                      ref.read(packageListProvider.notifier).markPickedUp(package.id);
+                  _PickupConfirmButton(
+                    onConfirmed: () {
                       ScaffoldMessenger.of(context).showSnackBar(
                         SnackBar(
                           content: Text('已完成「${package.goodsName ?? "包裹"}」取件'),
@@ -248,30 +247,8 @@ class ModernPackageCard extends ConsumerWidget {
                           behavior: SnackBarBehavior.floating,
                         ),
                       );
+                      ref.read(packageListProvider.notifier).markPickedUp(package.id);
                     },
-                    borderRadius: BorderRadius.circular(8),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                      decoration: BoxDecoration(
-                        color: Colors.green.withValues(alpha: 0.12),
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: const Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(Icons.check_rounded, size: 14, color: Color(0xFF34C759)),
-                          SizedBox(width: 3),
-                          Text(
-                            '确认取件',
-                            style: TextStyle(
-                              fontSize: 12,
-                              fontWeight: FontWeight.bold,
-                              color: Color(0xFF34C759),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
                   )
                 else
                   const Row(
@@ -323,65 +300,82 @@ class ModernPackageCard extends ConsumerWidget {
     );
   }
 
+  /// 状态标签：状态迁移时底色与文字颜色平滑插值，文案做淡入淡出切换。
   Widget _buildStatusPill(PackageStatus status) {
-    Color bg;
-    Color fg;
-    String text;
+    final visual = _statusVisual(status);
 
-    switch (status) {
-      case PackageStatus.pendingShipment:
-        bg = const Color(0xFF5856D6).withValues(alpha: 0.12);
-        fg = const Color(0xFF5856D6);
-        text = '待发货';
-        break;
-      case PackageStatus.arrived:
-        bg = const Color(0xFF007AFF).withValues(alpha: 0.1);
-        fg = const Color(0xFF007AFF);
-        text = '待取件';
-        break;
-      case PackageStatus.delivering:
-        bg = const Color(0xFFFF9500).withValues(alpha: 0.12);
-        fg = const Color(0xFFFF9500);
-        text = '派送中';
-        break;
-      case PackageStatus.transit:
-        bg = Colors.grey.withValues(alpha: 0.12);
-        fg = Colors.black54;
-        text = '在途中';
-        break;
-      case PackageStatus.pickedUp:
-        bg = const Color(0xFF34C759).withValues(alpha: 0.12);
-        fg = const Color(0xFF34C759);
-        text = '已取件';
-        break;
-      case PackageStatus.rejected:
-        // 拒收为异常终结态：实心红底白字，明显区别于其它浅色标签
-        bg = const Color(0xFFFF3B30);
-        fg = Colors.white;
-        text = '已拒收';
-        break;
-      case PackageStatus.archived:
-        bg = Colors.grey.withValues(alpha: 0.1);
-        fg = Colors.grey;
-        text = '已归档';
-        break;
-    }
-
-    return Container(
+    return AnimatedContainer(
+      duration: Motion.normal,
+      curve: Motion.standard,
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
       decoration: BoxDecoration(
-        color: bg,
+        color: visual.background,
         borderRadius: BorderRadius.circular(6),
       ),
-      child: Text(
-        text,
-        style: TextStyle(
-          fontSize: 11,
-          fontWeight: FontWeight.bold,
-          color: fg,
+      child: AnimatedSwitcher(
+        duration: Motion.fast,
+        child: Text(
+          visual.label,
+          key: ValueKey(visual.label),
+          style: TextStyle(
+            fontSize: 11,
+            fontWeight: FontWeight.bold,
+            color: visual.foreground,
+          ),
         ),
       ),
     );
+  }
+
+  /// 各状态对应的标签配色与文案。
+  ({Color background, Color foreground, String label}) _statusVisual(
+    PackageStatus status,
+  ) {
+    switch (status) {
+      case PackageStatus.pendingShipment:
+        return (
+          background: const Color(0xFF5856D6).withValues(alpha: 0.12),
+          foreground: const Color(0xFF5856D6),
+          label: '待发货',
+        );
+      case PackageStatus.arrived:
+        return (
+          background: const Color(0xFF007AFF).withValues(alpha: 0.1),
+          foreground: const Color(0xFF007AFF),
+          label: '待取件',
+        );
+      case PackageStatus.delivering:
+        return (
+          background: const Color(0xFFFF9500).withValues(alpha: 0.12),
+          foreground: const Color(0xFFFF9500),
+          label: '派送中',
+        );
+      case PackageStatus.transit:
+        return (
+          background: Colors.grey.withValues(alpha: 0.12),
+          foreground: Colors.black54,
+          label: '在途中',
+        );
+      case PackageStatus.pickedUp:
+        return (
+          background: const Color(0xFF34C759).withValues(alpha: 0.12),
+          foreground: const Color(0xFF34C759),
+          label: '已取件',
+        );
+      case PackageStatus.rejected:
+        // 拒收为异常终结态：实心红底白字，明显区别于其它浅色标签
+        return (
+          background: const Color(0xFFFF3B30),
+          foreground: Colors.white,
+          label: '已拒收',
+        );
+      case PackageStatus.archived:
+        return (
+          background: Colors.grey.withValues(alpha: 0.1),
+          foreground: Colors.grey,
+          label: '已归档',
+        );
+    }
   }
 
   String _displayTracking(Package p) {
@@ -395,5 +389,100 @@ class ModernPackageCard extends ConsumerWidget {
       return '${p.effectiveCourier.displayName} · 运输中';
     }
     return '运单号：$no';
+  }
+}
+
+/// 「确认取件」按钮：点按后在原位上做一次绿色脉冲 + 放大回弹，
+/// 动画播完才真正标记已取，让卡片消失前先给出明确反馈。
+class _PickupConfirmButton extends StatefulWidget {
+  final VoidCallback onConfirmed;
+
+  const _PickupConfirmButton({required this.onConfirmed});
+
+  @override
+  State<_PickupConfirmButton> createState() => _PickupConfirmButtonState();
+}
+
+class _PickupConfirmButtonState extends State<_PickupConfirmButton>
+    with SingleTickerProviderStateMixin {
+  static const _success = Color(0xFF34C759);
+
+  late final AnimationController _controller;
+  late final Animation<double> _scale;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(vsync: this, duration: Motion.emphasized);
+    _scale = TweenSequence<double>([
+      TweenSequenceItem(
+        tween: Tween(begin: 1.0, end: 1.12)
+            .chain(CurveTween(curve: Curves.easeOut)),
+        weight: 30,
+      ),
+      TweenSequenceItem(
+        tween: Tween(begin: 1.12, end: 1.0)
+            .chain(CurveTween(curve: Curves.easeInOut)),
+        weight: 70,
+      ),
+    ]).animate(_controller);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  Future<void> _handleTap() async {
+    if (_controller.isAnimating) return;
+    HapticFeedback.mediumImpact();
+    await _controller.forward(from: 0);
+    if (!mounted) return;
+    _controller.value = 0; // 复位，避免交回上层时残留高亮
+    widget.onConfirmed();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, _) {
+        // 底色由浅绿加深为实心绿，文字同步反白
+        final t = Curves.easeOut.transform(_controller.value);
+        final tint = Color.lerp(_success.withValues(alpha: 0.12), _success, t);
+        final onTint = Color.lerp(_success, Colors.white, t);
+
+        return Transform.scale(
+          scale: _scale.value,
+          child: InkWell(
+            onTap: _handleTap,
+            borderRadius: BorderRadius.circular(8),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: tint,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.check_rounded, size: 14, color: onTint),
+                  const SizedBox(width: 3),
+                  Text(
+                    '确认取件',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                      color: onTint,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
   }
 }

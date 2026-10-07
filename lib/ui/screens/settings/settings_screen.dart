@@ -1,6 +1,7 @@
 /// 设置与多平台账号管理界面
 library;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -62,7 +63,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           _buildPlatformCard(
             platform: 'pdd',
             displayName: '拼多多',
-            subtitle: '内置移动端商城：免App防互踢，直接浏览下单并自动同步在途包裹',
+            subtitle: '内置登录免双端互踢，自动同步在途包裹与取件码',
             icon: Icons.local_fire_department_rounded,
             brandColor: const Color(0xFFE02E24),
           ),
@@ -114,20 +115,23 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   },
                 ),
                 const Divider(height: 1, indent: 56),
-                ListTile(
-                  leading: const Icon(Icons.bug_report_rounded, color: Color(0xFFFF9500)),
-                  title: const Text('后台同步测试工具', style: TextStyle(fontSize: 14.5, fontWeight: FontWeight.w600)),
-                  subtitle: const Text('测试后台同步与到件通知功能', style: TextStyle(fontSize: 12)),
-                  trailing: const Icon(Icons.chevron_right_rounded, size: 20, color: Colors.grey),
-                  onTap: () {
-                    HapticFeedback.lightImpact();
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(builder: (_) => const BackgroundSyncTestScreen()),
-                    );
-                  },
-                ),
-                const Divider(height: 1, indent: 56),
+                // 后台同步测试工具只在 debug 包出现，release 包（如 1.0 正式版）不含此入口
+                if (kDebugMode) ...[
+                  ListTile(
+                    leading: const Icon(Icons.bug_report_rounded, color: Color(0xFFFF9500)),
+                    title: const Text('后台同步测试工具', style: TextStyle(fontSize: 14.5, fontWeight: FontWeight.w600)),
+                    subtitle: const Text('测试后台同步与到件通知功能', style: TextStyle(fontSize: 12)),
+                    trailing: const Icon(Icons.chevron_right_rounded, size: 20, color: Colors.grey),
+                    onTap: () {
+                      HapticFeedback.lightImpact();
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(builder: (_) => const BackgroundSyncTestScreen()),
+                      );
+                    },
+                  ),
+                  const Divider(height: 1, indent: 56),
+                ],
                 ListTile(
                   leading: const Icon(Icons.cleaning_services_rounded, color: Colors.redAccent),
                   title: const Text('清空所有包裹数据', style: TextStyle(fontSize: 14.5, fontWeight: FontWeight.w600, color: Colors.redAccent)),
@@ -271,216 +275,120 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                     color: isExpired ? Colors.orange.shade800 : Colors.grey.shade600,
                   ),
                 ),
-                if (_riskNoteFor(platform) != null) ...[
-                  const SizedBox(height: 5),
-                  Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Icon(Icons.warning_amber_rounded, size: 13, color: Colors.orange.shade700),
-                      const SizedBox(width: 4),
-                      Expanded(
-                        child: Text(
-                          _riskNoteFor(platform)!,
-                          style: TextStyle(
-                            fontSize: 11,
-                            height: 1.35,
-                            color: Colors.orange.shade800,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
               ],
             ),
           ),
           const SizedBox(width: 10),
-          if (platform == 'pdd')
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                FilledButton.tonal(
-                  onPressed: () async {
-                    HapticFeedback.lightImpact();
-                    await PddWebScreen.open(context);
-                    if (mounted) setState(() {});
-                  },
-                  style: FilledButton.styleFrom(
-                    backgroundColor: brandColor.withValues(alpha: 0.12),
-                    foregroundColor: brandColor,
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                    minimumSize: Size.zero,
-                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                  ),
-                  child: const Text('打开商城', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
-                ),
-                const SizedBox(width: 6),
-                PopupMenuButton<String>(
-                  onSelected: (val) async {
-                    if (val == 'relogin') {
-                      await PddWebScreen.open(context, url: 'https://mobile.yangkeduo.com/login.html');
-                      if (mounted) setState(() {});
-                    } else if (val == 'unbind') {
-                      await _authStore.unbind(platform);
-                      if (mounted) {
-                        setState(() {});
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(content: Text('已解除 $displayName 绑定')),
-                        );
-                      }
-                    }
-                  },
-                  itemBuilder: (_) => [
-                    const PopupMenuItem(value: 'relogin', child: Text('重新登录')),
-                    if (isBound)
-                      const PopupMenuItem(
-                        value: 'unbind',
-                        child: Text('解除绑定', style: TextStyle(color: Colors.red)),
-                      ),
-                  ],
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-                    decoration: BoxDecoration(
-                      color: Colors.grey.withValues(alpha: 0.1),
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: const Icon(Icons.more_horiz_rounded, size: 16),
-                  ),
-                ),
-              ],
-            )
-          else if (isBound)
-            if (isExpired)
-              Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  TextButton(
-                    onPressed: () => _openLogin(platform: platform, displayName: displayName, brandColor: brandColor),
-                    style: TextButton.styleFrom(
-                      backgroundColor: Colors.orange.shade50,
-                      foregroundColor: Colors.orange.shade800,
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-                      minimumSize: Size.zero,
-                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                      visualDensity: VisualDensity.compact,
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                    ),
-                    child: const Text('去授权', style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold)),
-                  ),
-                  const SizedBox(width: 2),
-                  PopupMenuButton<String>(
-                    padding: EdgeInsets.zero,
-                    iconSize: 18,
-                    onSelected: (val) async {
-                      if (val == 'unbind') {
-                        await _authStore.unbind(platform);
-                        if (mounted) {
-                          setState(() {});
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(content: Text('已解除 $displayName 绑定')),
-                          );
-                        }
-                      }
-                    },
-                    itemBuilder: (_) => [
-                      const PopupMenuItem(
-                        value: 'unbind',
-                        child: Text('解除绑定', style: TextStyle(color: Colors.red)),
-                      ),
-                    ],
-                    child: Container(
-                      padding: const EdgeInsets.all(4),
-                      decoration: BoxDecoration(
-                        color: Colors.grey.withValues(alpha: 0.1),
-                        borderRadius: BorderRadius.circular(6),
-                      ),
-                      child: const Icon(Icons.more_vert, size: 16),
-                    ),
-                  ),
-                ],
-              )
-            else
-              PopupMenuButton<String>(
-              onSelected: (val) async {
-                if (val == 'cainiao') {
-                  await PlatformLoginScreen.show(
-                    context,
-                    platform: 'taobao',
-                    displayName: '菜鸟驿站',
-                    brandColor: const Color(0xFF00B578),
-                    initialUrl: 'https://page.cainiao.com/cn-yz/station-activity/index.html',
-                  );
-                  if (mounted) {
-                    ref.read(connectorManagerProvider).syncAll();
-                  }
-                } else if (val == 'relogin') {
-                  await _openLogin(platform: platform, displayName: displayName, brandColor: brandColor);
-                } else if (val == 'unbind') {
-                  await _authStore.unbind(platform);
-                  if (mounted) {
-                    setState(() {});
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text('已解除 $displayName 绑定')),
-                    );
-                  }
-                }
-              },
-              itemBuilder: (_) => [
-                if (platform == 'taobao')
-                  const PopupMenuItem(
-                    value: 'cainiao',
-                    child: Row(
-                      children: [
-                        Icon(Icons.inventory_2_outlined, size: 16, color: Color(0xFF00B578)),
-                        SizedBox(width: 8),
-                        Text('打开菜鸟驿站'),
-                      ],
-                    ),
-                  ),
-                const PopupMenuItem(value: 'relogin', child: Text('重新登录')),
-                const PopupMenuItem(value: 'unbind', child: Text('解除绑定', style: TextStyle(color: Colors.red))),
-              ],
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                decoration: BoxDecoration(
-                  color: Colors.grey.withValues(alpha: 0.1),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: const Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text('管理', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
-                    Icon(Icons.arrow_drop_down_rounded, size: 16),
-                  ],
-                ),
-              ),
-            )
-          else
-            FilledButton.tonal(
-              onPressed: () async {
-                HapticFeedback.lightImpact();
-                await _openLogin(platform: platform, displayName: displayName, brandColor: brandColor);
-              },
-              style: FilledButton.styleFrom(
-                backgroundColor: brandColor.withValues(alpha: 0.12),
-                foregroundColor: brandColor,
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-                minimumSize: Size.zero,
-                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-              ),
-              child: const Text('去登录', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
-            ),
+          _buildPlatformAction(
+            platform: platform,
+            displayName: displayName,
+            brandColor: brandColor,
+            isBound: isBound,
+            isExpired: isExpired,
+          ),
         ],
       ),
     );
   }
 
-  /// 各平台的会话冲突风险提示（null 表示无已知风险）
-  String? _riskNoteFor(String platform) {
-    if (platform.toLowerCase() == 'pdd') {
-      return '说明：本应用已内置拼多多移动端。直接在此浏览下单可免受双端互踢影响，包裹与取件码自动同步。';
+  /// 卡片右侧操作区：三个平台共用同一套几何样式，只按绑定状态切换文案与菜单项。
+  ///
+  /// 未绑定 → 「去登录」按钮；已绑定（含登录失效）→ 「管理」下拉菜单。
+  Widget _buildPlatformAction({
+    required String platform,
+    required String displayName,
+    required Color brandColor,
+    required bool isBound,
+    required bool isExpired,
+  }) {
+    if (!isBound) {
+      return _buildActionButton(
+        label: '去登录',
+        color: brandColor,
+        onTap: () => _openLogin(platform: platform, displayName: displayName, brandColor: brandColor),
+      );
     }
-    return null;
+
+    final Color? menuColor = isExpired ? Colors.orange.shade800 : null;
+
+    return PopupMenuButton<String>(
+      onSelected: (val) => _onPlatformActionSelected(
+        val,
+        platform: platform,
+        displayName: displayName,
+        brandColor: brandColor,
+      ),
+      itemBuilder: (_) => [
+        PopupMenuItem(
+          value: 'relogin',
+          child: Text(isExpired ? '重新授权' : '重新登录'),
+        ),
+        const PopupMenuItem(
+          value: 'unbind',
+          child: Text('解除绑定', style: TextStyle(color: Colors.red)),
+        ),
+      ],
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: BoxDecoration(
+          color: (menuColor ?? Colors.grey).withValues(alpha: 0.1),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              isExpired ? '重新授权' : '管理',
+              style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: menuColor),
+            ),
+            Icon(Icons.arrow_drop_down_rounded, size: 16, color: menuColor),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 未绑定态的登录/授权入口，与「管理」下拉保持一致的尺寸与圆角。
+  Widget _buildActionButton({
+    required String label,
+    required Color color,
+    required VoidCallback onTap,
+  }) {
+    return FilledButton.tonal(
+      onPressed: () {
+        HapticFeedback.lightImpact();
+        onTap();
+      },
+      style: FilledButton.styleFrom(
+        backgroundColor: color.withValues(alpha: 0.12),
+        foregroundColor: color,
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+        minimumSize: Size.zero,
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+      ),
+      child: Text(label, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+    );
+  }
+
+  /// 「管理」菜单的统一处理：重新授权 / 重新登录、解除绑定。
+  Future<void> _onPlatformActionSelected(
+    String val, {
+    required String platform,
+    required String displayName,
+    required Color brandColor,
+  }) async {
+    if (val == 'relogin') {
+      await _openLogin(platform: platform, displayName: displayName, brandColor: brandColor);
+    } else if (val == 'unbind') {
+      await _authStore.unbind(platform);
+      if (mounted) {
+        setState(() {});
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('已解除 $displayName 绑定')),
+        );
+      }
+    }
   }
 
   /// 登录态失效提示在同步问题上对应的平台关键词
