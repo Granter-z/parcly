@@ -1,368 +1,186 @@
-# 电商平台保活机制 - 实施总结
+# 电商平台保活机制
 
-> 实施日期：2026-10-07
-> 状态：✅ 核心功能已完成
+> 最后更新：2026-10-08
+> 状态：前台调度 + 进程外续期 + 失效提醒闭环均已实现
 
----
-
-## 📋 实施内容
-
-### 新增文件
-
-1. **`lib/platform/keep_alive/platform_heartbeat.dart`** (267 行)
-   - 各平台心跳接口定义
-   - 淘宝/京东/拼多多心跳实现
-   - 心跳结果封装
-
-2. **`lib/platform/keep_alive/keep_alive_scheduler.dart`** (114 行)
-   - 保活间隔计算（基于 Cookie 年龄）
-   - 智能跳过逻辑（避免重复保活）
-   - Cookie 健康度评估
-
-3. **`lib/platform/keep_alive/keep_alive_service.dart`** (182 行)
-   - 保活服务核心逻辑
-   - 定期执行心跳请求
-   - 失败重试与降级处理
-   - Riverpod Provider 集成
-
-### 修改文件
-
-1. **`lib/ui/screens/home/home_screen.dart`**
-   - 导入 `KeepAliveService`
-   - 在 `initState` 中初始化保活服务
+本文描述**当前代码的实际行为**。历史上的旧版本文档曾声称淘宝用 WebView 心跳、京东检查
+`retcode`、定时器为 12 小时 —— 这些都与实现不符，已在本轮一并纠正（见文末变更记录）。
 
 ---
 
-## 🎯 功能特性
+## 一、组件与职责
 
-### 1. 智能保活调度
-
-根据 Cookie 年龄动态调整保活频率：
-
-| Cookie 年龄 | 保活间隔 | 健康度 |
-|------------|---------|--------|
-| 0-3 天 | 24 小时 | 健康 ✅ |
-| 4-7 天 | 12 小时 | 良好 ✅ |
-| 8-10 天 | 6 小时 | 临期 ⚠️ |
-| 11-14 天 | 4 小时 | 需要保活 ⚠️ |
-| 15+ 天 | 4 小时 | 即将过期 ❌ |
-
-### 2. 轻量级心跳请求
-
-各平台使用最轻量的接口作为心跳：
-
-**淘宝/天猫**：
-- 访问菜鸟驿站首页（WebView）
-- 检测是否重定向到登录页
-- 自动刷新 `_m_h5_tk` 和 `cookie2`
-
-**京东**：
-- 调用用户信息 API（HTTP）
-- 检查 `retcode` 判断登录态
-- 超轻量（仅几 KB 流量）
-
-**拼多多**：
-- 访问拼多多主页（WebView）
-- 检测是否重定向到登录页
-- 触发 Session Cookie 刷新
-
-### 3. 智能跳过机制
-
-避免不必要的保活请求：
-- ✅ 用户主动同步后 6 小时内跳过
-- ✅ 最近 2 小时内已保活则跳过
-- ✅ 未绑定平台自动跳过
-
-### 4. 失败容错
-
-连续失败机制：
-- 单次失败：记录日志，不报错
-- 连续失败 2 次：继续重试
-- 连续失败 3 次：判定登录态失效
+| 层 | 文件 | 职责 |
+|---|---|---|
+| core | `lib/core/engine/keep_alive_plan.dart` | 纯决策：间隔计算、跳过规则、健康度、失效提醒判定。无 Flutter 依赖、时间可注入，可直接单测 |
+| core | `lib/core/models/keep_alive_state.dart` | 不可变模型：`KeepAliveRecord` / `KeepAliveHistory` / `PlatformKeepAliveStatus` / `KeepAliveSnapshot` |
+| core | `lib/core/models/platform_ids.dart` | 平台标识与显示名的唯一来源（`kPlatformIds`），消除三处硬编码 |
+| platform | `lib/platform/storage/keep_alive_store.dart` | 保活调度状态持久化（Hive box `keep_alive_state`） |
+| platform | `lib/platform/keep_alive/keep_alive_service.dart` | 前台保活编排：按闸门与冷却决定发不发心跳，落盘结果 |
+| platform | `lib/platform/keep_alive/keep_alive_controller.dart` | Riverpod `Notifier`，把状态暴露为可 watch 的 `KeepAliveSnapshot` |
+| platform | `lib/platform/keep_alive/platform_heartbeat.dart` | 心跳接口 + 淘宝/京东实现 |
+| platform | `lib/platform/keep_alive/taobao_token_refresher.dart` | 淘宝 mtop `getTimeStamp` 签名请求与令牌轮换 |
+| platform | `lib/platform/keep_alive/pdd_connector_heartbeat.dart` | 拼多多心跳，委托给 `PddH5Connector` |
+| platform | `lib/platform/keep_alive/keep_alive_notifier.dart` | 失效提醒收口：去重标记 + 发送 |
+| platform | `lib/platform/keep_alive/keep_alive_worker.dart` | WorkManager 后台 isolate：App 进程被杀后仍能续期 |
+| ui | `lib/ui/screens/settings/keep_alive_status_screen.dart` | 保活状态页：开关、健康度、历史 |
 
 ---
 
-## 🔧 技术实现
+## 二、调度策略
 
-### 核心类关系
+间隔按 Cookie 年龄分档（`KeepAlivePlan.calculateInterval`）。注意「Cookie 年龄」是
+`now - PlatformAuthStore.getBoundTime()`，即**距用户上次授权的时间**，不是 Cookie 上次刷新的时间
+（令牌轮换刻意不改写 `_boundTime`）。
 
-```
-KeepAliveService
-├── PlatformHeartbeat (接口)
-│   ├── TaobaoHeartbeat
-│   ├── JdHeartbeat
-│   └── PddHeartbeat
-├── KeepAliveScheduler (静态工具类)
-└── PlatformAuthStore (Cookie 存储)
-```
+| Cookie 年龄 | 保活间隔 |
+|---|---|
+| 0-3 天 | 24 小时 |
+| 4-7 天 | 12 小时 |
+| 8-10 天 | 6 小时 |
+| 11 天以上 | 4 小时 |
 
-### 保活流程
+对每个平台，一轮检查按顺序判定，任一不通过就跳过该平台：
 
-```
-1. KeepAliveService.start()
-   ↓
-2. Timer.periodic (每 12 小时检查)
-   ↓
-3. _performKeepAlive()
-   ↓
-4. 遍历 ['taobao', 'jd', 'pdd']
-   ↓
-5. 检查是否已绑定 & 应否跳过
-   ↓
-6. 执行 PlatformHeartbeat.performHeartbeat()
-   ↓
-7. 记录结果 & 更新失败计数
-   ↓
-8. 等待 5 秒（避免短时间多次请求）
-```
+1. 用户是否关闭了总开关 / 该平台开关；
+2. 该平台是否已绑定（有 Cookie）；
+3. **闸门**：`now < next_keep_alive_at` → 跳过（该值已落盘，重启后仍生效）；
+4. 冷却：用户 6 小时内同步过、或 2 小时内刚保活过 → 跳过。
 
-### Cookie 年龄追踪
+通过后发送心跳，并把 `next_keep_alive_at` 置为 `now + 间隔 ± 随机 0-30 分钟`（抖动用来避开固定时间点）。
 
-利用现有的 `PlatformAuthStore.getBoundTime()` 方法：
-
-```dart
-// 获取 Cookie 保存时间
-final boundTime = _authStore.getBoundTime('taobao');
-
-// 计算年龄
-final cookieAge = DateTime.now().difference(boundTime);
-
-// 根据年龄计算保活间隔
-final interval = KeepAliveScheduler.calculateInterval(cookieAge);
-```
+前台检查定时器为 **1 小时一次**，各平台按自己的动态间隔独立放行；后台 WorkManager 周期任务为 **6 小时一次**，
+与前台共用同一份闸门状态。
 
 ---
 
-## ✅ 验证结果
+## 三、持久化
 
-### 静态分析
-```bash
-flutter analyze lib/platform/keep_alive/
-# 结果：No issues found!
-```
+Hive box `keep_alive_state`，明文存储（只含时间戳与计数，无凭据）。
 
-### 测试套件
-```bash
-flutter test
-# 结果：All 190 tests passed!
-```
+| key | 类型 | 说明 |
+|---|---|---|
+| `enabled` | bool | 保活总开关（默认 true） |
+| `{platform}_enabled` | bool | 单平台开关（默认 true） |
+| `{platform}_last_keep_alive_at` | int (ms) | 上次保活成功时间 |
+| `{platform}_next_keep_alive_at` | int (ms) | **冷启动闸门**，决定重启后是否立刻发心跳 |
+| `{platform}_failure_count` | int | 连续失败计数 |
+| `{platform}_last_notify_expired_at` | int (ms) | 失效提醒去重标记 |
+| `history` | List\<Map\> | 最近 50 条保活记录 |
+| `schema_version` | int | 当前为 1 |
 
-### 代码质量
-- ✅ 无编译错误
-- ✅ 无类型错误
-- ✅ 遵循项目架构约束（`platform/` 适配层）
-- ✅ 详细的调试日志
-- ✅ Riverpod Provider 集成
+### 前后台并发写同一 box
+
+前台进程与 WorkManager 后台 isolate 会各自打开该 box，约定的写入边界：
+
+- 后台 isolate **只写单 key 标量**（`last_keep_alive_at` / `failure_count` / `next_keep_alive_at`），
+  幂等且 last-writer-wins，交错写入不会造成结构损坏；
+- 需要 read-modify-write 的 `history` **只由主 isolate 写**，后台绝不触碰；
+- 前台启动时 `KeepAliveStore.loadIntoCache()` 以磁盘为准覆盖内存缓存，由此与后台写入收敛。
+
+两个 isolate 各有独立的内存缓存，**不要跨 isolate 假设缓存一致**。
 
 ---
 
-## 📱 使用说明
+## 四、各平台心跳
 
-### 自动启动
+| 平台 | 实现 | 判定口径 | 可后台运行 |
+|---|---|---|---|
+| 淘宝/天猫 | `TaobaoTokenRefresher`：mtop `mtop.cainiao.pickup.search.getTimeStamp` 签名请求 | `FAIL_SYS_SESSION_EXPIRED` / `FAIL_SYS_SID_INVALID` / `您需要登录才能继续访问` → 失效 | ✅ 纯 HTTP |
+| 京东 | `GET https://wqs.jd.com/order/orderlist_jdm.shtml`，校验响应体 | 响应体含 `请登录` / `login.m.jd.com` / `passport.jd.com` / `"isLogin":false` / `"loginFlag":false`，或重定向到 login，或 HTTP 401/403 → 失效 | ✅ 纯 HTTP |
+| 拼多多 | 委托 `PddH5Connector.keepAliveProbe()`，复用其常驻 WebView 加载订单页 | 落地页含 `login`，或订单接口返回 `HTTPSTATUS:424` / `login.html` → 失效 | ❌ 见下 |
 
-保活服务在 App 启动时自动运行，无需手动配置：
+淘宝心跳成功且服务端下发了新令牌时，会就地轮换 `_m_h5_tk` / `_m_h5_tk_enc` 并落盘
+（`updateCookieTokenFields` 刻意不刷新授权绑定时间）。mtop 只在服务端判定令牌过期时才下发新令牌，
+因此新登录后头几次心跳不轮换属正常。
 
-1. App 启动 → `HomeScreen` 初始化
-2. 读取 `keepAliveServiceProvider`
-3. Provider 自动调用 `service.start()`
-4. 定期执行保活（每 12 小时）
+### 拼多多为什么只能前台保活
 
-### 日志监控
+`PddHeartbeat` 曾经自己 `WebViewController()` 发心跳，而 webview_flutter 4.14.1 的
+`WebViewController` **没有 `dispose()`** —— 原生 WebView 只在 `WebViewWidget` 销毁时释放，
+而心跳从不构建 widget，于是每调用一次就泄漏一个原生 WebView。现在改为复用
+`PddH5Connector` 已持有的常驻控制器，随其宿主页面生命周期回收。
 
-查看保活日志：
+顺带补上了该连接器此前缺失的并发保护：`_busy` 互斥位让同步与探活串行，避免两个 `loadRequest` 互相打断。
+
+后台不尝试拼多多的原因有两层：WebView 需要 platform view 与主线程，WorkManager 的裸
+FlutterEngine 没有 Activity；且拼多多 proxy 接口要求 `anti_content` 动态签名，纯 HTTP 会被风控返回 424
+（见 `pdd_connector.dart` 文件头注释）。因此**不要**试图把拼多多改成纯 HTTP 心跳。
+
+---
+
+## 五、失效提醒闭环
+
+「检测」与「通知」刻意解耦：失效可能由前台保活、后台 worker 或连接器同步发现，但通知只在
+`KeepAliveNotifier` 发出，去重标记也只在这里落盘。
+
+- **渠道**：`keep_alive_channel` / 「登录状态提醒」，与「快递通知」分开，用户可单独静音。
+- **通知 id**：`30000 + 平台槽位`（槽位取自 `kPlatformIds` 下标 + 1），同一平台重复提醒是**替换**而非堆叠。
+- **去重**：仅当「当前已失效 且 该平台 `last_notify_expired_at` 为空」时提醒；**只有发送成功才写标记**。
+- **兜底**：后台 isolate 弹通知是尽力而为，失败不写标记，前台下次检查会补发，提醒不会丢。
+- **恢复**：心跳成功会清空该标记，于是下一个失效周期可以再提醒一次。
+- **点击跳转**：回调里没有 `BuildContext` 且 App 可能冷启动，因此 payload 只投递到
+  `NotificationAdapter.pendingRoute`，由 `lib/ui/app.dart` 在首帧后消费并借助全局
+  `appNavigatorKey` 跳到设置页。冷启动场景通过 `getNotificationAppLaunchDetails()` 补投。
+
+---
+
+## 六、开关与历史
+
+- 状态页顶部有**保活总开关**，每个平台卡片右侧有**单平台开关**，选择会持久化，重启后仍生效。
+- 关闭总开关后前台不启动、后台 worker 直接返回；关闭单平台则两个路径都跳过该平台。
+- 「保活历史」区展示最近 10 条记录与总成功率；`KeepAliveHistory.successRate` 会排除
+  `skipped` 记录（跳过既不算成功也不算失败），无有效样本时返回 null。
+
+---
+
+## 七、调试
 
 ```bash
-flutter run
-# 或使用 adb logcat 过滤
-adb logcat | grep "KeepAliveService"
+adb logcat | grep -E "KeepAlive|KeepAliveWorker|KeepAliveStore"
 ```
 
-**关键日志示例**：
+关键日志：
 
 ```
-[KeepAliveService] Starting keep-alive service...
-[KeepAliveService] Performing keep-alive check...
-[KeepAliveService] Sending heartbeat to taobao (age: 5 days)...
-[KeepAlive] Taobao heartbeat starting...
-[KeepAlive] Taobao heartbeat success
-[KeepAliveService] ✓ taobao heartbeat success
-[KeepAliveService] Keep-alive check completed
+[KeepAliveService] Skip taobao: next keep-alive in 342 min    ← 闸门生效（冷启动不重发）
+[KeepAliveService] Skip pdd: disabled                          ← 用户关闭了该平台
+[KeepAliveService] Sending heartbeat to jd (age: 9 days)...
+[KeepAliveService] ✓ jd heartbeat success
+[KeepAliveService] - pdd heartbeat skipped: 拼多多 WebView 当前不可探活
+[KeepAliveNotifier] expiry notified: jd
 ```
 
----
-
-## 🔮 未来扩展（Phase 2 & 3）
-
-### Phase 2: 用户可见性（P1）
-
-在设置页添加保活状态展示：
-
-```
-┌─────────────────────────────────┐
-│ 平台保活设置                      │
-├─────────────────────────────────┤
-│ ☑ 自动保活（推荐）                 │
-│                                   │
-│ 最近保活时间：                     │
-│   淘宝：2 小时前 ✓ (健康)          │
-│   京东：5 小时前 ✓ (良好)          │
-│   拼多多：8 小时前 ✓ (临期)       │
-│                                   │
-│ Cookie 年龄：                     │
-│   淘宝：5 天                       │
-│   京东：12 天 ⚠️                  │
-│   拼多多：3 天                     │
-└─────────────────────────────────┘
-```
-
-### Phase 3: 增强功能
-
-1. **手动保活按钮**
-   - 允许用户手动触发保活
-   - 显示保活进度
-
-2. **保活历史**
-   - 记录最近 10 次保活时间与结果
-   - 成功率统计
-
-3. **智能提醒**
-   - Cookie 即将过期时提醒用户
-   - 保活连续失败时提醒
-
-4. **高级设置**
-   - 自定义保活频率
-   - 仅 WiFi 下保活
-   - 电量优化模式
+状态页的「测试后台续期任务」会注册一个 3 秒后触发的 one-off WorkManager 任务，用于验证后台
+isolate 链路（Hive 初始化 → Keystore 解密 → HTTP 心跳 → 落盘）。强制运行 periodic 任务对未到期的
+work 无效，验证后台请用这个入口。
 
 ---
 
-## 📊 预期效果
+## 八、已知限制
 
-实施后（需长期观察验证）：
-
-### 预期改善
-- ✅ Cookie 有效期从 7-14 天延长到 **长期有效**
-- ✅ 减少 **90% 的重新登录需求**
-- ✅ 后台同步成功率提升
-- ✅ 用户体验提升（无感知保活）
-
-### 需要验证
-- 📊 实际保活成功率（真机测试 7-14 天）
-- 📊 电量消耗影响（对比开启/关闭保活）
-- 📊 各平台 Cookie 实际续期效果
-- 📊 风控触发概率（是否被平台限制）
+- 拼多多无法进程外续期，只能靠前台心跳与用户打开 App 时的同步恢复。
+- WorkManager 周期任务最小间隔 15 分钟且由系统批量调度，不保证精确时刻。
+- 部分国产 ROM 需要用户手动允许后台运行，否则系统回收后无法唤醒。
+- 保活只能延长登录态寿命，不能保证永不失效：平台主动清理异常登录态、用户在其他设备登录导致的
+  互踢，都不是保活能覆盖的。
 
 ---
 
-## ⚠️ 注意事项
+## 九、变更记录
 
-### 1. 保活 ≠ 保证永不失效
+**2026-10-08**
 
-保活机制只能延长 Cookie 有效期，不能保证永不失效：
-
-- ❌ 长时间不使用 App（30+ 天）仍可能失效
-- ❌ 平台主动清理异常登录态
-- ❌ 用户在其他设备登录可能导致互踢
-
-### 2. 需要后台运行权限
-
-某些设备需要手动设置：
-- 华为/小米：允许后台运行
-- OPPO/vivo：关闭省电模式
-- 其他：加入电量优化白名单
-
-### 3. 平台策略变化
-
-电商平台可能调整 Cookie 策略：
-- Cookie 有效期缩短
-- 心跳接口变更
-- 风控策略升级
-
-### 4. 合规性
-
-保活请求应符合平台服务条款：
-- 避免频繁请求（每天 2-6 次）
-- 不伪造用户行为
-- 不绕过安全验证
-
----
-
-## 🧪 测试计划
-
-### 短期测试（1-2 天）
-
-1. **功能验证**
-   - ✅ 保活服务自动启动
-   - ✅ 定时器正常工作
-   - ✅ 心跳请求成功发送
-   - ✅ 失败重试机制生效
-
-2. **日志检查**
-   - 查看保活执行日志
-   - 确认间隔计算正确
-   - 验证跳过逻辑生效
-
-### 中期测试（7 天）
-
-1. **Cookie 续期效果**
-   - 观察 Cookie 是否保持有效
-   - 对比未开启保活的对照组
-   - 记录登录失效次数
-
-2. **电量影响**
-   - 监控保活任务电量消耗
-   - 对比正常使用的差异
-   - 优化高频保活策略
-
-### 长期测试（14-30 天）
-
-1. **稳定性验证**
-   - Cookie 长期有效性
-   - 保活成功率统计
-   - 风控触发情况
-
-2. **用户反馈**
-   - 是否减少重新登录次数
-   - 后台同步成功率提升
-   - 电量消耗可接受性
-
----
-
-## 📝 实施工时
-
-- **Phase 1**: 核心保活逻辑 → 4 小时
-  - PlatformHeartbeat 实现 → 2 小时
-  - KeepAliveService 实现 → 1.5 小时
-  - 集成到 HomeScreen → 0.5 小时
-
-- **验证与测试** → 1 小时
-  - 静态分析 → 0.5 小时
-  - 运行测试套件 → 0.5 小时
-
-**总计**: 5 小时
-
----
-
-## 🎉 总结
-
-本次实施完成了电商平台保活机制的核心功能：
-
-✅ **核心目标达成**
-- 定期发送轻量级心跳请求
-- 根据 Cookie 年龄动态调整频率
-- 智能跳过避免重复保活
-- 静默失败不打扰用户
-
-✅ **技术质量**
-- 通过全部测试（190/190）
-- 静态分析无错误
-- 遵循项目架构规范
-- 详细的日志与注释
-
-✅ **待验证**
-- 实际保活效果（需长期测试）
-- 电量消耗影响
-- 各平台 Cookie 续期效果
-- 风控触发概率
-
-**下一步**：进行真机长期测试（7-14 天），验证保活效果并收集数据，为 Phase 2（用户界面）提供依据。
+1. **修复冷启动心跳风暴**：原先「上次保活 / 失败次数 / 下次保活时间」三个 Map 都在内存里，
+   进程重启即清零，导致每次冷启动都对全部已绑定平台重发一轮心跳。现在 `next_keep_alive_at`
+   落盘，重启后闸门依然生效（`test/keep_alive_service_test.dart` 有对应回归测试）。
+2. **修复拼多多 WebView 泄漏**：删除自建控制器的 `PddHeartbeat`，改为委托连接器常驻控制器。
+3. **接通「用户同步后 6 小时跳过」**：`SyncHistoryManager.recordPlatformSync` 此前从未被调用，
+   该规则因 `lastSyncTime` 恒为 null 而永远不触发；现在由 `ConnectorManager` 在每次同步结束时记录。
+4. **新增失效提醒闭环**：本地通知 + 设置页入口，带去重与成功后写标记的兜底语义。
+5. **新增保活总开关与单平台开关**、**保活历史与成功率**。
+6. **纯逻辑下沉 core**：`KeepAliveScheduler` → `KeepAlivePlan`，去掉 `debugPrint`、时间参数化，
+   并删除从未被调用的 `isPreferredTimeSlot()`。
+7. **前台/后台共用闸门**：后台 worker 也读 `next_keep_alive_at` 并尊重用户开关，前后台不再各自发心跳。
+8. **修复健康度配色与文案不一致**：徽章文字可能显示「失效」而颜色仍按 Cookie 年龄取绿色，
+   现在两者同源。

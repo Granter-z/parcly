@@ -5,10 +5,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../../core/models/package.dart';
-import '../../../../core/models/package_status.dart';
-import '../../../providers/package_provider.dart';import '../../../components/spring_card.dart';
+import '../../../providers/package_provider.dart';
+import '../../../components/spring_card.dart';
 import '../../../components/platform_badge.dart';
+import '../../../components/status_pill.dart';
 import '../../../components/staggered_entrance.dart';
+import '../../../constants/app_constants.dart';
 import 'tracking_timeline_sheet.dart';
 
 class CompletedPackagesSheet extends ConsumerWidget {
@@ -39,39 +41,41 @@ class CompletedPackagesSheet extends ConsumerWidget {
         return Container(
           decoration: BoxDecoration(
             color: theme.colorScheme.surface,
-            borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+            borderRadius: const BorderRadius.vertical(
+              top: Radius.circular(AppRadius.lg),
+            ),
           ),
           child: Column(
             children: [
               Center(
                 child: Container(
-                  margin: const EdgeInsets.only(top: 10, bottom: 12),
+                  margin: const EdgeInsets.only(
+                    top: AppSpacing.md,
+                    bottom: AppSpacing.md,
+                  ),
                   width: 36,
-                  height: 4.5,
+                  height: 4,
                   decoration: BoxDecoration(
-                    color: Colors.grey.withValues(alpha: 0.3),
-                    borderRadius: BorderRadius.circular(3),
+                    color: AppColors.textTertiary.withValues(alpha: 0.35),
+                    borderRadius: BorderRadius.circular(AppRadius.pill),
                   ),
                 ),
               ),
               Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: AppSpacing.xl,
+                  vertical: AppSpacing.sm,
+                ),
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
                     Text(
                       '已完成包裹 (${completedPackages.length})',
-                      style: const TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                      ),
+                      style: theme.textTheme.titleLarge,
                     ),
                     Text(
                       '历史记录已归档',
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: Colors.grey.shade600,
-                      ),
+                      style: theme.textTheme.bodySmall,
                     ),
                   ],
                 ),
@@ -79,14 +83,18 @@ class CompletedPackagesSheet extends ConsumerWidget {
               const Divider(height: 1),
               Expanded(
                 child: completedPackages.isEmpty
-                    ? const Center(
-                        child: Text('暂无已完成的包裹记录', style: TextStyle(color: Colors.grey)),
+                    ? Center(
+                        child: Text(
+                          '暂无已完成的包裹记录',
+                          style: theme.textTheme.bodyMedium,
+                        ),
                       )
                     : ListView.separated(
                         controller: scrollController,
-                        padding: const EdgeInsets.all(16),
+                        padding: const EdgeInsets.all(AppSpacing.lg),
                         itemCount: completedPackages.length,
-                        separatorBuilder: (_, __) => const SizedBox(height: 12),
+                        separatorBuilder: (_, __) =>
+                            const SizedBox(height: AppSpacing.md),
                         itemBuilder: (context, index) => StaggeredEntrance(
                           index: index,
                           child: _CompletedPackageCard(
@@ -114,8 +122,8 @@ class _CompletedPackageCard extends ConsumerWidget {
     final pkg = package;
 
     return SpringCard(
-      padding: const EdgeInsets.all(14),
-      borderRadius: BorderRadius.circular(14),
+      padding: const EdgeInsets.all(AppSpacing.lg),
+      borderRadius: AppRadius.mdAll,
       onTap: () => TrackingTimelineSheet.show(context, pkg),
       onLongPress: () {
         HapticFeedback.mediumImpact();
@@ -125,8 +133,14 @@ class _CompletedPackageCard extends ConsumerWidget {
             child: Wrap(
               children: [
                 ListTile(
-                  leading: const Icon(Icons.delete_outline_rounded, color: Colors.red),
-                  title: const Text('删除该包裹', style: TextStyle(color: Colors.red)),
+                  leading: const Icon(
+                    Icons.delete_outline_rounded,
+                    color: AppColors.statusRejected,
+                  ),
+                  title: const Text(
+                    '删除该包裹',
+                    style: TextStyle(color: AppColors.statusRejected),
+                  ),
                   onTap: () {
                     Navigator.pop(ctx);
                     ref.read(packageListProvider.notifier).removePackage(pkg.id);
@@ -140,7 +154,7 @@ class _CompletedPackageCard extends ConsumerWidget {
       child: Row(
         children: [
           PlatformBadge(platform: pkg.platform),
-          const SizedBox(width: 10),
+          const SizedBox(width: AppSpacing.md),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -150,49 +164,29 @@ class _CompletedPackageCard extends ConsumerWidget {
                   style: const TextStyle(
                     fontWeight: FontWeight.w600,
                     fontSize: 14,
+                    color: AppColors.textPrimary,
                   ),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                 ),
-                const SizedBox(height: 2),
+                const SizedBox(height: AppSpacing.xxs),
                 Text(
                   '${pkg.courier.displayName} · ${pkg.trackingNumber}',
-                  style: TextStyle(
-                    fontSize: 11.5,
-                    color: Colors.grey.shade600,
-                    fontFamily: 'monospace',
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: AppColors.textTertiary,
+                    fontFeatures: [FontFeature.tabularFigures()],
                   ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                 ),
               ],
             ),
           ),
-          const SizedBox(width: 8),
-          if (pkg.status == PackageStatus.rejected)
-            // 拒收：实心红底白字标签，与已取件的绿色文字明显区分
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-              decoration: BoxDecoration(
-                color: const Color(0xFFFF3B30),
-                borderRadius: BorderRadius.circular(6),
-              ),
-              child: const Text(
-                '已拒收',
-                style: TextStyle(
-                  fontSize: 11.5,
-                  color: Colors.white,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            )
-          else
-            Text(
-              pkg.status.label,
-              style: const TextStyle(
-                fontSize: 12,
-                color: Color(0xFF34C759),
-                fontWeight: FontWeight.bold,
-              ),
-            ),
+          const SizedBox(width: AppSpacing.sm),
+          // 已取件 / 已归档 / 已拒收 共用同一套状态胶囊，
+          // 不再把 #34C759 直接当 12px 正文（白底上只有 2.22:1）。
+          StatusPill(status: pkg.status),
         ],
       ),
     );

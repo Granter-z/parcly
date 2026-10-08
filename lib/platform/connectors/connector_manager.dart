@@ -11,6 +11,7 @@ import 'taobao_connector.dart';
 import 'jd_connector.dart';
 import 'pdd_connector.dart';
 import '../storage/platform_auth_store.dart';
+import '../sync/sync_history_manager.dart';
 
 final connectorManagerProvider = Provider<ConnectorManager>((ref) {
   final manager = ConnectorManager(ref);
@@ -23,6 +24,9 @@ class ConnectorManager {
   final Ref _ref;
   final List<PlatformConnector> _realConnectors = [];
   String? _lastIssue;
+
+  /// 本次同步是否为用户主动触发的强制重拉（忽略「24 小时内已同步」跳过）
+  bool _forceRefetch = false;
 
   ConnectorManager(this._ref) {
     _realConnectors.addAll([
@@ -39,6 +43,7 @@ class ConnectorManager {
         },
         // 已签收订单只请求一次详情：连接器请求前查本地包裹
         getLocalPackages: () => _ref.read(packageListProvider),
+        shouldForceRefetch: () => _forceRefetch,
       ),
       JdH5Connector(),
       PddH5Connector(),
@@ -62,7 +67,8 @@ class ConnectorManager {
 
   /// 触发所有可用真实平台在途包裹聚合同步
   /// [onEarlyProgress]：首批在途件到达或首个通道完成时触发，供 UI 提前结束下拉刷新动画
-  Future<int> syncAll({void Function()? onEarlyProgress}) async {
+  /// [force]：忽略「24 小时内已同步」跳过，强制重新拉取订单详情
+  Future<int> syncAll({void Function()? onEarlyProgress, bool force = false}) async {
     final activeRealConnectors = <PlatformConnector>[];
     for (final c in _realConnectors) {
       final auth = await c.isAuthenticated();
@@ -70,13 +76,14 @@ class ConnectorManager {
         activeRealConnectors.add(c);
       }
     }
-    return syncWithConnectors(activeRealConnectors, onEarlyProgress: onEarlyProgress);
+    return syncWithConnectors(activeRealConnectors, onEarlyProgress: onEarlyProgress, force: force);
   }
 
   /// 以指定连接器列表执行同步（支持依赖注入与单测）
   Future<int> syncWithConnectors(
     List<PlatformConnector> connectors, {
     void Function()? onEarlyProgress,
+    bool force = false,
   }) async {
     debugPrint('[ConnectorManager] syncWithConnectors invoked (${connectors.length} connectors)');
     final syncState = _ref.read(syncStateProvider.notifier);
@@ -86,6 +93,7 @@ class ConnectorManager {
     }
 
     syncState.state = true;
+    _forceRefetch = force;
     final notifier = _ref.read(packageListProvider.notifier);
     int newCount = 0;
     final sw = Stopwatch()..start();
@@ -128,6 +136,8 @@ class ConnectorManager {
           cw.stop();
           triggerEarly();
           debugPrint('[ConnectorManager] ${connector.platformId} sync took ${cw.elapsedMilliseconds}ms');
+          // 记录本次同步时间：保活据此在「用户刚同步过」的 6 小时内跳过心跳
+          await SyncHistoryManager().recordPlatformSync(connector.platformId);
           final issue = connector.lastIssue;
           if (issue != null && (_lastIssue == null || !_lastIssue!.contains(issue))) {
             _lastIssue = _lastIssue == null ? issue : '$_lastIssue；$issue';
@@ -140,6 +150,7 @@ class ConnectorManager {
       debugPrint('[ConnectorManager] sync done: $newCount packages in ${sw.elapsedMilliseconds}ms');
       return newCount;
     } finally {
+      _forceRefetch = false;
       syncState.state = false;
     }
   }

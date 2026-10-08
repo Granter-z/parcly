@@ -1,7 +1,12 @@
 /// 来源电商平台标识徽标
+///
+/// 这里保留各平台的品牌色（淘宝橙、京东红、拼多多红、抖音黑），属于品牌忠实度，
+/// 不并入应用的单一强调色体系 —— 用户正是靠颜色区分「这件是哪个平台的」。
 library;
 
 import 'package:flutter/material.dart';
+
+import '../constants/app_constants.dart';
 
 class PlatformBadge extends StatelessWidget {
   final String? platform;
@@ -13,10 +18,10 @@ class PlatformBadge extends StatelessWidget {
     final (name, color, icon) = _getPlatformMeta(platform);
 
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2.5),
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
       decoration: BoxDecoration(
         color: color.withValues(alpha: 0.12),
-        borderRadius: BorderRadius.circular(6),
+        borderRadius: AppRadius.xsAll,
         border: Border.all(
           color: color.withValues(alpha: 0.25),
           width: 0.8,

@@ -20,7 +20,7 @@ class StaggeredEntrance extends StatefulWidget {
     required this.index,
     this.duration = Motion.emphasized,
     this.baseDelay = Motion.stagger,
-    this.verticalOffset = 24.0,
+    this.verticalOffset = 16.0,
   });
 
   @override
@@ -35,6 +35,10 @@ class _StaggeredEntranceState extends State<StaggeredEntrance>
 
   /// 延迟启动的定时器：组件提前销毁时必须取消，避免对已释放的控制器动手。
   Timer? _startTimer;
+
+  /// 入场只调度一次。放在 didChangeDependencies 是因为是否「移除动画」
+  /// 只能从 MediaQuery 读，而那是个依赖型查询，initState 里不允许调用。
+  bool _scheduled = false;
 
   @override
   void initState() {
@@ -56,6 +60,19 @@ class _StaggeredEntranceState extends State<StaggeredEntrance>
       parent: _controller,
       curve: Motion.enter,
     ));
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_scheduled) return;
+    _scheduled = true;
+
+    if (Motion.reduce(context)) {
+      // 移除动画：不延迟、不位移，直接就是终态。
+      _controller.value = 1.0;
+      return;
+    }
 
     _startTimer = Timer(widget.baseDelay * widget.index, () {
       if (mounted) {

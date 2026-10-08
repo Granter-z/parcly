@@ -204,19 +204,7 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
               resolvedStatus == PackageStatus.pendingShipment) {
             return null;
           }
-          final incoming = package.stationName?.trim() ?? '';
-          final current = existing.stationName?.trim() ?? '';
-          if (incoming.isEmpty || incoming == '未知驿站') return current;
-          // 若原有精准具体网点名，新流入数据仅为泛称“菜鸟驿站”时，保护原有精准网点名不被降级覆盖
-          if (current.isNotEmpty && current != '未知驿站') {
-            if (incoming == '菜鸟驿站' && !current.contains('菜鸟驿站')) {
-              return '菜鸟驿站 · $current';
-            }
-            if (incoming == '自提点' || incoming == '驿站') {
-              return current;
-            }
-          }
-          return incoming;
+          return preferStationName(existing.stationName ?? '', package.stationName ?? '');
         }(),
         clearStationName: resolvedStatus == PackageStatus.delivering ||
             resolvedStatus == PackageStatus.transit ||
@@ -407,6 +395,32 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
     // 普通短码
     if (RegExp(r'^[0-9A-Za-z\-]{3,12}$').hasMatch(c)) return 2;
     return 1;
+  }
+
+  /// 驿站名择优：泛称不得覆盖具体网点名。
+  ///
+  /// 菜鸟接口拿不到驿站全称时会回落到泛称「菜鸟驿站」，但多数具体网点名本身就含这三个字
+  /// （如「邢台信都区绿城诚园北门店菜鸟驿站」），所以无法用「是否含菜鸟驿站」判断具体性，
+  /// 只能按「是否恰好等于某个泛称」来判定，否则具体名会被泛称覆盖掉。
+  @visibleForTesting
+  static String preferStationName(String current, String incoming) {
+    final cur = current.trim();
+    final inc = incoming.trim();
+    if (inc.isEmpty || inc == '未知驿站') return cur;
+    if (cur.isEmpty || cur == '未知驿站') return inc;
+
+    // 泛称的信息量排序，用于「两个泛称之间取更具体的那个」
+    const genericRank = {'菜鸟驿站': 3, '驿站': 2, '自提点': 1};
+    final curRank = genericRank[cur];
+    final incRank = genericRank[inc];
+
+    if (curRank != null && incRank != null) return incRank >= curRank ? inc : cur;
+    // 已有具体网点名，新流入只是泛称：保留具体名；具体名没带「菜鸟驿站」字样时补上前缀
+    if (curRank == null && incRank != null) {
+      return inc == '菜鸟驿站' && !cur.contains('菜鸟驿站') ? '菜鸟驿站 · $cur' : cur;
+    }
+    // 新流入更具体 → 采用
+    return inc;
   }
 
   /// 是否为具体的商品名（排除各家连接器生成的通用占位名）

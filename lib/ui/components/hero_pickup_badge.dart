@@ -1,8 +1,18 @@
-/// 大号醒目取件码胶囊徽标 - 支持物理点击缩放与一键复制触觉反馈
+/// 大号醒目取件码徽标 - 支持一键复制与触觉反馈
+///
+/// 取件码是这个 App 里最重要的一条信息（用户就是来读它的），所以它值得：
+/// - 更大的字号（18 / 24），而不是塞在 16px 里；
+/// - 等宽数字 + 字距，避免不同数字宽度导致复制时看串位；
+/// - 实心强调色底 + 白字，白字对比 5.80:1（WCAG AA）。
+///
+/// 改版去掉了原先的蓝色外发光阴影与一个从未被读取的 `_morphController`。
 library;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+
+import '../constants/app_constants.dart';
+import '../theme/motion.dart';
 
 class HeroPickupBadge extends StatefulWidget {
   final String pickupCode;
@@ -20,24 +30,8 @@ class HeroPickupBadge extends StatefulWidget {
   State<HeroPickupBadge> createState() => _HeroPickupBadgeState();
 }
 
-class _HeroPickupBadgeState extends State<HeroPickupBadge> with SingleTickerProviderStateMixin {
+class _HeroPickupBadgeState extends State<HeroPickupBadge> {
   bool _isCopied = false;
-  late final AnimationController _morphController;
-
-  @override
-  void initState() {
-    super.initState();
-    _morphController = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 260),
-    );
-  }
-
-  @override
-  void dispose() {
-    _morphController.dispose();
-    super.dispose();
-  }
 
   Future<void> _handleCopy() async {
     if (widget.pickupCode.trim().isEmpty) return;
@@ -47,99 +41,95 @@ class _HeroPickupBadgeState extends State<HeroPickupBadge> with SingleTickerProv
 
     if (!mounted) return;
     setState(() => _isCopied = true);
-    _morphController.forward(from: 0.0);
     widget.onCopied?.call();
 
     await Future.delayed(const Duration(milliseconds: 1800));
-    if (mounted) {
-      setState(() => _isCopied = false);
-      _morphController.reverse();
-    }
+    if (mounted) setState(() => _isCopied = false);
   }
 
   @override
   Widget build(BuildContext context) {
     if (widget.pickupCode.trim().isEmpty) {
       return Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+        padding: const EdgeInsets.symmetric(
+          horizontal: AppSpacing.md,
+          vertical: AppSpacing.xs,
+        ),
         decoration: BoxDecoration(
-          color: Colors.grey.withValues(alpha: 0.12),
-          borderRadius: BorderRadius.circular(8),
+          color: AppColors.surfaceSunken,
+          borderRadius: AppRadius.xsAll,
         ),
         child: const Text(
           '待到站生成',
           style: TextStyle(
             fontSize: 12,
-            color: Colors.grey,
+            color: AppColors.textTertiary,
             fontWeight: FontWeight.w500,
           ),
         ),
       );
     }
 
-    final fontSize = widget.isLarge ? 22.0 : 16.0;
+    final fontSize = widget.isLarge ? 22.0 : 18.0;
+    final fill = _isCopied ? AppColors.statusPickedUp : AppColors.primaryStrong;
 
     return Material(
       color: Colors.transparent,
       child: InkWell(
         onTap: _handleCopy,
-        borderRadius: BorderRadius.circular(10),
+        borderRadius: AppRadius.xsAll,
         child: AnimatedContainer(
-          duration: const Duration(milliseconds: 200),
+          duration: Motion.of(context, Motion.fast),
+          curve: Motion.standard,
           padding: EdgeInsets.symmetric(
-            horizontal: widget.isLarge ? 14 : 10,
-            vertical: widget.isLarge ? 8 : 5,
+            horizontal: widget.isLarge ? 14 : AppSpacing.md,
+            vertical: widget.isLarge ? AppSpacing.sm : 6,
           ),
           decoration: BoxDecoration(
-            gradient: _isCopied
-                ? const LinearGradient(
-                    colors: [Color(0xFF34C759), Color(0xFF28A745)],
-                  )
-                : const LinearGradient(
-                    colors: [Color(0xFF007AFF), Color(0xFF0056B3)],
-                  ),
-            borderRadius: BorderRadius.circular(10),
-            boxShadow: [
-              BoxShadow(
-                color: (_isCopied ? const Color(0xFF34C759) : const Color(0xFF007AFF))
-                    .withValues(alpha: 0.25),
-                blurRadius: 8,
-                offset: const Offset(0, 3),
-              ),
-            ],
+            color: fill,
+            borderRadius: AppRadius.xsAll,
           ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
               Icon(
-                _isCopied ? Icons.check_circle_rounded : Icons.copy_rounded,
-                size: fontSize * 0.85,
+                _isCopied ? Icons.check_rounded : Icons.copy_rounded,
+                size: fontSize * 0.8,
                 color: Colors.white,
               ),
               const SizedBox(width: 6),
-              AnimatedCrossFade(
-                firstChild: Text(
-                  widget.pickupCode,
-                  style: TextStyle(
-                    fontFamily: 'monospace',
-                    fontSize: fontSize,
-                    fontWeight: FontWeight.w800,
-                    letterSpacing: 0.8,
-                    color: Colors.white,
+              // 徽标可能被放进很窄的容器（详情抽屉里它和驿站信息并排）。
+              // 允许文字收缩并省略，好过整块 Row 直接报溢出 —— 点击复制仍拿到完整取件码。
+              Flexible(
+                child: AnimatedCrossFade(
+                  firstChild: Text(
+                    widget.pickupCode,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: fontSize,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: 0.6,
+                      height: 1.15,
+                      color: Colors.white,
+                      fontFeatures: const [FontFeature.tabularFigures()],
+                    ),
                   ),
-                ),
-                secondChild: Text(
-                  '已复制!',
-                  style: TextStyle(
-                    fontSize: fontSize * 0.9,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.white,
+                  secondChild: Text(
+                    '已复制',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: fontSize * 0.85,
+                      fontWeight: FontWeight.w700,
+                      color: Colors.white,
+                    ),
                   ),
+                  crossFadeState: _isCopied
+                      ? CrossFadeState.showSecond
+                      : CrossFadeState.showFirst,
+                  duration: Motion.of(context, Motion.fast),
                 ),
-                crossFadeState: _isCopied
-                    ? CrossFadeState.showSecond
-                    : CrossFadeState.showFirst,
-                duration: const Duration(milliseconds: 200),
               ),
             ],
           ),

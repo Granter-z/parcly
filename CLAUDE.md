@@ -126,9 +126,13 @@ class Package {
   - `background_sync_service.dart`: 自适应后台同步（根据包裹状态动态调整间隔）
   - `sync_history_manager.dart`: 同步历史记录管理（用于智能跳过）
 - `keep_alive/`: 电商平台保活机制
-  - `keep_alive_service.dart`: 平台保活服务（定期心跳，延长 Cookie 有效期）
-  - `platform_heartbeat.dart`: 各平台心跳实现（Taobao/JD/PDD）
-  - `keep_alive_scheduler.dart`: 智能调度器（根据 Cookie 年龄调整心跳频率）
+  - `keep_alive_service.dart`: 平台保活服务（按闸门与冷却决定是否发心跳，结果落盘）
+  - `keep_alive_controller.dart`: Riverpod `Notifier`，暴露可 watch 的 `KeepAliveSnapshot`
+  - `platform_heartbeat.dart`: 淘宝/京东心跳实现（纯 HTTP，可后台运行）
+  - `pdd_connector_heartbeat.dart`: 拼多多心跳，委托 `PddH5Connector` 的常驻 WebView
+  - `keep_alive_notifier.dart`: 失效提醒收口（去重标记仅在发送成功后落盘）
+  - `keep_alive_worker.dart`: WorkManager 后台 isolate，App 被杀后仍可续期
+  - 调度决策已下沉到 `lib/core/engine/keep_alive_plan.dart`（原 `keep_alive_scheduler.dart` 已删除）
 
 **关键设计**:
 - 每个 `PlatformConnector` 通过 `Stream<Package> streamSync()` 流式产出包裹数据
@@ -220,9 +224,13 @@ pendingShipment → transit → delivering → arrived → pickedUp → archived
 - 到件通知利用 `PackageListNotifier._triggerArrivedNotification()`
 
 **保活机制**:
-- 定期心跳保持 Cookie 活跃（延长有效期从 7-14 天到无限期）
-- 智能调度根据 Cookie 年龄调整心跳频率（新 Cookie 12 小时、旧 Cookie 6 小时）
-- 失败时不通知用户，仅记录日志
+- 调度决策在 `lib/core/engine/keep_alive_plan.dart`（纯 Dart、时间可注入、可单测）
+- 间隔按 Cookie 年龄分档：0-3 天 24h、4-7 天 12h、8-10 天 6h、11+ 天 4h
+- **`next_keep_alive_at` 已落盘**（box `keep_alive_state`），冷启动时闸门依然生效，不会重发心跳
+- 用户同步后 6 小时内、或刚保活 2 小时内跳过；最近同步时间来自 `SyncHistoryManager`
+- 心跳失败累计 3 次或明确判定失效 → 写 `setExpired` + 本地通知提醒（点击直达设置页）
+- 拼多多心跳复用 `PddH5Connector` 的常驻 WebView（自建控制器会泄漏原生 WebView），只能前台运行
+- 用户可关闭总开关或单平台开关，前后台路径都会尊重
 
 ### 6. Image URL Normalization (P11-b 后续)
 
@@ -332,9 +340,11 @@ flutter test test/taobao_sync_rules_test.dart
    - 到件通知自动触发
 
 3. **电商平台保活机制**:
-   - 定期心跳保持 Cookie 活跃
-   - 智能调度根据 Cookie 年龄调整频率
-   - 延长有效期从 7-14 天到无限期
+   - 调度决策下沉 `lib/core/engine/keep_alive_plan.dart`，纯 Dart 可单测
+   - 保活状态落盘（`keep_alive_state` box），修复每次冷启动重发心跳的风暴
+   - 失效提醒闭环：本地通知 + 设置页入口，带去重与「发送成功才写标记」的兜底
+   - 保活总开关 / 单平台开关 / 保活历史与成功率
+   - 拼多多心跳改为复用 `PddH5Connector` 常驻 WebView，修复原生 WebView 泄漏
 
 4. **通知内容优化**:
    - 显示商品名和取件码

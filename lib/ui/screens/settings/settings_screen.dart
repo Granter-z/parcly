@@ -5,8 +5,10 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../../core/models/platform_ids.dart';
 import '../../../platform/storage/platform_auth_store.dart';
 import '../../../platform/connectors/connector_manager.dart';
+import '../../components/platform_meta.dart';
 import '../../providers/package_provider.dart';
 import '../login/platform_login_screen.dart';
 import '../pdd/pdd_web_screen.dart';
@@ -44,29 +46,12 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           // ── Section 1: 平台账号绑定 ────────────────────────
           _buildSectionHeader('电商平台账号绑定', '绑定后下拉即可聚合多端在途包裹与取件码'),
           const SizedBox(height: 10),
-          _buildPlatformCard(
-            platform: 'taobao',
-            displayName: '淘宝 / 天猫',
-            subtitle: '支持菜鸟驿站取件码及在途商品图文',
-            icon: Icons.shopping_bag_rounded,
-            brandColor: const Color(0xFFFF5000),
-          ),
-          const SizedBox(height: 12),
-          _buildPlatformCard(
-            platform: 'jd',
-            displayName: '京东商城',
-            subtitle: '支持自营物流、便民柜自提码与在途配送',
-            icon: Icons.flash_on_rounded,
-            brandColor: const Color(0xFFE1251B),
-          ),
-          const SizedBox(height: 12),
-          _buildPlatformCard(
-            platform: 'pdd',
-            displayName: '拼多多',
-            subtitle: '内置登录免双端互踢，自动同步在途包裹与取件码',
-            icon: Icons.local_fire_department_rounded,
-            brandColor: const Color(0xFFE02E24),
-          ),
+          // 平台清单与名称/图标/品牌色的唯一来源：core/models/platform_ids.dart
+          // 与 ui/components/platform_meta.dart，不再逐平台复制一份
+          for (final platform in kPlatformIds) ...[
+            if (platform != kPlatformIds.first) const SizedBox(height: 12),
+            _buildPlatformCard(platform),
+          ],
 
           const SizedBox(height: 28),
 
@@ -98,6 +83,81 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                         ),
                       );
                     }
+                  },
+                ),
+                const Divider(height: 1, indent: 56),
+                ListTile(
+                  leading: const Icon(Icons.refresh_rounded, color: Color(0xFFFF9500)),
+                  title: const Text('强制重拉订单详情', style: TextStyle(fontSize: 14.5, fontWeight: FontWeight.w600)),
+                  subtitle: const Text('忽略 24 小时同步跳过，重新拉取全部订单', style: TextStyle(fontSize: 12)),
+                  trailing: const Icon(Icons.chevron_right_rounded, size: 20, color: Colors.grey),
+                  onTap: () async {
+                    HapticFeedback.lightImpact();
+                    final manager = ref.read(connectorManagerProvider);
+                    // 先取 messenger 再 pop：回到首页才能立刻看到重拉后的卡片，
+                    // 而 pop 之后 context 已失效，用它弹提示会静默失败
+                    final messenger = ScaffoldMessenger.of(context);
+                    Navigator.pop(context);
+                    final count = await manager.syncAll(force: true);
+                    messenger.showSnackBar(
+                      SnackBar(
+                        content: Text(manager.lastIssue ?? '已强制重拉订单详情（$count 条）'),
+                        behavior: SnackBarBehavior.floating,
+                      ),
+                    );
+                  },
+                ),
+                const Divider(height: 1, indent: 56),
+                ListTile(
+                  leading: const Icon(Icons.settings_backup_restore_rounded, color: Color(0xFF34C759)),
+                  title: const Text('恢复已删除的包裹', style: TextStyle(fontSize: 14.5, fontWeight: FontWeight.w600)),
+                  subtitle: const Text('清空删除记录并重新同步，被删的包裹会回来', style: TextStyle(fontSize: 12)),
+                  trailing: const Icon(Icons.chevron_right_rounded, size: 20, color: Colors.grey),
+                  onTap: () async {
+                    HapticFeedback.mediumImpact();
+                    final store = PlatformAuthStore();
+                    final removed = store.getBlacklist().length;
+                    final manager = ref.read(connectorManagerProvider);
+                    // 先取 messenger / navigator 再 pop：和强制重拉一样，回首页才能看到回来的卡片；
+                    // 弹窗关闭后 context 已跨过 await 间隙，不能再拿来导航
+                    final messenger = ScaffoldMessenger.of(context);
+                    final navigator = Navigator.of(context);
+
+                    if (removed == 0) {
+                      messenger.showSnackBar(const SnackBar(
+                        content: Text('没有已删除的包裹记录'),
+                        behavior: SnackBarBehavior.floating,
+                      ));
+                      return;
+                    }
+
+                    final confirmed = await showDialog<bool>(
+                      context: context,
+                      builder: (ctx) => AlertDialog(
+                        title: const Text('确认恢复已删除的包裹？'),
+                        content: Text('将清空 $removed 条删除记录并重新同步。'
+                            '当初故意删掉的脏数据（外卖闪送单、广告污染包裹）也会一并回来，需要再手动删一次。'),
+                        actions: [
+                          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
+                          FilledButton(
+                            onPressed: () => Navigator.pop(ctx, true),
+                            style: FilledButton.styleFrom(backgroundColor: const Color(0xFF34C759)),
+                            child: const Text('确认恢复'),
+                          ),
+                        ],
+                      ),
+                    );
+                    if (confirmed != true) return;
+
+                    store.clearBlacklist();
+                    navigator.pop();
+                    final count = await manager.syncAll();
+                    messenger.showSnackBar(
+                      SnackBar(
+                        content: Text(manager.lastIssue ?? '已清空删除记录并重新同步（处理 $count 条）'),
+                        behavior: SnackBarBehavior.floating,
+                      ),
+                    );
                   },
                 ),
                 const Divider(height: 1, indent: 56),
@@ -186,13 +246,11 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     );
   }
 
-  Widget _buildPlatformCard({
-    required String platform,
-    required String displayName,
-    required String subtitle,
-    required IconData icon,
-    required Color brandColor,
-  }) {
+  Widget _buildPlatformCard(String platform) {
+    final displayName = platformDisplayName(platform);
+    final subtitle = platformSubtitle(platform);
+    final icon = platformIcon(platform);
+    final brandColor = platformBrandColor(platform);
     final isBound = _authStore.isBound(platform);
     final liveIssue = ref.watch(connectorManagerProvider).lastIssue ?? '';
     final isExpired = isBound &&

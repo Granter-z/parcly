@@ -1,291 +1,137 @@
-/// 首页顶部概览仪表盘 - 聚合待取件、在途状态与一键多平台流式同步
+/// 首页顶部 Hero —— 只回答一个问题：现在最该关心几件包裹。
+///
+/// 改版前的三个问题：
+/// 1. **没用 core 的决策结果**。`HeroCardEngine` 已经算出 arrivedCount / deliveringCount /
+///    urgencyScore / 「建议一起取」这类结论，也接进了 `heroDecisionProvider`，但仪表盘
+///    自己在 widget 里又 `where(...)` 数了一遍，且两边对「待取件」的配色还相反。
+///    现在只读 [heroDecisionProvider]。
+/// 2. **把 Hero 写成了功能清单**。原先一屏里塞了三个数字、两根竖分隔线、一句解释，
+///    再加一个同步按钮。Hero 是一个瞬间，不是列表：现在只留「主数字 + 一句话」。
+/// 3. **拿 `fontFamily: 'monospace'` 撑数字、拿 `FittedBox` 补溢出**。
+///    改用等宽数字特性（tabular figures），字号按最长内容预留，不需要缩放兜底。
 library;
 
-import 'dart:async';
-
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import '../../../../core/models/package_status.dart';
+
+import '../../../../app/hero_decision.dart';
+import '../../../constants/app_constants.dart';
 import '../../../providers/package_provider.dart';
 import '../../../theme/motion.dart';
-import '../../../../platform/connectors/connector_manager.dart';
 
-class HeroStatsDashboard extends ConsumerStatefulWidget {
+class HeroStatsDashboard extends ConsumerWidget {
   const HeroStatsDashboard({super.key});
 
   @override
-  ConsumerState<HeroStatsDashboard> createState() => _HeroStatsDashboardState();
-}
+  Widget build(BuildContext context, WidgetRef ref) {
+    final decision = ref.watch(heroDecisionProvider);
 
-class _HeroStatsDashboardState extends ConsumerState<HeroStatsDashboard>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _spinController;
+    // 没有在途 / 待取件时整块收起，让位给页面下方的空态卡片。
+    // 两处都讲「现在没有包裹」是重复的。
+    if (decision.isEmpty) return const SizedBox.shrink();
 
-  /// 同步刚结束时短暂展示「已同步」完成态
-  bool _justSynced = false;
-  Timer? _justSyncedTimer;
-
-  @override
-  void initState() {
-    super.initState();
-    _spinController = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 900),
-    );
-  }
-
-  @override
-  void dispose() {
-    _justSyncedTimer?.cancel();
-    _spinController.dispose();
-    super.dispose();
-  }
-
-  /// 同步由 true 落回 false 时，闪一次完成态
-  void _flashSynced() {
-    _justSyncedTimer?.cancel();
-    setState(() => _justSynced = true);
-    _justSyncedTimer = Timer(const Duration(milliseconds: 1400), () {
-      if (mounted) setState(() => _justSynced = false);
-    });
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final pendingPackages = ref.watch(pendingPackagesProvider);
-    final isSyncing = ref.watch(syncStateProvider);
-
-    ref.listen<bool>(syncStateProvider, (previous, next) {
-      if (previous == true && next == false) _flashSynced();
-    });
-
-    if (isSyncing) {
-      if (!_spinController.isAnimating) _spinController.repeat();
-    } else {
-      if (_spinController.isAnimating) _spinController.stop();
-    }
-
-    final toPickupCount = pendingPackages.where((p) => p.status.isArrived).length;
-    final inTransitCount = pendingPackages.where((p) => p.status == PackageStatus.delivering || p.status == PackageStatus.transit).length;
-    final pendingShipmentCount = pendingPackages.where((p) => p.status == PackageStatus.pendingShipment).length;
+    final lead = decision.lead;
+    final theme = Theme.of(context);
+    final isUrgent = decision.heroEmotionState == HeroEmotionState.urgent;
 
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.all(20.0),
+      padding: const EdgeInsets.all(AppSpacing.xl),
       decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [
-            Color(0xFF1C1C1E),
-            Color(0xFF2C2C2E),
-          ],
-        ),
-        borderRadius: BorderRadius.circular(22.0),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.12),
-            blurRadius: 18,
-            offset: const Offset(0, 6),
-          ),
-        ],
+        color: AppColors.inkSurface,
+        borderRadius: AppRadius.lgAll,
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // 顶部小标题 + 一键同步按钮
           Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            crossAxisAlignment: CrossAxisAlignment.baseline,
+            textBaseline: TextBaseline.alphabetic,
             children: [
-              const Row(
-                children: [
-                  Icon(Icons.all_inbox_rounded, color: Colors.white70, size: 16),
-                  SizedBox(width: 6),
-                  Text(
-                    '包裹概览',
-                    style: TextStyle(
-                      color: Colors.white70,
-                      fontSize: 13,
-                      fontWeight: FontWeight.w500,
-                      letterSpacing: 0.5,
-                    ),
-                  ),
-                ],
-              ),
-              InkWell(
-                onTap: isSyncing
-                    ? null
-                    : () async {
-                        HapticFeedback.lightImpact();
-                        final manager = ref.read(connectorManagerProvider);
-                        await manager.syncAll();
-                        if (!context.mounted) return;
-                        final issue = manager.lastIssue;
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(
-                            content: Text(issue ?? '已同步最新物流状态'),
-                            duration: const Duration(seconds: 3),
-                            behavior: SnackBarBehavior.floating,
-                          ),
-                        );
-                      },
-                borderRadius: BorderRadius.circular(20),
-                child: AnimatedContainer(
-                  duration: Motion.fast,
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4.5),
-                  decoration: BoxDecoration(
-                    color: _justSynced
-                        ? const Color(0xFF34C759).withValues(alpha: 0.28)
-                        : Colors.white.withValues(alpha: 0.12),
-                    borderRadius: BorderRadius.circular(20),
-                  ),
-                  child: Row(
-                    children: [
-                      if (_justSynced)
-                        const Icon(
-                          Icons.check_circle_rounded,
-                          color: Color(0xFF34C759),
-                          size: 14,
-                        )
-                      else
-                        RotationTransition(
-                          turns: _spinController,
-                          child: const Icon(
-                            Icons.sync_rounded,
-                            color: Colors.white,
-                            size: 14,
-                          ),
-                        ),
-                      const SizedBox(width: 4),
-                      Text(
-                        _justSynced
-                            ? '已同步'
-                            : (isSyncing ? '同步中...' : '一键同步'),
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 11.5,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ],
-                  ),
+              _RollingNumber(
+                value: lead.count,
+                style: theme.textTheme.displaySmall!.copyWith(
+                  color: AppColors.onInkPrimary,
                 ),
               ),
+              const SizedBox(width: AppSpacing.sm),
+              Text(
+                lead.unit,
+                style: const TextStyle(
+                  fontSize: 17,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.onInkPrimary,
+                ),
+              ),
+              const Spacer(),
+              // 全页最多一个语义标签，且只在紧急时出现。
+              if (isUrgent) const _UrgentChip(),
             ],
           ),
-
-          const SizedBox(height: 14),
-
-          // 核心数字展现（FittedBox 杜绝任意窄屏像素溢出）
-          FittedBox(
-            fit: BoxFit.scaleDown,
-            alignment: Alignment.centerLeft,
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.baseline,
-              textBaseline: TextBaseline.alphabetic,
-              children: [
-                _RollingNumber(
-                  value: toPickupCount,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 42,
-                    fontWeight: FontWeight.w900,
-                    height: 1.0,
-                    fontFamily: 'monospace',
-                  ),
-                ),
-                const SizedBox(width: 6),
-                const Text(
-                  '件待取',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 17,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                const SizedBox(width: 14),
-                Container(
-                  height: 22,
-                  width: 1,
-                  color: Colors.white.withValues(alpha: 0.2),
-                ),
-                const SizedBox(width: 14),
-                _RollingNumber(
-                  value: inTransitCount,
-                  style: TextStyle(
-                    color: Colors.white.withValues(alpha: 0.8),
-                    fontSize: 26,
-                    fontWeight: FontWeight.bold,
-                    height: 1.0,
-                    fontFamily: 'monospace',
-                  ),
-                ),
-                const SizedBox(width: 5),
-                Text(
-                  '件在途',
-                  style: TextStyle(
-                    color: Colors.white.withValues(alpha: 0.7),
-                    fontSize: 13.5,
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-                if (pendingShipmentCount > 0) ...[
-                  const SizedBox(width: 12),
-                  Container(
-                    height: 22,
-                    width: 1,
-                    color: Colors.white.withValues(alpha: 0.2),
-                  ),
-                  const SizedBox(width: 12),
-                  _RollingNumber(
-                    value: pendingShipmentCount,
-                    style: TextStyle(
-                      color: Colors.white.withValues(alpha: 0.8),
-                      fontSize: 26,
-                      fontWeight: FontWeight.bold,
-                      height: 1.0,
-                      fontFamily: 'monospace',
-                    ),
-                  ),
-                  const SizedBox(width: 5),
-                  Text(
-                    '件待发',
-                    style: TextStyle(
-                      color: Colors.white.withValues(alpha: 0.7),
-                      fontSize: 13.5,
-                      fontWeight: FontWeight.w500,
-                    ),
-                  ),
-                ],
-              ],
-            ),
-          ),
-
-          const SizedBox(height: 12),
-
-          // 底部贴心状态文案
+          const SizedBox(height: AppSpacing.md),
           Text(
-            toPickupCount > 0
-                ? '已有 $toPickupCount 件快件送达驿站，点击包裹卡片查看取件码与详情'
-                : (inTransitCount > 0
-                    ? '包裹全速运送中，送达驿站后将第一时间展示取件码'
-                    : (pendingShipmentCount > 0
-                        ? '已有 $pendingShipmentCount 件商品等待商家发货'
-                        : '当前暂无在途与待取件，下拉或点击同步拉取')),
-            style: TextStyle(
-              color: Colors.white.withValues(alpha: 0.65),
-              fontSize: 12,
-              height: 1.35,
+            _statusLine(decision),
+            style: const TextStyle(
+              fontSize: 12.5,
+              height: 1.4,
+              color: AppColors.onInkTertiary,
             ),
           ),
         ],
       ),
     );
   }
+
+  /// 一句话说明当前状态。
+  ///
+  /// 优先用 core 给的建议（「建议立即取件」「建议一起取，节省跑腿」），
+  /// 没有建议时退回一句朴素的状态描述。
+  String _statusLine(HeroDecision decision) {
+    final advice = decision.subtitle;
+    if (advice != null && advice.isNotEmpty) return advice;
+
+    final lead = decision.lead;
+    if (decision.arrivedCount > 0) return '已送达驿站，点击卡片查看取件码';
+    if (decision.deliveringCount > 0) return '快递员正在派送，留意来电';
+    if (decision.transitCount > 0) return '包裹运送中，到站后会第一时间提醒';
+    if (lead.count > 0) return '商家正在备货，发货后自动同步';
+    return '';
+  }
 }
 
-/// 数字滚动组件：数值变化时在旧值与新值之间插值，避免整块数字硬跳。
+/// 紧急标签：仅在 `urgencyScore > 80` 时出现。
+///
+/// 用实心强调红 + 白字（5.62:1），而不是一个彩色小圆点 —— 圆点不传达任何信息。
+class _UrgentChip extends StatelessWidget {
+  const _UrgentChip();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(
+        horizontal: AppSpacing.sm,
+        vertical: 3,
+      ),
+      decoration: BoxDecoration(
+        color: AppColors.statusRejected,
+        borderRadius: AppRadius.xsAll,
+      ),
+      child: const Text(
+        '紧急',
+        style: TextStyle(
+          fontSize: 11,
+          fontWeight: FontWeight.w700,
+          color: Colors.white,
+        ),
+      ),
+    );
+  }
+}
+
+/// 数字滚动：数值变化时在旧值与新值之间插值，避免整块数字硬跳。
+///
+/// 动机是「状态迁移」——同步回来后数量变了，用户需要看见它变了。
+/// 系统开启「移除动画」时直接落到终值。
 class _RollingNumber extends StatelessWidget {
   final int value;
   final TextStyle style;
@@ -294,9 +140,14 @@ class _RollingNumber extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final duration = Motion.of(context, Motion.emphasized);
+    if (duration == Duration.zero) {
+      return Text(value.toString(), style: style);
+    }
+
     return TweenAnimationBuilder<double>(
       tween: Tween<double>(end: value.toDouble()),
-      duration: Motion.emphasized,
+      duration: duration,
       curve: Motion.standard,
       builder: (context, animated, _) => Text(
         animated.round().toString(),

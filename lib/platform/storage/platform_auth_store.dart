@@ -9,6 +9,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:hive/hive.dart';
 
+import 'keep_alive_store.dart';
+
 /// 平台凭据存储 Box 名称（在 main.dart 启动时预先打开）
 const String kPlatformAuthBox = 'platform_auth_box';
 
@@ -138,6 +140,8 @@ class PlatformAuthStore {
       '${p}_updated_at',
       DateTime.now().millisecondsSinceEpoch,
     );
+    // 重新绑定时清除旧的失效标记
+    await setExpired(p, false);
   }
 
   /// 仅就地更新 mtop 令牌字段，不刷新「授权绑定时间」
@@ -211,6 +215,11 @@ class PlatformAuthStore {
     await _box!.delete('${p}_updated_at');
     await _box!.delete('${p}_entry_url');
     await _box!.delete('${p}_expired_at');
+    // 同时清掉保活调度状态，避免重新绑定时继承旧的闸门与失败计数
+    final keepAlive = KeepAliveStore();
+    await keepAlive.setNext(p, null);
+    await keepAlive.setFailureCount(p, 0);
+    await keepAlive.setLastNotifiedAt(p, null);
     // 压缩日志，抹掉磁盘上残留的凭据帧
     await _box!.compact();
   }

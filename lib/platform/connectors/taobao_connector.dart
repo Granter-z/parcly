@@ -42,6 +42,8 @@ class TaobaoH5Connector implements PlatformConnector {
   final PlatformAuthStore _authStore;
   final List<String> Function()? _getActiveTrackingNumbers;
   final List<Package> Function()? _getLocalPackages;
+  /// 本次同步是否忽略「24 小时内已同步」跳过，由用户主动触发的强制重拉置位
+  final bool Function()? _shouldForceRefetch;
   final SyncHistoryManager _syncHistory = SyncHistoryManager();
   static const _appKey = '12574478';
   static const _ua =
@@ -51,9 +53,11 @@ class TaobaoH5Connector implements PlatformConnector {
     PlatformAuthStore? authStore,
     List<String> Function()? getActiveTrackingNumbers,
     List<Package> Function()? getLocalPackages,
+    bool Function()? shouldForceRefetch,
   })  : _authStore = authStore ?? PlatformAuthStore(),
         _getActiveTrackingNumbers = getActiveTrackingNumbers,
-        _getLocalPackages = getLocalPackages;
+        _getLocalPackages = getLocalPackages,
+        _shouldForceRefetch = shouldForceRefetch;
 
   @override
   String get platformId => 'taobao';
@@ -142,14 +146,16 @@ class TaobaoH5Connector implements PlatformConnector {
 
       // 已签收订单只请求一次：本地已有、已签收且轨迹不为空的跳过（不另存标记）
       final local = _getLocalPackages?.call() ?? const <Package>[];
+      final force = _shouldForceRefetch?.call() ?? false;
 
-      // ⚡ 优化：智能跳过最近已同步的订单（24小时内）
+      // ⚡ 优化：智能跳过最近已同步的订单（24小时内）；强制重拉时忽略该窗口
       final needFetchOrders = SyncOptimizer.filterNeedsFetch<_TbOrder>(
         orders: withLogistics,
         localPackages: local,
         getOrderId: (order) => order.orderId,
         getStatus: (order) => PackageStatus.transit, // 从订单列表无法准确判断状态，默认在途
         recentThreshold: const Duration(hours: 24),
+        force: force,
       );
 
       // 保留旧的已签收跳过逻辑（作为额外的过滤）
