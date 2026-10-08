@@ -25,6 +25,19 @@ import 'pdd_trace_parser.dart';
 import 'platform_connector.dart';
 import 'concurrent_limiter.dart';
 
+/// 保活探活结果
+///
+/// 只表达两种可判定的结局；「无法判定」（正忙 / 网络异常）由
+/// [PddH5Connector.keepAliveProbe] 返回 null 表达。
+class PddKeepAliveProbe {
+  /// 登录态是否仍然有效
+  final bool healthy;
+
+  const PddKeepAliveProbe.healthy() : healthy = true;
+
+  const PddKeepAliveProbe.expired() : healthy = false;
+}
+
 class PddH5Connector implements PlatformConnector {
   final PlatformAuthStore _authStore;
   static const _ua =
@@ -51,6 +64,9 @@ class PddH5Connector implements PlatformConnector {
   WebViewController? _controller;
   Completer<String>? _bridgeCompleter;
   String? _lastIssue;
+
+  /// 同步与保活探活共用同一个 WebView，用互斥位串行化，避免两个 loadRequest 互相打断
+  bool _busy = false;
 
   /// 物流时间线缓存：orderSn -> (抓取时的列表最新轨迹, 时间线 JSON)
   /// 列表接口返回的最新轨迹未发生变化时，说明包裹没有新动态，直接复用缓存，无需再次深挖详情页。
@@ -229,79 +245,134 @@ class PddH5Connector implements PlatformConnector {
 
   @override
   Stream<Package> streamSync() async* {
+    // 保活探活与同步共用同一个 WebView，必须串行，否则两个 loadRequest 会互相打断
+    if (_busy) {
+      debugPrint('[PDD] busy, skip sync');
+      return;
+    }
+
     final cookies = _authStore.getCookies('pdd');
     if (cookies == null || cookies.trim().isEmpty) {
       debugPrint('[PDD] No cookies, skip');
       return;
     }
 
-    debugPrint('[PDD] Cookie len: ${cookies.length}');
-    _lastIssue = null;
-    await _injectCookies(cookies);
-    await _ensureController();
-
+    _busy = true;
     try {
-      // ── 阶段 1：订单列表 ─────────────────────────────────
-      final listJson = await _fetchOrderList();
-      if (listJson == null || listJson.isEmpty) {
-        debugPrint('[PDD] Order list empty');
-        return;
-      }
+      debugPrint('[PDD] Cookie len: ${cookies.length}');
+      _lastIssue = null;
+      await _injectCookies(cookies);
+      await _ensureController();
 
-      final orders = _extractOrders(listJson);
-      debugPrint('[PDD] Parsed ${orders.length} orders');
-      if (orders.isEmpty) return;
-      // 订单列表拉取成功 → 登录态健康，清除此前的失效标记
-      await _authStore.setExpired('pdd', false);
-
-      final pendingCodes = <String, _PddOrder>{}; // orderSn -> order（优先深挖时间轴）
-      _cacheHits = 0;
-
-      for (final o in orders) {
-        final parsed = _parseOrder(o);
-        if (parsed == null) continue;
-        if (parsed.isFiltered) continue;
-
-        final isCompleted = parsed.package.status == PackageStatus.pickedUp ||
-            parsed.package.status == PackageStatus.archived ||
-            parsed.package.status == PackageStatus.rejected;
-
-        // 【新模式核心约束】：所有已经完成的都不同步！
-        if (isCompleted) {
-          debugPrint('[PDD NewMode] 已经完成，跳过同步: ${parsed.package.id} (${parsed.package.status.label})');
-          continue;
+      try {
+        // ── 阶段 1：订单列表 ─────────────────────────────────
+        final listJson = await _fetchOrderList();
+        if (listJson == null || listJson.isEmpty) {
+          debugPrint('[PDD] Order list empty');
+          return;
         }
 
-        final orderSn = parsed.package.id.replaceFirst('PDD_', '');
-        final listTrace = parsed.package.description;
+        final orders = _extractOrders(listJson);
+        debugPrint('[PDD] Parsed ${orders.length} orders');
+        if (orders.isEmpty) return;
+        // 订单列表拉取成功 → 登录态健康，清除此前的失效标记
+        await _authStore.setExpired('pdd', false);
 
-        // 仅在动态 TTL 保护期内且时间轴节点完整、轨迹未变时复用缓存
-        final cached = _timelineCache[orderSn];
-        if (cached != null &&
-            cached.timelineJson != null &&
-            cached.isFresh() &&
-            cached.nodeCount >= 3 &&
-            listTrace.isNotEmpty &&
-            cached.latestTrace == listTrace) {
-          _cacheHits++;
-          yield parsed.package.copyWith(
-            description: cached.latestText.isNotEmpty ? cached.latestText : parsed.package.description,
-            rawTimelineJson: cached.timelineJson,
-            status: cached.status,
-          );
-          continue;
+        final pendingCodes = <String, _PddOrder>{}; // orderSn -> order（优先深挖时间轴）
+        _cacheHits = 0;
+
+        for (final o in orders) {
+          final parsed = _parseOrder(o);
+          if (parsed == null) continue;
+          if (parsed.isFiltered) continue;
+
+          final isCompleted = parsed.package.status == PackageStatus.pickedUp ||
+              parsed.package.status == PackageStatus.archived ||
+              parsed.package.status == PackageStatus.rejected;
+
+          // 【新模式核心约束】：所有已经完成的都不同步！
+          if (isCompleted) {
+            debugPrint('[PDD NewMode] 已经完成，跳过同步: ${parsed.package.id} (${parsed.package.status.label})');
+            continue;
+          }
+
+          final orderSn = parsed.package.id.replaceFirst('PDD_', '');
+          final listTrace = parsed.package.description;
+
+          // 仅在动态 TTL 保护期内且时间轴节点完整、轨迹未变时复用缓存
+          final cached = _timelineCache[orderSn];
+          if (cached != null &&
+              cached.timelineJson != null &&
+              cached.isFresh() &&
+              cached.nodeCount >= 3 &&
+              listTrace.isNotEmpty &&
+              cached.latestTrace == listTrace) {
+            _cacheHits++;
+            yield parsed.package.copyWith(
+              description: cached.latestText.isNotEmpty ? cached.latestText : parsed.package.description,
+              rawTimelineJson: cached.timelineJson,
+              status: cached.status,
+            );
+            continue;
+          }
+
+          // 优先同步时间轴：在运（在途/派件）、已购买（待发货）、到货（待取件）
+          pendingCodes[orderSn] = parsed.orderMeta;
         }
 
-        // 优先同步时间轴：在运（在途/派件）、已购买（待发货）、到货（待取件）
-        pendingCodes[orderSn] = parsed.orderMeta;
+        debugPrint('[PDD NewMode] 活跃在运/已购/到货包裹: ${pendingCodes.length}单需深挖时间轴, 缓存复用: $_cacheHits单');
+
+        yield* _enrichPending(pendingCodes);
+      } finally {
+        // 无论本次同步成功、失败还是中断，都尝试把刷新后的 Cookie 回写（仅当登录态健康）
+        await _persistCookiesIfHealthy(cookies);
       }
-
-      debugPrint('[PDD NewMode] 活跃在运/已购/到货包裹: ${pendingCodes.length}单需深挖时间轴, 缓存复用: $_cacheHits单');
-
-      yield* _enrichPending(pendingCodes);
     } finally {
-      // 无论本次同步成功、失败还是中断，都尝试把刷新后的 Cookie 回写（仅当登录态健康）
-      await _persistCookiesIfHealthy(cookies);
+      _busy = false;
+    }
+  }
+
+  /// 复用常驻 WebView 探活一次登录态（仅前台可用）
+  ///
+  /// 返回 null 表示「本轮无法探活」——连接器正忙、控制器不可用或网络异常，
+  /// 调用方必须视作「跳过」而非「登录失效」，避免误判。
+  ///
+  /// 后台 isolate 不持有本对象，因此进程外不会（也无法）走这条路径：
+  /// 拼多多 proxy 接口要求 `anti_content` 动态签名，纯 HTTP 会被风控（424）。
+  Future<PddKeepAliveProbe?> keepAliveProbe() async {
+    if (_busy) {
+      debugPrint('[PDD] keepAliveProbe skipped: busy');
+      return null;
+    }
+
+    final cookies = _authStore.getCookies('pdd');
+    if (cookies == null || cookies.trim().isEmpty) return null;
+
+    _busy = true;
+    try {
+      await _injectCookies(cookies);
+      await _ensureController();
+      if (_controller == null) return null;
+
+      _lastIssue = null;
+      final listJson = await _fetchOrderList();
+
+      // _fetchOrderList 命中登录页/424 时会置 _lastIssue 并落盘失效标记
+      if (_lastIssue != null) {
+        debugPrint('[PDD] keepAliveProbe: login expired');
+        return const PddKeepAliveProbe.expired();
+      }
+      if (listJson != null && listJson.isNotEmpty) {
+        debugPrint('[PDD] keepAliveProbe: healthy');
+        return const PddKeepAliveProbe.healthy();
+      }
+      debugPrint('[PDD] keepAliveProbe: inconclusive (no data)');
+      return null;
+    } catch (e) {
+      debugPrint('[PDD] keepAliveProbe error: $e');
+      return null;
+    } finally {
+      _busy = false;
     }
   }
 

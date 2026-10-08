@@ -236,4 +236,49 @@ void main() {
       expect(p.displayPickupCode, _code);
     });
   });
+
+  group('驿站名择优：泛称不覆盖具体网点名', () {
+    Package arrived(String station, {String pickupCode = ''}) => Package(
+          id: 'TB_$_order1',
+          trackingNumber: _full1,
+          courier: CourierType.yt,
+          pickupCode: pickupCode,
+          urgency: UrgencyLevel.urgent,
+          status: PackageStatus.arrived,
+          addedAt: DateTime(2026, 10, 8, 9),
+          platform: 'taobao',
+          stationName: station,
+        );
+
+    test('具体名本身含「菜鸟驿站」时，不被菜鸟接口回落的泛称覆盖', () {
+      final n = PackageListNotifier();
+      n.addPackage(arrived('邢台信都区绿城诚园北门店菜鸟驿站'));
+      n.addPackage(arrived('菜鸟驿站', pickupCode: _code));
+      final p = _only(n);
+      expect(p.stationName, '邢台信都区绿城诚园北门店菜鸟驿站');
+      // 取件码照常合并，被降级的只是驿站名
+      expect(p.displayPickupCode, _code);
+    });
+
+    test('具体名不含「菜鸟驿站」时，泛称补成前缀而不是覆盖', () {
+      final n = PackageListNotifier();
+      n.addPackage(arrived('绿城诚园北门对面大院驿站'));
+      n.addPackage(arrived('菜鸟驿站'));
+      expect(_only(n).stationName, '菜鸟驿站 · 绿城诚园北门对面大院驿站');
+    });
+
+    test('已有泛称时，更具体的网点名可以覆盖', () {
+      final n = PackageListNotifier();
+      n.addPackage(arrived('菜鸟驿站'));
+      n.addPackage(arrived('邢台信都区绿城诚园北门店菜鸟驿站'));
+      expect(_only(n).stationName, '邢台信都区绿城诚园北门店菜鸟驿站');
+    });
+
+    test('新数据没带驿站名时不覆盖已有网点名', () {
+      final n = PackageListNotifier();
+      n.addPackage(arrived('邢台信都区绿城诚园北门店菜鸟驿站'));
+      n.addPackage(arrived(''));
+      expect(_only(n).stationName, '邢台信都区绿城诚园北门店菜鸟驿站');
+    });
+  });
 }
