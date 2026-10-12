@@ -6,7 +6,7 @@
   <img src="https://img.shields.io/badge/Android-7.0+-3DDC84?logo=android&logoColor=white" alt="Android" />
   <img src="https://img.shields.io/badge/Material%20Design-3-7B1FA2" alt="Material 3" />
   <img src="https://img.shields.io/badge/Release-v1.0.0-00B578" alt="Version 1.0.0" />
-  <img src="https://img.shields.io/badge/tests-196%20passing-3DDC84" alt="Tests" />
+  <img src="https://img.shields.io/badge/tests-271%20passing-3DDC84" alt="Tests" />
   <img src="https://img.shields.io/badge/License-GPLv3-blue" alt="License" />
 </p>
 
@@ -172,7 +172,7 @@ flutter build apk --release --split-per-abi
 测试全部为纯 Dart / Widget 测试，无需设备：
 
 ```bash
-flutter test                                   # 全量（当前 196 个用例）
+flutter test                                   # 全量（当前 271 个用例）
 flutter test test/package_identity_test.dart   # 单个文件
 ```
 

@@ -30,11 +30,19 @@ flutter test test/package_identity_test.dart
 # Hive TypeAdapter 代码生成（修改存储模型后）
 flutter pub run build_runner build --delete-conflicting-outputs
 
-# 构建 Release APK
+# 构建 Release APK（通用包，含全部 ABI）
 flutter build apk --release
+
+# 按 CPU 架构分包（体积更小，用于分发）
+flutter build apk --release --split-per-abi
+
+# 提交前扫描真实订单号 / 手机号等 PII，防止混入仓库
+./tools/check_no_pii.sh
 ```
 
-生产物位于 `build/app/outputs/flutter-apk/app-release.apk`。
+生产物位于 `build/app/outputs/flutter-apk/`（`app-release.apk`，或分包后的 `app-<abi>-release.apk`）。
+
+`tools/dev_run.dart` 是本地热重载宿主（不参与 App 运行）：后台常驻 `flutter run`，通过写入 `build/devcmd.txt`（`r` 热重载 / `R` 热重启）驱动其 stdin，省去重装 APK。默认设备 id 在脚本内硬编码，可传参覆盖。
 
 ## Architecture: Strict Four-Layer Unidirectional Dependency
 
@@ -78,13 +86,16 @@ flutter build apk --release
   - `package_identity.dart`: 包裹身份判定、打码单号匹配、合并规则（P11-b: 淘宝打码单号与菜鸟完整单号合并逻辑）
   - `logistics_status_engine.dart`: 基于轨迹时间流推导 `PackageStatus`、物流稳定性与同步间隔
   - `timeline_merge.dart`: 多源轨迹时间线合并与去重
-  - `hero_card_engine.dart`: 包裹卡片显示决策（Hero 取件码徽章、紧急度、颜色）
-- `parser/`: 文本提取器与词典
-  - `extractors.dart`: 快递公司、运单号前缀、取件码、状态提取
-  - `courier_dictionary.dart`: 承运商别名映射（极兔 JT, 顺丰 SF, 圆通 YT 等）
-  - `regex_patterns.dart`: 运单号、手机号正则
-- `sanitizer/`: 文本归一化与清洗
-- `debug/`: 调试追踪与性能度量（不污染生产代码）
+  - `timeline_view.dart`: 把轨迹模型整理为可渲染的时间轴视图模型
+  - `hero_card_engine.dart`: 纯 Dart 计算 Hero 卡片的结构化决策（计数、紧急度评分、情绪状态）
+  - `hero_card_state.dart`: Hero 决策结果的数据结构（`HeroCardState`、`HeroBadgeType`、`HeroEmotionState` 等）
+  - `keep_alive_plan.dart`: 保活调度决策（按 Cookie 年龄分档、时间可注入、可单测）
+- `parser/`: 文本提取器与词典（`extractors.dart` 提取快递公司/运单号/取件码/状态，`courier_dictionary.dart` 承运商别名，`taobao_trace_parser.dart` 淘宝轨迹，`trace_time.dart` 时间解析，`text_preprocessor.dart` 预处理）
+- `sanitizer/`: 文本归一化与清洗（噪声词典、行分类、商品名清洗）
+- `utils/`: 通用文本归一化（`text_normalizer.dart`）
+- `debug/`: 调试追踪与性能度量（`debug_trace.dart`、`metrics.dart`，不污染生产代码）
+
+> `models/` 下的 `courier_type.dart` 是**未被引用的历史遗留**：实际使用的 `CourierType` / `UrgencyLevel` 枚举定义在 `models/package.dart`。新增代码不要导入 `courier_type.dart`。
 
 **不可变模型设计**:
 ```dart
@@ -113,13 +124,18 @@ class Package {
   - `taobao_connector.dart`: 淘宝/天猫 (MTOP API + 菜鸟驿站)
   - `connector_manager.dart`: 多平台同步调度器
   - `taobao_sync_rules.dart`: 淘宝同步策略（打码单号合并、已签收订单跳过请求）
-  - `*_trace_parser.dart`: 各平台物流轨迹 JSON 解析器
+  - `*_trace_parser.dart`: 各平台物流轨迹 JSON 解析器（pdd / jd / taobao）
+  - `jd_delivery_filter.dart`: 过滤京东外卖/秒送等即时订单
   - `concurrent_limiter.dart`: 并发控制工具（ThrottledExecutor，限制并发数与随机延迟）
   - `sync_optimizer.dart`: 智能跳过已同步订单（24 小时内、已完成状态）
+  - `sync_diagnostics.dart`: 同步诊断数据收集
+  - `mock_connector.dart`: 开发/测试用的模拟连接器
 - `storage/`: 持久化层
   - `hive_package.dart`: Hive 序列化包装器 (`HivePackage` ↔ `Package`)
   - `hive_adapters.dart`: Hive TypeAdapter 注册
   - `platform_auth_store.dart`: Cookie 与凭据持久化
+  - `keep_alive_store.dart`: 保活状态落盘（`keep_alive_state` box）
+- `webview/`: `platform_cookie.dart` WebView Cookie 桥接
 - `notification/`: 本地推送通知
   - `notification_adapter.dart`: 到件通知、24 小时提醒调度
 - `sync/`: 后台同步服务
@@ -132,6 +148,7 @@ class Package {
   - `pdd_connector_heartbeat.dart`: 拼多多心跳，委托 `PddH5Connector` 的常驻 WebView
   - `keep_alive_notifier.dart`: 失效提醒收口（去重标记仅在发送成功后落盘）
   - `keep_alive_worker.dart`: WorkManager 后台 isolate，App 被杀后仍可续期
+  - `taobao_token_refresher.dart`: 淘宝 token 续期
   - 调度决策已下沉到 `lib/core/engine/keep_alive_plan.dart`（原 `keep_alive_scheduler.dart` 已删除）
 
 **关键设计**:
@@ -145,11 +162,14 @@ class Package {
 - `providers/`: Riverpod 状态提供者
   - `package_provider.dart`: `PackageListNotifier` (包裹列表状态管理、合并逻辑、Hive 持久化)
 - `screens/`:
-  - `home/`: 在途优先主页、Hero 仪表盘、物流时间轴抽屉 (`tracking_timeline_sheet.dart`)
+  - `home/`: 在途优先主页 (`home_screen.dart`)，子组件在 `widgets/`（`hero_stats_dashboard.dart` 仪表盘、`animated_package_list.dart` 列表增删重排动画、`modern_package_card.dart` 卡片、`completed_packages_sheet.dart` 已完成归档抽屉、`tracking_timeline_sheet.dart` 物流时间轴抽屉）
   - `pdd/`: 拼多多内置移动端商城容器 (`PddWebScreen`)
   - `login/`: 平台账号授权与 Cookie 捕获
-  - `settings/`: 平台绑定管理、后台同步测试工具 (`background_sync_test_screen.dart`)
-- `components/`: 通用组件（弹簧卡片、平台徽章、Hero 取件码徽章）
+  - `settings/`: 平台绑定管理、保活状态 (`keep_alive_status_screen.dart`)、诊断 (`diagnostics_screen.dart`)、后台同步测试工具 (`background_sync_test_screen.dart`，`kDebugMode` 门控，Release 被 tree-shaking 移除)
+- `theme/`: 主题与动效（`app_theme.dart`、`motion.dart` 全局动效令牌、`status_extension.dart` 状态配色）
+- `components/`: 通用组件（弹簧卡片 `spring_card.dart`、平台徽章、`hero_pickup_badge.dart` 取件码徽章、`tracking_timeline.dart`、`status_pill.dart`、`staggered_entrance.dart`）
+
+> 另有一层 `lib/app/`：应用级决策编排（`hero_decision.dart` 把 core 的 `HeroCardState` 映射为带图标/颜色的 Flutter 决策）。它依赖 Flutter，是 `core/`（纯 Dart）与 `ui/` 之间的桥。
 
 **状态管理模式**:
 - `PackageListNotifier` 管理全局包裹列表，负责：
@@ -251,7 +271,7 @@ pendingShipment → transit → delivering → arrived → pickedUp → archived
 
 ## Testing
 
-**测试文件结构**:
+**测试文件结构**（节选，完整清单见 `test/`）:
 ```
 test/
 ├── package_identity_test.dart          # 包裹身份判定、打码单号匹配
@@ -259,9 +279,13 @@ test/
 ├── taobao_sync_rules_test.dart         # 淘宝同步策略
 ├── pickup_display_rules_test.dart      # Hero 取件码显示规则
 ├── timeline_view_test.dart             # 物流时间线视图
-├── trace_time_test.dart                # 轨迹时间解析
-└── legacy_regression_test.dart         # 回归测试
+├── keep_alive_*_test.dart              # 保活调度、落盘、通知、历史
+├── sync_optimizer_test.dart            # 智能跳过
+├── legacy_regression_test.dart         # 回归测试
+└── fixtures/                           # 测试输入样本（legacy 短信/通知 JSON、淘宝 SSR 详情文本）
 ```
+
+> 测试全部为纯 Dart / Widget 测试，无需设备或网络；淘宝连接器测试直接喂 `test/fixtures/taobao/` 的 SSR 文本。
 
 **运行特定测试**:
 ```bash
@@ -269,7 +293,7 @@ flutter test test/package_identity_test.dart
 flutter test test/taobao_sync_rules_test.dart
 ```
 
-**测试覆盖**: 190 个测试全部通过
+**测试覆盖**: 271 个用例全部通过（无 skip）。新增/修改核心逻辑后跑 `flutter test` 确认全绿。
 
 ## Development Workflow
 
@@ -304,7 +328,7 @@ flutter test test/taobao_sync_rules_test.dart
 2. **随机延迟**: 设置 `minDelay` 和 `maxDelay` 防止风控（淘宝/京东 100-300ms，拼多多 200-400ms）
 3. **智能跳过**: 使用 `SyncOptimizer.filterNeedsFetch()` 过滤已同步订单
 4. **流式返回**: 使用 `Stream<Package>` 逐个产出，不等全部完成
-5. **验证测试**: 运行 `flutter test` 确保所有 190 个测试通过
+5. **验证测试**: 运行 `flutter test` 确保全部用例通过
 
 ## Common Pitfalls
 
@@ -314,15 +338,18 @@ flutter test test/taobao_sync_rules_test.dart
 4. **打码单号需特殊处理**: 菜鸟驿站查询、身份判定时需识别 `*` 标记
 5. **外卖订单需过滤**: 京东「达达」「秒送」等即时订单不是快递，需排除
 6. **并发控制**: 使用 `ThrottledExecutor` 限制并发数，避免触发平台风控
-7. **类型导入**: `CourierType` 和 `UrgencyLevel` 定义在 `core/models/package.dart`，不需要单独导入
+7. **类型导入**: `CourierType` 和 `UrgencyLevel` 定义在 `core/models/package.dart`，不需要单独导入；`core/models/courier_type.dart` 是**未引用的历史遗留**，勿使用
 
 ## Project-Specific Conventions
 
-- **日志脱敏**: 运单号、订单号、取件码只记录平台前缀与计数，不打包完整值
+- **交互语言**: 始终使用简体中文回复（与 `.cursor/rules/行为准则.mdc` 的 `Always respond in Chinese-simplified` 一致）
+- **日志脱敏**: 运单号、订单号、取件码只记录平台前缀与计数，不打包完整值；提交前跑 `./tools/check_no_pii.sh`
 - **中文注释**: 核心业务逻辑注释使用简体中文（领域语言为中文）
 - **包裹 ID 格式**: `<平台前缀>_<平台订单号>` (如 `PDD_240101123456`, `TB_1000000000000000001`, `CN_YT1234567890123`)
 - **Cookie 管理**: 各平台凭据存 `PlatformAuthStore`，WebView 捕获后持久化
 - **并发限制**: 订单详情拉取最多 3 并发，随机延迟 100-400ms 防风控
+- **静态检查**: `analysis_options.yaml` 基于 `flutter_lints`，额外强制 `prefer_const_constructors` / `prefer_const_declarations` / `avoid_print`。生产代码用 `debugPrint` / `DebugTrace`，勿新增 `print`（`main.dart` 中残留的 `print` 属历史遗留）
+- **本地插件**: `plugins/secure_store`（path 依赖）封装 Android 安全存储，供凭据持久化使用
 
 ## Recent Optimizations (已完成)
 
@@ -352,6 +379,7 @@ flutter test test/taobao_sync_rules_test.dart
 
 详细文档见 `docs/` 目录：
 - `docs/background-sync-implementation.md`: 后台同步实施总结
-- `docs/keep-alive-implementation.md`: 保活机制实施总结
-- `docs/sync-speed-phase2-implementation.md`: 同步速度优化 Phase 2
-- `docs/sync-speed-phase3-implementation.md`: 同步速度优化 Phase 3
+- `docs/keep-alive-implementation.md` / `docs/keep-alive-health-fix.md`: 保活机制与健康度修复
+- `docs/sync-speed-implementation.md` / `-optimization.md` / `-phase2-implementation.md` / `-phase3-implementation.md`: 同步提速各阶段记录
+- `docs/account-persistence.md`: 平台账号凭据持久化
+- `docs/testing-guide.md`: 测试指南
