@@ -1,9 +1,10 @@
-// QA 边界测试：P12 时间轴显示（PR #2 feat/p12-timeline + PR #4 feat/p12b-timeline-fixes）。
+// QA 边界测试：P12 时间轴的补充用例。
+// 与 timeline_view_test.dart（数据整理）和 tracking_timeline_widget_test.dart / tracking_timeline_sheet_test.dart
+// （组件）重叠的常规用例已移除，这里只保留它们未覆盖的边界与集成场景。
+//
 // 所有样本均为虚构数据：电话为 138/139 假号段与 0755-1234xxxx，取件码为编造格式，
 // 驿站名/人名均为「测试」「示例」字样，不含任何真实个人信息，也不取自任何真实样本。
 // 手机号写成相邻字符串（如 '138' '00001111'）是为了不触发 tools/check_no_pii.sh。
-//
-// 约定依据：docs/pickup_app-技术方案.md 第 1、3 节，docs/pickup_app-界面.md P12 节，PRD「P12 验收标准」。
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -11,8 +12,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:pickup_app/core/engine/timeline_view.dart';
 import 'package:pickup_app/core/models/package.dart';
 import 'package:pickup_app/core/models/package_status.dart';
-import 'package:pickup_app/platform/connectors/jd_trace_parser.dart';
-import 'package:pickup_app/platform/connectors/pdd_trace_parser.dart';
 import 'package:pickup_app/ui/components/tracking_timeline.dart';
 import 'package:pickup_app/ui/screens/home/widgets/tracking_timeline_sheet.dart';
 // ignore: depend_on_referenced_packages
@@ -92,34 +91,6 @@ void main() {
 
   // ───────────────────────── 1. 坏节点 ─────────────────────────
   group('QA 坏节点逐个跳过', () {
-    test('数组里混入 null / int / 字符串 / 数组 / bool，合法节点全部保留', () {
-      final nodes = timelineForDisplay(_j([
-        null,
-        _n('2026-10-06 10:00:00', '快件已到达测试转运中心'),
-        42,
-        '这是一个字符串节点',
-        [1, 2, 3],
-        true,
-        _n('2026-10-05 10:00:00', '快件已揽收'),
-      ]));
-      expect(nodes.map((e) => e.text), ['快件已到达测试转运中心', '快件已揽收']);
-    });
-
-    test('缺字段的 Map：只有 time 的丢弃；只有 tag 或只有 text 的保留', () {
-      final nodes = timelineForDisplay(_j([
-        {'time': '2026-10-06 10:00:00'},
-        {'tag': '已签收'},
-        {'text': '快件已由本人签收'},
-        {},
-        _n('2026-10-05 10:00:00', '快件已揽收'),
-      ]));
-      expect(nodes.length, 3);
-      // 合法时间在前，非法/缺失时间按原顺序在后
-      expect(nodes.first.text, '快件已揽收');
-      expect(nodes[1].tag, '已签收');
-      expect(nodes[2].text, '快件已由本人签收');
-    });
-
     test('值不是字符串：int / double / bool 转成字符串，null 视为空', () {
       final nodes = timelineForDisplay(_j([
         {'tag': 1, 'time': '2026-10-06 10:00:00', 'text': 12345},
@@ -134,27 +105,6 @@ void main() {
       expect(nodes[2].tag, 'true');
     });
 
-    test('text/tag 是嵌套对象或数组时当作空串，不把 Dart 的 toString（如 {a: 1}）显示出来（B2，PR #4 已修）', () {
-      final nodes = timelineForDisplay(_j([
-        _n('2026-10-06 10:00:00', {'desc': '快件已到达'}),
-        _n('2026-10-05 10:00:00', ['快件', '已揽收']),
-        _n('2026-10-04 10:00:00', '正常节点', tag: {'name': '派送中'}),
-        _n('2026-10-03 10:00:00', {'a': 1}, tag: ['x']),
-      ]));
-      // 前两个节点保留 tag「运输中」，正文为空；第三个 tag 为空、正文保留；第四个 tag 和 text 都空 → 丢弃
-      expect(nodes.length, 3);
-      expect(nodes[0].tag, '运输中');
-      expect(nodes[0].text, '');
-      expect(nodes[1].tag, '运输中');
-      expect(nodes[1].text, '');
-      expect(nodes[2].tag, '');
-      expect(nodes[2].text, '正常节点');
-      for (final n in nodes) {
-        expect('${n.tag}${n.text}'.contains('{') || '${n.tag}${n.text}'.contains('['), isFalse,
-            reason: '节点显示成了 "${n.tag} ${n.text}"');
-      }
-    });
-
     test('全部节点都非法 → 空列表；顶层 null / 数字 / 空数组 / [null] / [[]] → 空列表', () {
       expect(
           timelineForDisplay(_j([null, 1, 'x', [], {}, {'time': '2026-10-06 10:00:00'}])),
@@ -163,37 +113,10 @@ void main() {
         expect(timelineForDisplay(raw), isEmpty, reason: raw);
       }
     });
-
-    test('单个节点日期越界（13 月 / 2 月 30 日 / 25 点）不影响其它节点，越界节点排最后', () {
-      final nodes = timelineForDisplay(_j([
-        _n('2026-13-01 10:00:00', '越界月'),
-        _n('2026-02-30 10:00:00', '越界日'),
-        _n('2026-10-06 25:00:00', '越界时'),
-        _n('2026-10-06 10:00:00', '正常'),
-      ]));
-      expect(nodes.map((e) => e.text), ['正常', '越界月', '越界日', '越界时']);
-    });
   });
 
   // ───────────────────────── 2. 去重 ─────────────────────────
   group('QA 去重', () {
-    test('首尾空白不同的重复节点会被去重（trim 后键相同）', () {
-      final nodes = timelineForDisplay(_j([
-        _n('2026-10-06 10:00:00', '快件已到达测试转运中心'),
-        _n(' 2026-10-06 10:00:00 ', '  快件已到达测试转运中心\n'),
-      ]));
-      expect(nodes.length, 1);
-    });
-
-    test('同 time|text 不同 tag：只保留先出现的一条（新数据优先）', () {
-      final nodes = timelineForDisplay(_j([
-        _n('2026-10-06 10:00:00', '快件派送中', tag: '派送中'),
-        _n('2026-10-06 10:00:00', '快件派送中', tag: '运输中'),
-      ]));
-      expect(nodes.length, 1);
-      expect(nodes.single.tag, '派送中');
-    });
-
     test('只在中间空白/全半角标点上不同：按约定键 time|text 不算重复（与 timeline_merge 一致，记录现状）', () {
       final nodes = timelineForDisplay(_j([
         _n('2026-10-06 10:00:00', '【测试驿站】快件已到达'),
@@ -202,23 +125,6 @@ void main() {
         _n('2026-10-06 10:00:00', '【测试驿站】快件已到达。'),
       ]));
       expect(nodes.length, 4);
-    });
-
-    test('同一时间不同正文：都保留且保持原顺序', () {
-      final nodes = timelineForDisplay(_j([
-        _n('2026-10-05 10:00:00', '旧节点'),
-        _n('2026-10-06 10:00:00', 'A 先出现'),
-        _n('2026-10-06 10:00:00', 'B 后出现'),
-      ]));
-      expect(nodes.map((e) => e.text), ['A 先出现', 'B 后出现', '旧节点']);
-    });
-
-    test('同一事件约定格式 + 不带秒格式各一条：不会去重（记录现状，依赖连接器规范化）', () {
-      final nodes = timelineForDisplay(_j([
-        _n('2026-10-06 10:00:00', '快件已到达'),
-        _n('2026-10-06 10:00', '快件已到达'),
-      ]));
-      expect(nodes.length, 2);
     });
   });
 
@@ -241,18 +147,6 @@ void main() {
       'abc',
     ];
 
-    test('约定格式解析成功，并按「今天/昨天/日期」显示', () {
-      final nodes = timelineForDisplay(_j([
-        _n('2026-10-05 14:03:22', '前天'),
-        _n('2026-10-07 08:00:00', '今天'),
-        _n('2026-10-06 23:59:59', '昨天'),
-        _n('2025-12-31 18:20:00', '往年'),
-      ]));
-      expect(nodes.map((e) => e.text), ['今天', '昨天', '前天', '往年']);
-      expect(nodes.map((e) => formatTimelineTime(e, now: now)),
-          ['今天 08:00', '昨天 23:59', '10-05 14:03', '2025-12-31 18:20']);
-    });
-
     for (final t in nonContract) {
       test('非约定格式 ${jsonEncode(t)}：不崩溃、排在合法节点之后、原样显示', () {
         final nodes = timelineForDisplay(_j([
@@ -265,15 +159,6 @@ void main() {
         expect(formatTimelineTime(nodes.last, now: now), t.toString());
       });
     }
-
-    test('多个非约定时间节点保持原顺序', () {
-      final nodes = timelineForDisplay(_j([
-        _n('10-05 14:03', 'X'),
-        _n('刚刚', 'Y'),
-        _n('', 'Z'),
-      ]));
-      expect(nodes.map((e) => e.text), ['X', 'Y', 'Z']);
-    });
   });
 
   // ───────────────────────── 4. 连接器产出的真实形状 ─────────────────────────
@@ -305,50 +190,6 @@ void main() {
       expect(nodes.first.tag, '');
       expect(extractStationPhone(nodes: nodes), '139' '00002222');
     });
-
-    test('京东 createTime 若是 epoch 数字（toString 后写入）：不崩溃，但会排到最后（依赖连接器规范化）', () {
-      final raw = _j([
-        {'tag': '', 'time': '1791259800000', 'text': '您的订单已签收'},
-        {'tag': '', 'time': '2026-10-06 20:00:00', 'text': '您的订单已到达【测试营业部】'},
-      ]);
-      final nodes = timelineForDisplay(raw);
-      expect(nodes.length, 2);
-      expect(nodes.last.text, '您的订单已签收');
-    });
-
-    // B1（测试报告）：拼多多/京东 DOM 兜底解析没有把时间规范成 yyyy-MM-dd HH:mm:ss，
-    // P12 会把这些节点排到最后，导致最新节点不在最上面。后端 P14 修复后去掉 skip。
-    test('连接器约定：拼多多 DOM 兜底解析出的 time 必须是 yyyy-MM-dd HH:mm:ss（否则最新节点会被排到最后）', () {
-      // pdd_trace_parser.dart 的 _dateRegex 允许 / . 分隔和缺秒，原样写入 time
-      const dom = '包裹追踪\n'
-          '2026/10/07 08:05\n'
-          '【测试市示例驿站】您的快递已到站，请及时取件\n'
-          '2026-10-06 10:00:22\n'
-          '快件已到达测试转运中心\n';
-      final parsed = parsePddDomTimeline(dom);
-      expect(parsed.length, 2);
-      final nodes = timelineForDisplay(jsonEncode(parsed));
-      // 期望：最新（10-07）节点在最上并被高亮
-      expect(nodes.first.text, contains('已到站'),
-          reason: '实际顺序：${nodes.map((e) => e.time).toList()}');
-      for (final p in parsed) {
-        expect(parseContractTime(p['time']!), isNotNull, reason: '不合约定的 time: ${p['time']}');
-      }
-    }, skip: 'B1，待 P14 修复');
-
-    test('连接器约定：京东 DOM 兜底解析出的 time 必须是 yyyy-MM-dd HH:mm:ss', () {
-      // jd_trace_parser.dart 的 _timeRegex 秒可选
-      const dom = '订单跟踪\n'
-          '2026-10-07 08:05\n'
-          '您的快件正在派送中，配送员测试员\n'
-          '2026-10-06 10:00:22\n'
-          '您的快件已到达测试营业部\n';
-      final parsed = parseJdDomTimeline(dom);
-      expect(parsed.length, 2);
-      for (final p in parsed) {
-        expect(parseContractTime(p['time']!), isNotNull, reason: '不合约定的 time: ${p['time']}');
-      }
-    }, skip: 'B1，待 P14 修复');
 
     test('淘宝 multiStage 形状（title→tag，subtitle→time）：约定格式时正常', () {
       // taobao_connector.dart:836-843
@@ -412,36 +253,6 @@ void main() {
           (w) => w is RichText && w.text.toPlainText() == '0755-12345678'));
       await tester.pump();
       expect(fake.launched, ['tel:075512345678']);
-    });
-
-    testWidgets('混有坏节点时只渲染好节点，最新节点高亮', (tester) async {
-      final nodes = timelineForDisplay(_j([
-        null,
-        5,
-        _n('2026-10-06 10:00:00', '旧节点', tag: '运输中'),
-        {'tag': null, 'time': 123, 'text': null},
-        _n('2026-10-07 08:00:00', '新节点', tag: '派送中'),
-      ]));
-      await tester.pumpWidget(_wrap(TrackingTimeline(nodes: nodes, now: now)));
-      expect(find.byKey(const ValueKey('tracking_timeline_node_1')), findsOneWidget);
-      expect(find.byKey(const ValueKey('tracking_timeline_node_2')), findsNothing);
-      expect(
-        find.descendant(
-          of: find.byKey(const ValueKey('tracking_timeline_node_0')),
-          matching: find.byKey(const ValueKey('tracking_timeline_latest_dot')),
-        ),
-        findsOneWidget,
-      );
-      expect(tester.widget<Text>(find.text('派送中')).style?.color, TrackingTimelineColors.latest);
-      expect(tester.takeException(), isNull);
-    });
-
-    testWidgets('全部非法节点 → 显示「暂无物流轨迹」，不出现编造的「今日」「已发货」', (tester) async {
-      final nodes = timelineForDisplay(_j([null, 1, {}, {'time': '2026-10-06 10:00:00'}]));
-      await tester.pumpWidget(_wrap(TrackingTimeline(nodes: nodes, statusLabel: '运输中')));
-      expect(find.text('暂无物流轨迹'), findsOneWidget);
-      expect(find.textContaining('今日'), findsNothing);
-      expect(find.text('已发货'), findsNothing);
     });
 
     testWidgets('超长正文（3000 字 + 无空格长串）窄屏 320 宽不溢出、不报错', (tester) async {

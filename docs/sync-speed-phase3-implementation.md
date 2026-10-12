@@ -134,7 +134,7 @@ flutter analyze lib/platform/
 ### 测试套件
 ```bash
 flutter test
-# 结果：All 190 tests passed! ✅
+# 结果：All 271 tests passed! ✅
 ```
 
 ### 代码质量
@@ -336,7 +336,7 @@ class SyncHistoryManager {
 - ✅ 流式返回数据（已实现）
 - ✅ 京东保活问题修复
 - ✅ 所有类型错误修复
-- ✅ 所有 190 个测试通过
+- ✅ 所有 271 个测试通过
 
 ### 核心优化指标 🎉
 - **首次同步**：14s → 5s（**64% ↓**）

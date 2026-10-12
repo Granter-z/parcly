@@ -158,7 +158,7 @@ flutter analyze lib/
 ### 测试套件
 ```bash
 flutter test
-# 结果：All 190 tests passed!
+# 结果：All 271 tests passed!
 ```
 
 ### 代码质量
@@ -246,7 +246,7 @@ _backgroundSyncService?.setEnabled(false);
 - 省电设计（无活跃包裹时自动暂停）
 
 ✅ **代码质量**
-- 通过全部测试（190/190）
+- 通过全部测试（271/271）
 - 遵循项目架构规范
 - 详细的代码注释与调试日志
 

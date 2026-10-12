@@ -112,7 +112,7 @@ flutter analyze lib/platform/connectors/
 ### 测试套件
 ```bash
 flutter test
-# 结果：All 190 tests passed!
+# 结果：All 271 tests passed!
 ```
 
 ### 代码质量
