@@ -17,11 +17,15 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../providers/package_provider.dart';
 import '../../../app/hero_decision.dart';
+import '../../../core/engine/platform_auth_status.dart' show kLoginExpiredSignals, PlatformAuthStatus;
 import '../../../platform/connectors/connector_manager.dart';
 import '../../../platform/sync/background_sync_service.dart';
 import '../../../platform/keep_alive/keep_alive_controller.dart';
+import '../../components/platform_status_bar.dart';
 import '../../constants/app_constants.dart';
+import '../../providers/platform_auth_status_provider.dart';
 import '../../theme/motion.dart';
+import '../login/platform_login_flow.dart';
 import '../settings/settings_screen.dart';
 import '../pdd/pdd_web_screen.dart';
 import 'widgets/animated_package_list.dart';
@@ -92,18 +96,29 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       if (!mounted) return;
       final issue = manager.lastIssue;
       if (issue != null) {
+        final loginExpired = kLoginExpiredSignals.any(issue.contains);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(issue),
+            behavior: SnackBarBehavior.floating,
             duration: const Duration(seconds: 6),
-            action: SnackBarAction(
-              label: '去重新登录',
-              onPressed: () {
-                Navigator.of(context).push(
-                  MaterialPageRoute(builder: (_) => const SettingsScreen()),
-                );
-              },
-            ),
+            // Flutter 3.47：有 action 时 persist 默认 true，会一直挂着；失败提示应自动消失。
+            persist: false,
+            action: loginExpired
+                ? SnackBarAction(
+                    label: '去重新登录',
+                    onPressed: () {
+                      Navigator.of(context).push(
+                        MaterialPageRoute(builder: (_) => const SettingsScreen()),
+                      );
+                    },
+                  )
+                : SnackBarAction(
+                    label: '重试',
+                    onPressed: () {
+                      if (mounted) _runSync();
+                    },
+                  ),
           ),
         );
       }
@@ -129,6 +144,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     final completedPackages = ref.watch(completedPackagesProvider);
     final decision = ref.watch(heroDecisionProvider);
     final isSyncing = ref.watch(syncStateProvider);
+    // 全部未绑定只加横幅，绝不整页盖住本地包裹（#9 修好后 #15 曾丢掉状态条，这里一并恢复）。
+    final allUnbound = kPlatforms.every(
+      (p) => ref.watch(platformAuthStatusProvider(p.id)) == PlatformAuthStatus.unbound,
+    );
 
     ref.listen<bool>(syncStateProvider, (previous, next) {
       if (previous == true && next == false) _flashSynced();
@@ -163,6 +182,22 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
             ),
             slivers: [
               SliverToBoxAdapter(child: _buildHeader(todayStr, isSyncing)),
+
+              // ① 平台登录状态条（需重登 / 同步失败 / 去绑定）
+              const SliverToBoxAdapter(
+                child: Padding(
+                  padding: EdgeInsets.fromLTRB(
+                    AppSpacing.xl,
+                    0,
+                    AppSpacing.xl,
+                    AppSpacing.sm,
+                  ),
+                  child: PlatformStatusBar(),
+                ),
+              ),
+
+              // 全部未绑定：横幅引导，本地包裹仍在下面
+              if (allUnbound) const SliverToBoxAdapter(child: _BindBanner()),
 
               // Hero：有在途件才出现，与下方空态互斥
               if (hasPending)
@@ -499,6 +534,55 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
             },
             icon: const Icon(Icons.sync_rounded, size: 16),
             label: const Text('一键同步'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 三个平台都没绑定时的引导横幅。只是一条横幅，下面的包裹照常显示。
+class _BindBanner extends ConsumerWidget {
+  const _BindBanner();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return Container(
+      margin: const EdgeInsets.fromLTRB(AppSpacing.xl, 0, AppSpacing.xl, AppSpacing.sm),
+      padding: const EdgeInsets.fromLTRB(AppSpacing.md, AppSpacing.md, AppSpacing.md, AppSpacing.sm),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: AppRadius.mdAll,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '绑定拼多多 / 京东 / 淘宝，包裹自动出现在这里',
+            style: Theme.of(context).textTheme.titleMedium,
+          ),
+          const SizedBox(height: AppSpacing.sm),
+          Wrap(
+            spacing: AppSpacing.sm,
+            runSpacing: AppSpacing.xs,
+            children: [
+              for (final p in kPlatforms)
+                FilledButton.tonal(
+                  style: FilledButton.styleFrom(
+                    foregroundColor: p.brandColor,
+                    minimumSize: const Size(0, 44),
+                    padding: const EdgeInsets.symmetric(horizontal: 14),
+                  ),
+                  onPressed: () => openPlatformLogin(
+                    context,
+                    ref,
+                    platform: p.id,
+                    displayName: p.displayName,
+                    brandColor: p.brandColor,
+                  ),
+                  child: Text('绑定${p.shortName}'),
+                ),
+            ],
           ),
         ],
       ),

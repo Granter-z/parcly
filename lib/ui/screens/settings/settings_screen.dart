@@ -10,8 +10,8 @@ import '../../../platform/storage/platform_auth_store.dart';
 import '../../../platform/connectors/connector_manager.dart';
 import '../../components/platform_meta.dart';
 import '../../providers/package_provider.dart';
-import '../login/platform_login_screen.dart';
-import '../pdd/pdd_web_screen.dart';
+import '../../providers/platform_auth_status_provider.dart';
+import '../login/platform_login_flow.dart';
 import 'background_sync_test_screen.dart';
 import 'keep_alive_status_screen.dart';
 
@@ -251,10 +251,10 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     final subtitle = platformSubtitle(platform);
     final icon = platformIcon(platform);
     final brandColor = platformBrandColor(platform);
-    final isBound = _authStore.isBound(platform);
-    final liveIssue = ref.watch(connectorManagerProvider).lastIssue ?? '';
-    final isExpired = isBound &&
-        (_authStore.isExpired(platform) || liveIssue.contains(_issueKeyword(platform)));
+    final authStatus = ref.watch(platformAuthStatusProvider(platform));
+    final isBound = authStatus != PlatformAuthStatus.unbound;
+    final isExpired = authStatus == PlatformAuthStatus.needsRelogin;
+    final isSyncFailed = authStatus == PlatformAuthStatus.syncFailed;
     final boundTime = _authStore.getBoundTime(platform);
 
     return Container(
@@ -303,19 +303,27 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                       decoration: BoxDecoration(
                         color: isExpired
                             ? Colors.orange.withValues(alpha: 0.15)
-                            : (isBound
-                                ? const Color(0xFF34C759).withValues(alpha: 0.12)
-                                : Colors.grey.withValues(alpha: 0.12)),
+                            : (isSyncFailed
+                                ? const Color(0xFFFF9500).withValues(alpha: 0.15)
+                                : (isBound
+                                    ? const Color(0xFF34C759).withValues(alpha: 0.12)
+                                    : Colors.grey.withValues(alpha: 0.12))),
                         borderRadius: BorderRadius.circular(4),
                       ),
                       child: Text(
-                        isExpired ? '已失效' : (isBound ? '已绑定' : '未绑定'),
+                        isExpired
+                            ? '已失效'
+                            : (isSyncFailed
+                                ? '同步失败'
+                                : (isBound ? '已绑定' : '未绑定')),
                         style: TextStyle(
                           fontSize: 10.5,
                           fontWeight: FontWeight.bold,
                           color: isExpired
                               ? Colors.orange.shade800
-                              : (isBound ? const Color(0xFF34C759) : Colors.grey.shade600),
+                              : (isSyncFailed
+                                  ? const Color(0xFFB35F00)
+                                  : (isBound ? const Color(0xFF34C759) : Colors.grey.shade600)),
                         ),
                       ),
                     ),
@@ -325,12 +333,16 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 Text(
                   isExpired
                       ? '登录已失效，请点击重新授权'
-                      : (isBound && boundTime != null
-                          ? '已于 ${boundTime.month}月${boundTime.day}日 授权绑定'
-                          : subtitle),
+                      : (isSyncFailed
+                          ? '登录正常，上次同步出错，已保留旧数据'
+                          : (isBound && boundTime != null
+                              ? '已于 ${boundTime.month}月${boundTime.day}日 授权绑定'
+                              : subtitle)),
                   style: TextStyle(
                     fontSize: 11.5,
-                    color: isExpired ? Colors.orange.shade800 : Colors.grey.shade600,
+                    color: isExpired
+                        ? Colors.orange.shade800
+                        : (isSyncFailed ? const Color(0xFFB35F00) : Colors.grey.shade600),
                   ),
                 ),
               ],
@@ -440,6 +452,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       await _openLogin(platform: platform, displayName: displayName, brandColor: brandColor);
     } else if (val == 'unbind') {
       await _authStore.unbind(platform);
+      ref.invalidate(platformAuthStatusProvider);
       if (mounted) {
         setState(() {});
         ScaffoldMessenger.of(context).showSnackBar(
@@ -449,46 +462,32 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     }
   }
 
-  /// 登录态失效提示在同步问题上对应的平台关键词
-  String _issueKeyword(String platform) {
-    switch (platform.toLowerCase()) {
-      case 'taobao':
-      case 'tmall':
-        return '淘宝';
-      case 'jd':
-        return '京东';
-      case 'pdd':
-        return '拼多多';
-      default:
-        return platform;
-    }
-  }
 
-  /// 平台登录入口：拼多多内置移动网页端直接打开，其他平台使用专属登录
+  /// 平台登录入口：走共用 openPlatformLogin（成功后清 issue + 只同步该平台）。
   Future<void> _openLogin({
     required String platform,
     required String displayName,
     required Color brandColor,
   }) async {
-    if (platform.toLowerCase() == 'pdd') {
-      await PddWebScreen.open(context, url: 'https://mobile.yangkeduo.com/login.html');
-      if (mounted) setState(() {});
-      return;
-    }
-
-    if (!mounted) return;
-    final ok = await PlatformLoginScreen.show(
+    final ok = await openPlatformLogin(
       context,
+      ref,
       platform: platform,
       displayName: displayName,
       brandColor: brandColor,
     );
-    if (ok == true && mounted) {
-      setState(() {});
-      // 授权成功后清理旧失效提示并立即同步：刷新状态并补齐取件码
-      final manager = ref.read(connectorManagerProvider);
-      manager.clearLastIssue();
-      manager.syncAll();
+    if (mounted) setState(() {});
+    if (ok && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('$displayName 已登录，正在同步'),
+          behavior: SnackBarBehavior.floating,
+          persist: false,
+        ),
+      );
     }
   }
+
+  // _issueKeyword 已由 resolvePlatformAuthStatus / platformIssueKeyword 取代
 }
+
