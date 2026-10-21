@@ -131,6 +131,8 @@ class Package {
   final PackageStatus status;
   final DateTime addedAt;
   final DateTime? pickedUpAt;
+  /// 真实到站时间（北京时间墙钟）；未知 null。P16，后端写、前端只读。
+  final DateTime? arrivedAt;
   final DateTime? archivedAt;
   final bool notifiedArrived;
   final List<StatusTransition> statusHistory;
@@ -210,6 +212,7 @@ class Package {
     required this.status,
     required this.addedAt,
     this.pickedUpAt,
+    this.arrivedAt,
     this.archivedAt,
     this.notifiedArrived = false,
     this.statusHistory = const [],
@@ -263,6 +266,8 @@ class Package {
     DateTime? addedAt,
     DateTime? pickedUpAt,
     bool clearPickedUpAt = false,
+    DateTime? arrivedAt,
+    bool clearArrivedAt = false,
     DateTime? archivedAt,
     bool? notifiedArrived,
     List<StatusTransition>? statusHistory,
@@ -287,6 +292,7 @@ class Package {
       status: status ?? this.status,
       addedAt: addedAt ?? this.addedAt,
       pickedUpAt: clearPickedUpAt ? null : (pickedUpAt ?? this.pickedUpAt),
+      arrivedAt: clearArrivedAt ? null : (arrivedAt ?? this.arrivedAt),
       archivedAt: archivedAt ?? this.archivedAt,
       notifiedArrived: notifiedArrived ?? this.notifiedArrived,
       statusHistory: statusHistory ?? this.statusHistory,

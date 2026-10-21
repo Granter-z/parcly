@@ -4,6 +4,7 @@ import 'package:hive/hive.dart';
 import '../../main.dart';
 import '../../core/debug/debug_trace.dart';
 import '../../core/debug/metrics.dart';
+import '../../core/engine/arrived_at.dart';
 import '../../core/engine/package_identity.dart';
 import '../../core/engine/timeline_merge.dart';
 import '../../platform/storage/hive_package.dart';
@@ -183,6 +184,15 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
               : existing.goodsName)
           : (hasSpecificGoodsName ? existing.goodsName : (package.goodsName ?? existing.goodsName));
 
+      final mergedTimeline =
+          _mergeTimelineJson(existing.rawTimelineJson, package.rawTimelineJson);
+      final arrivedDecision = resolveArrivedAt(
+        existingArrivedAt: existing.arrivedAt,
+        resolvedStatus: resolvedStatus,
+        previousStatus: existing.status,
+        rawTimelineJson: mergedTimeline,
+      );
+
       final updated = existing.copyWith(
         // 旧的 TB_<打码运单号> / CN_<运单号> 换成 TB_<订单号>；用户状态（已取、归档、pickedUpAt）随 existing 带过去，
         // _sync 会删掉 Hive 里的旧 key
@@ -237,7 +247,9 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
         pickedUpAt: existing.pickedUpAt ?? (resolvedStatus == PackageStatus.rejected ? DateTime.now() : null),
         transitFingerprint: package.transitFingerprint ?? existing.transitFingerprint,
         // 时间轴取并集：避免某次详情页加载不全时把完整轨迹覆盖成残缺版本
-        rawTimelineJson: _mergeTimelineJson(existing.rawTimelineJson, package.rawTimelineJson),
+        rawTimelineJson: mergedTimeline,
+        arrivedAt: arrivedDecision.value,
+        clearArrivedAt: arrivedDecision.clear,
       );
 
       debugPrint('[PackageListNotifier] merged: status=${updated.status.label} '
@@ -268,11 +280,21 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
       debugPrint('[PackageListNotifier] no existing package found, creating new');
       debugPrint('[PackageListNotifier] new: id=${packageIdForLog(package.id)}');
 
-      state = [...state, package];
+      final createDecision = resolveArrivedAt(
+        existingArrivedAt: package.arrivedAt,
+        resolvedStatus: package.status,
+        previousStatus: null,
+        rawTimelineJson: package.rawTimelineJson,
+      );
+      final created = package.copyWith(
+        arrivedAt: createDecision.value,
+        clearArrivedAt: createDecision.clear,
+      );
+      state = [...state, created];
 
-      if (package.status.isArrived && !package.notifiedArrived) {
+      if (created.status.isArrived && !created.notifiedArrived) {
         debugPrint('[PackageListNotifier] arrived, triggering notification');
-        _triggerArrivedNotification(package);
+        _triggerArrivedNotification(created);
       }
     }
 
@@ -503,6 +525,14 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
       notifiedArrived: primary.notifiedArrived || secondary.notifiedArrived,
       // 保留任一条上的取件确认时间，避免合并后丢失手动确认痕迹
       pickedUpAt: primary.pickedUpAt ?? secondary.pickedUpAt,
+      // 到站时间取较早非空（已有值不丢）
+      arrivedAt: () {
+        final a = primary.arrivedAt;
+        final b = secondary.arrivedAt;
+        if (a == null) return b;
+        if (b == null) return a;
+        return a.isBefore(b) ? a : b;
+      }(),
     );
   }
 
