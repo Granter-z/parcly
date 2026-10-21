@@ -31,6 +31,7 @@ class HivePackage {
   final PackageStatus status;
   final DateTime addedAt;
   final DateTime? pickedUpAt;
+  final DateTime? arrivedAt;
   final bool notifiedArrived;
   final DateTime? archivedAt;
   final String? transitFingerprint;  // transit 阶段的弱身份标识
@@ -53,6 +54,7 @@ class HivePackage {
     required this.status,
     required this.addedAt,
     this.pickedUpAt,
+    this.arrivedAt,
     this.notifiedArrived = false,
     this.archivedAt,
     this.transitFingerprint,
@@ -78,6 +80,7 @@ class HivePackage {
       status: package.status,
       addedAt: package.addedAt,
       pickedUpAt: package.pickedUpAt,
+      arrivedAt: package.arrivedAt,
       notifiedArrived: package.notifiedArrived,
       archivedAt: package.archivedAt,
       transitFingerprint: package.transitFingerprint,
@@ -104,6 +107,7 @@ class HivePackage {
       status: status,
       addedAt: addedAt,
       pickedUpAt: pickedUpAt,
+      arrivedAt: arrivedAt,
       notifiedArrived: notifiedArrived,
       archivedAt: archivedAt,
       transitFingerprint: transitFingerprint,
@@ -128,6 +132,7 @@ class HivePackage {
     PackageStatus? status,
     DateTime? addedAt,
     DateTime? pickedUpAt,
+    DateTime? arrivedAt,
     bool? notifiedArrived,
     DateTime? archivedAt,
     String? transitFingerprint,
@@ -149,6 +154,7 @@ class HivePackage {
       status: status ?? this.status,
       addedAt: addedAt ?? this.addedAt,
       pickedUpAt: pickedUpAt ?? this.pickedUpAt,
+      arrivedAt: arrivedAt ?? this.arrivedAt,
       notifiedArrived: notifiedArrived ?? this.notifiedArrived,
       archivedAt: archivedAt ?? this.archivedAt,
       transitFingerprint: transitFingerprint ?? this.transitFingerprint,

@@ -98,13 +98,14 @@ class HivePackageAdapter extends TypeAdapter<HivePackage> {
       platform: fields[17] as String?,
       stationName: fields[18] as String?,
       rawTimelineJson: fields[19] as String?,
+      arrivedAt: fields[20] as DateTime?,
     );
   }
 
   @override
   void write(BinaryWriter writer, HivePackage obj) {
     writer
-      ..writeByte(20)
+      ..writeByte(21)
       ..writeByte(0)
       ..write(obj.id)
       ..writeByte(1)
@@ -144,6 +145,8 @@ class HivePackageAdapter extends TypeAdapter<HivePackage> {
       ..writeByte(18)
       ..write(obj.stationName)
       ..writeByte(19)
-      ..write(obj.rawTimelineJson);
+      ..write(obj.rawTimelineJson)
+      ..writeByte(20)
+      ..write(obj.arrivedAt);
   }
 }
