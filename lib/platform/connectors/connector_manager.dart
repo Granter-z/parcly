@@ -56,6 +56,8 @@ class ConnectorManager {
   String? get lastIssue => _lastIssue;
 
   /// 用户重新授权后清理上一次的失效提示，避免设置页残留旧状态
+  ///
+  /// 注意：会清空**全部**平台的 issue。单平台重登请用 [clearLastIssueFor]。
   void clearLastIssue() {
     _lastIssue = null;
     for (final c in _realConnectors) {
@@ -63,6 +65,30 @@ class ConnectorManager {
       if (c is JdH5Connector) c.clearLastIssue();
       if (c is PddH5Connector) c.clearLastIssue();
     }
+  }
+
+  /// 只清某一个平台的 issue，并重建汇总 [_lastIssue]
+  ///
+  /// 前端重登某一平台时应优先调用本方法，避免把其它平台仍有效的失效提示抹掉。
+  void clearLastIssueFor(String platform) {
+    final p = platform.toLowerCase();
+    for (final c in _realConnectors) {
+      if (c.platformId.toLowerCase() != p) continue;
+      if (c is TaobaoH5Connector) c.clearLastIssue();
+      if (c is JdH5Connector) c.clearLastIssue();
+      if (c is PddH5Connector) c.clearLastIssue();
+    }
+    _rebuildLastIssue();
+  }
+
+  void _rebuildLastIssue() {
+    String? merged;
+    for (final c in _realConnectors) {
+      final issue = c.lastIssue;
+      if (issue == null) continue;
+      merged = merged == null ? issue : '$merged;$issue';
+    }
+    _lastIssue = merged;
   }
 
   /// 触发所有可用真实平台在途包裹聚合同步

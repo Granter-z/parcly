@@ -6,6 +6,7 @@
 ///
 /// 代价是 PDD 心跳只能在前台进行：后台 isolate 不持有连接器，
 /// 且拼多多 proxy 接口要求 `anti_content` 动态签名，纯 HTTP 会被风控（424）。
+/// 能力表见 `supportsBackgroundKeepAlive('pdd') == false`（供前端提示用）。
 library;
 
 import '../connectors/pdd_connector.dart';

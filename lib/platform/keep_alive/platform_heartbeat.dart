@@ -119,12 +119,47 @@ class JdHeartbeat implements PlatformHeartbeat {
   @override
   String get platformId => 'jd';
 
+  /// 根据 HTTP 状态 / 响应体 / Location 判定心跳结局（纯函数，可单测）
+  static HeartbeatResult classifyResponse({
+    required int statusCode,
+    required String body,
+    String location = '',
+  }) {
+    if (statusCode == 200) {
+      if (body.contains('请登录') ||
+          body.contains('login.m.jd.com') ||
+          body.contains('passport.jd.com') ||
+          body.contains('"isLogin":false') ||
+          body.contains('"loginFlag":false')) {
+        return HeartbeatResult.failure('登录态已失效（响应要求登录）', isAuthFailure: true);
+      }
+      if (body.contains('orderList') ||
+          body.contains('订单') ||
+          body.contains('我的订单')) {
+        return HeartbeatResult.success();
+      }
+      return HeartbeatResult.failure('无法确认登录态（响应异常）', isAuthFailure: false);
+    }
+    if (statusCode == 302 || statusCode == 301) {
+      if (location.contains('login')) {
+        return HeartbeatResult.failure('登录态已失效（重定向到登录页）', isAuthFailure: true);
+      }
+      return HeartbeatResult.success();
+    }
+    if (statusCode == 401 || statusCode == 403) {
+      return HeartbeatResult.failure(
+        '登录态已失效（HTTP $statusCode）',
+        isAuthFailure: true,
+      );
+    }
+    return HeartbeatResult.failure('HTTP $statusCode', isAuthFailure: false);
+  }
+
   @override
   Future<HeartbeatResult> performHeartbeat(String cookies) async {
     try {
       debugPrint('[KeepAlive] JD heartbeat starting...');
 
-      // 方案：GET 请求订单页并验证响应体
       final response = await http.get(
         Uri.parse('https://wqs.jd.com/order/orderlist_jdm.shtml'),
         headers: {
@@ -134,47 +169,19 @@ class JdHeartbeat implements PlatformHeartbeat {
         },
       ).timeout(const Duration(seconds: 10));
 
-      // 检查响应状态
-      if (response.statusCode == 200) {
-        final body = response.body;
-
-        // 检查是否包含登录态失效的关键词
-        if (body.contains('请登录') ||
-            body.contains('login.m.jd.com') ||
-            body.contains('passport.jd.com') ||
-            body.contains('"isLogin":false') ||
-            body.contains('"loginFlag":false')) {
-          debugPrint('[KeepAlive] JD heartbeat failed: login required in response body');
-          return HeartbeatResult.failure('登录态已失效（响应要求登录）', isAuthFailure: true);
-        }
-
-        // 检查是否包含正常订单数据标识
-        if (body.contains('orderList') || body.contains('订单') || body.contains('我的订单')) {
-          debugPrint('[KeepAlive] JD heartbeat success (found order data)');
-          return HeartbeatResult.success();
-        }
-
-        // 200 响应但无法判断登录态，视为可疑
-        debugPrint('[KeepAlive] JD heartbeat uncertain: 200 but no clear login indicator');
-        return HeartbeatResult.failure('无法确认登录态（响应异常）', isAuthFailure: false);
-      } else if (response.statusCode == 302 || response.statusCode == 301) {
-        // 检查是否重定向到登录页
-        final location = response.headers['location'] ?? '';
-        if (location.contains('login')) {
-          debugPrint('[KeepAlive] JD heartbeat failed: redirected to login');
-          return HeartbeatResult.failure('登录态已失效（重定向到登录页）', isAuthFailure: true);
-        }
-        // 其他重定向视为成功（可能是正常的页面跳转）
-        debugPrint('[KeepAlive] JD heartbeat success (redirected)');
-        return HeartbeatResult.success();
-      } else if (response.statusCode == 401 || response.statusCode == 403) {
-        // 明确的认证失败
-        debugPrint('[KeepAlive] JD heartbeat failed: HTTP ${response.statusCode}');
-        return HeartbeatResult.failure('登录态已失效（HTTP ${response.statusCode}）', isAuthFailure: true);
+      final result = classifyResponse(
+        statusCode: response.statusCode,
+        body: response.body,
+        location: response.headers['location'] ?? '',
+      );
+      if (result.success) {
+        debugPrint('[KeepAlive] JD heartbeat success');
+      } else if (result.isAuthFailure) {
+        debugPrint('[KeepAlive] JD heartbeat failed: login required');
       } else {
-        debugPrint('[KeepAlive] JD heartbeat failed: status=${response.statusCode}');
-        return HeartbeatResult.failure('HTTP ${response.statusCode}', isAuthFailure: false);
+        debugPrint('[KeepAlive] JD heartbeat failed: ${result.errorMessage}');
       }
+      return result;
     } on TimeoutException {
       debugPrint('[KeepAlive] JD heartbeat timeout');
       return HeartbeatResult.failure('请求超时', isAuthFailure: false);

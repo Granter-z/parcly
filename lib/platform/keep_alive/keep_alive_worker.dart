@@ -13,7 +13,9 @@ import 'package:flutter/foundation.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:workmanager/workmanager.dart';
 
+import '../../core/engine/keep_alive_outcome.dart';
 import '../../core/engine/keep_alive_plan.dart';
+import '../../core/models/platform_ids.dart';
 import '../storage/keep_alive_store.dart';
 import '../storage/platform_auth_store.dart';
 import 'keep_alive_notifier.dart';
@@ -21,8 +23,8 @@ import 'platform_heartbeat.dart';
 
 /// 后台可续期平台 → 心跳实现。
 ///
-/// 这是一份显式的 registry：不在表内的平台（拼多多）不可在后台续期，
-/// 领域知识由表结构表达，而非散落的 if/else。
+/// 与 [kBackgroundKeepAlivePlatformIds] 对齐：不在表内的平台（拼多多）不可后台续期。
+/// 必须与 [kBackgroundKeepAlivePlatformIds] 保持一致（拼多多不在表内）。
 final Map<String, PlatformHeartbeat> _backgroundHeartbeats = {
   'taobao': TaobaoHeartbeat(),
   'jd': JdHeartbeat(),
@@ -36,6 +38,7 @@ void callbackDispatcher() {
       await _runBackgroundKeepAlive();
       return true;
     } catch (e) {
+      // Hive / Keystore 初始化失败也会落到这里：返回 false 让系统可重试
       debugPrint('[KeepAliveWorker] task error: $e');
       return false;
     }
@@ -43,8 +46,11 @@ void callbackDispatcher() {
 }
 
 /// 后台续期主体：初始化存储后，对每个后台可续期平台发送心跳并落盘结果。
+///
+/// 抽出 [applyHeartbeatOutcome] 供单测验证落盘分支；本函数仍负责 I/O。
 Future<void> _runBackgroundKeepAlive() async {
   // 后台 isolate 独立于主进程，需重新初始化存储路径与解密通道。
+  // 任一步失败向上抛，由 callbackDispatcher 捕获并返回 false。
   await Hive.initFlutter();
   await PlatformAuthStore.initialize();
   await KeepAliveStore.initialize();
@@ -62,71 +68,64 @@ Future<void> _runBackgroundKeepAlive() async {
 
   for (final entry in _backgroundHeartbeats.entries) {
     final platform = entry.key;
-
-    if (!store.platformEnabled(platform)) {
-      debugPrint('[KeepAliveWorker] Skip $platform: disabled');
-      continue;
-    }
-    if (!authStore.isBound(platform)) {
-      debugPrint('[KeepAliveWorker] Skip $platform: not bound');
-      continue;
-    }
     final cookies = authStore.getCookies(platform);
-    if (cookies == null || cookies.trim().isEmpty) {
-      debugPrint('[KeepAliveWorker] Skip $platform: no cookies');
-      continue;
-    }
-
-    // 与前台共用闸门：前面刚续期过就不重复发
-    final nextTime = store.nextAt(platform);
-    if (nextTime != null && now.isBefore(nextTime)) {
-      debugPrint(
-          '[KeepAliveWorker] Skip $platform: next keep-alive in ${nextTime.difference(now).inMinutes} min');
+    final skip = resolveBackgroundSkip(
+      masterEnabled: store.enabled,
+      platformEnabled: store.platformEnabled(platform),
+      bound: authStore.isBound(platform),
+      hasCookies: cookies != null && cookies.trim().isNotEmpty,
+      now: now,
+      nextKeepAliveAt: store.nextAt(platform),
+    );
+    if (skip != null) {
+      debugPrint('[KeepAliveWorker] Skip $platform: ${skip.name}');
       continue;
     }
 
     debugPrint('[KeepAliveWorker] Refresh $platform...');
     HeartbeatResult result;
     try {
-      result = await entry.value.performHeartbeat(cookies);
+      result = await entry.value.performHeartbeat(cookies!);
     } catch (e) {
+      // 对齐前台 KeepAliveService：异常不得 continue 丢掉计数。
+      // 未分类异常按网络失败累计（isAuthFailure:false），达阈值才 setExpired；
+      // 明确登录失效由心跳实现返回 isAuthFailure:true，不会走本 catch。
       debugPrint('[KeepAliveWorker] $platform error: $e');
-      continue;
+      result = HeartbeatResult.failure('$e', isAuthFailure: false);
     }
 
-    // 跳过既不是成功也不是失败，不得据此清失效标记或累计失败
-    if (result.skipped) {
-      debugPrint('[KeepAliveWorker] $platform skipped: ${result.errorMessage}');
-      continue;
-    }
-
-    final interval = KeepAlivePlan.calculateInterval(_cookieAge(authStore, platform, now));
-
-    if (result.success) {
-      // 淘宝令牌轮换已在 TaobaoHeartbeat 内部落盘。
-      await authStore.setExpired(platform, false);
-      await store.setLast(platform, DateTime.now());
-      await store.setFailureCount(platform, 0);
-      await store.setLastNotifiedAt(platform, null);
-      debugPrint('[KeepAliveWorker] $platform refreshed');
-    } else {
-      final failureCount = store.failureCount(platform) + 1;
-      await store.setFailureCount(platform, failureCount);
-      if (result.isAuthFailure) {
-        await authStore.setExpired(platform, true);
-        debugPrint('[KeepAliveWorker] $platform login expired');
-      } else if (failureCount >= KeepAlivePlan.failureThreshold) {
-        await authStore.setExpired(platform, true);
-        debugPrint('[KeepAliveWorker] $platform login expired ($failureCount failures)');
-      } else {
-        debugPrint('[KeepAliveWorker] $platform refresh failed: ${result.errorMessage}');
-      }
-    }
-
-    await store.setNext(
-      platform,
-      KeepAlivePlan.calculateNextTime(interval, now: DateTime.now()),
+    final kind = classifyHeartbeatResult(result);
+    final plan = planKeepAliveOutcome(
+      kind: kind,
+      currentFailureCount: store.failureCount(platform),
     );
+    await applyHeartbeatOutcome(
+      platform: platform,
+      plan: plan,
+      authStore: authStore,
+      store: store,
+    );
+
+    if (kind == KeepAliveOutcomeKind.success) {
+      debugPrint('[KeepAliveWorker] $platform refreshed');
+    } else if (kind == KeepAliveOutcomeKind.authFailure) {
+      debugPrint('[KeepAliveWorker] $platform login expired');
+    } else if (kind == KeepAliveOutcomeKind.skipped) {
+      debugPrint('[KeepAliveWorker] $platform skipped: ${result.errorMessage}');
+    } else {
+      debugPrint(
+          '[KeepAliveWorker] $platform refresh failed: ${result.errorMessage}');
+    }
+
+    // 跳过不推进闸门，避免「忙一轮」就把下次探活推到数小时后
+    if (kind != KeepAliveOutcomeKind.skipped) {
+      final interval =
+          KeepAlivePlan.calculateInterval(_cookieAge(authStore, platform, now));
+      await store.setNext(
+        platform,
+        KeepAlivePlan.calculateNextTime(interval, now: DateTime.now()),
+      );
+    }
   }
 
   // 失效提醒：后台 isolate 里弹通知是尽力而为。KeepAliveNotifier 只在发送成功后才写
@@ -136,10 +135,40 @@ Future<void> _runBackgroundKeepAlive() async {
       .toList();
   if (expired.isNotEmpty) {
     try {
-      await KeepAliveNotifier(store: store, authStore: authStore).notifyExpired(expired);
+      await KeepAliveNotifier(store: store, authStore: authStore)
+          .notifyExpired(expired);
     } catch (e) {
       debugPrint('[KeepAliveWorker] notify failed: $e');
     }
+  }
+}
+
+/// HeartbeatResult → 结局分类（单测可直接喂构造好的 Result）
+KeepAliveOutcomeKind classifyHeartbeatResult(HeartbeatResult result) {
+  if (result.skipped) return KeepAliveOutcomeKind.skipped;
+  if (result.success) return KeepAliveOutcomeKind.success;
+  if (result.isAuthFailure) return KeepAliveOutcomeKind.authFailure;
+  return KeepAliveOutcomeKind.networkFailure;
+}
+
+/// 按 [plan] 落盘：抽出来方便单测验证「成功清失效 / 失效 setExpired / 跳过不动」
+Future<void> applyHeartbeatOutcome({
+  required String platform,
+  required KeepAliveOutcomePlan plan,
+  required PlatformAuthStore authStore,
+  required KeepAliveStore store,
+}) async {
+  if (plan.touchExpired) {
+    await authStore.setExpired(platform, plan.expiredValue);
+  }
+  if (plan.failureCount != null) {
+    await store.setFailureCount(platform, plan.failureCount!);
+  }
+  if (plan.clearNotifyMark) {
+    await store.setLastNotifiedAt(platform, null);
+  }
+  if (plan.updateLastSuccess) {
+    await store.setLast(platform, DateTime.now());
   }
 }
 

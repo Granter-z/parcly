@@ -14,6 +14,7 @@ import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 
+import '../../core/engine/keep_alive_outcome.dart';
 import '../../core/engine/keep_alive_plan.dart';
 import '../../core/models/keep_alive_state.dart';
 import '../../core/models/platform_ids.dart';
@@ -252,9 +253,20 @@ class KeepAliveService {
 
   /// 依据心跳结果更新持久化状态与失效标记
   Future<void> _recordResult(String platform, HeartbeatResult result) async {
-    // 跳过必须在 success 之前判断：跳过既不算成功也不算失败，
-    // 否则会把「未探活」当成成功并清掉失效标记。
-    if (result.skipped) {
+    final kind = result.skipped
+        ? KeepAliveOutcomeKind.skipped
+        : result.success
+            ? KeepAliveOutcomeKind.success
+            : result.isAuthFailure
+                ? KeepAliveOutcomeKind.authFailure
+                : KeepAliveOutcomeKind.networkFailure;
+
+    final plan = planKeepAliveOutcome(
+      kind: kind,
+      currentFailureCount: _store.failureCount(platform),
+    );
+
+    if (kind == KeepAliveOutcomeKind.skipped) {
       debugPrint('[KeepAliveService] - $platform heartbeat skipped: ${result.errorMessage}');
       await _store.appendHistory(KeepAliveRecord(
         platform: platform,
@@ -266,42 +278,37 @@ class KeepAliveService {
       return;
     }
 
-    if (result.success) {
+    if (kind == KeepAliveOutcomeKind.success) {
       debugPrint('[KeepAliveService] ✓ $platform heartbeat success');
-      await _store.setLast(platform, DateTime.now());
-      await _store.setFailureCount(platform, 0);
-      // 登录态已恢复：清除失效标记，并允许下个失效周期重新提醒
-      await _authStore.setExpired(platform, false);
-      await _store.setLastNotifiedAt(platform, null);
-      await _store.appendHistory(KeepAliveRecord(
-        platform: platform,
-        time: DateTime.now(),
-        success: true,
-      ));
-      return;
-    }
-
-    debugPrint('[KeepAliveService] ✗ $platform heartbeat failed: ${result.errorMessage}');
-
-    var failureCount = _store.failureCount(platform) + 1;
-    if (result.isAuthFailure) {
-      // 明确的登录态失效：立即判定，避免重复尝试
+    } else if (kind == KeepAliveOutcomeKind.authFailure) {
       debugPrint('[KeepAliveService] ! $platform login expired (auth failure detected)');
-      await _authStore.setExpired(platform, true);
-      failureCount = KeepAlivePlan.failureThreshold;
-    } else if (failureCount >= KeepAlivePlan.failureThreshold) {
-      debugPrint(
-          '[KeepAliveService] ! $platform login expired ($failureCount consecutive failures)');
-      await _authStore.setExpired(platform, true);
+    } else {
+      debugPrint('[KeepAliveService] ✗ $platform heartbeat failed: ${result.errorMessage}');
+      if (plan.touchExpired) {
+        debugPrint(
+            '[KeepAliveService] ! $platform login expired (${plan.failureCount} consecutive failures)');
+      }
     }
-    await _store.setFailureCount(platform, failureCount);
+
+    if (plan.touchExpired) {
+      await _authStore.setExpired(platform, plan.expiredValue);
+    }
+    if (plan.failureCount != null) {
+      await _store.setFailureCount(platform, plan.failureCount!);
+    }
+    if (plan.clearNotifyMark) {
+      await _store.setLastNotifiedAt(platform, null);
+    }
+    if (plan.updateLastSuccess) {
+      await _store.setLast(platform, DateTime.now());
+    }
 
     await _store.appendHistory(KeepAliveRecord(
       platform: platform,
       time: DateTime.now(),
-      success: false,
-      authFailure: result.isAuthFailure,
-      error: result.errorMessage,
+      success: kind == KeepAliveOutcomeKind.success,
+      authFailure: kind == KeepAliveOutcomeKind.authFailure,
+      error: kind == KeepAliveOutcomeKind.success ? null : result.errorMessage,
     ));
   }
 

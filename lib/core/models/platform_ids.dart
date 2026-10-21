@@ -19,3 +19,14 @@ String platformDisplayName(String platform) {
       return platform;
   }
 }
+
+/// 可在 WorkManager 后台 isolate 里纯 HTTP 续期的平台
+///
+/// 拼多多依赖 WebView + anti_content，裸 FlutterEngine 无法跑，故不在表内。
+/// 前台保活仍覆盖全部 [kPlatformIds]；UI 可用 [supportsBackgroundKeepAlive] 提示
+/// 「拼多多需打开 App 才能保活」。
+const List<String> kBackgroundKeepAlivePlatformIds = ['taobao', 'jd'];
+
+/// 该平台是否支持进程外（后台）续期
+bool supportsBackgroundKeepAlive(String platform) =>
+    kBackgroundKeepAlivePlatformIds.contains(platform.toLowerCase());
