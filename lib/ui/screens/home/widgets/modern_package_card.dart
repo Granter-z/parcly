@@ -13,6 +13,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../../core/models/package.dart';
 import '../../../../core/models/package_status.dart';
+import '../../../../core/engine/station_grouping.dart';
 import '../../../providers/package_provider.dart';
 import '../../../components/spring_card.dart';
 import '../../../components/hero_pickup_badge.dart';
@@ -34,6 +35,9 @@ class ModernPackageCard extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final isArrived = package.status.isArrived;
     final isDelivering = package.status == PackageStatus.delivering;
+    final now = DateTime.now();
+    final overdue = isNearlyOverdue(package, now);
+    final arrivedAgo = arrivedAgoLabelOf(package, now);
 
     return SpringCard(
       padding: const EdgeInsets.all(AppSpacing.lg),
@@ -66,6 +70,24 @@ class ModernPackageCard extends ConsumerWidget {
                 ),
               ),
               const Spacer(),
+              if (overdue) ...[
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFE67E00).withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: const Text(
+                    '快过期',
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700,
+                      color: Color(0xFFE67E00),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: AppSpacing.sm),
+              ],
               StatusPill(status: package.status),
             ],
           ),
@@ -104,7 +126,10 @@ class ModernPackageCard extends ConsumerWidget {
                         const SizedBox(width: 3),
                         Expanded(
                           child: Text(
-                            package.displayLocation,
+                            [
+                              if (arrivedAgo != null) arrivedAgo,
+                              package.displayLocation,
+                            ].where((s) => s.trim().isNotEmpty).join(' · '),
                             style: const TextStyle(
                               fontSize: 12.5,
                               color: AppColors.textSecondary,

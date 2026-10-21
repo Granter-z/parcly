@@ -5,6 +5,7 @@ import '../../main.dart';
 import '../../core/debug/debug_trace.dart';
 import '../../core/debug/metrics.dart';
 import '../../core/engine/arrived_at.dart';
+import '../../core/engine/station_grouping.dart';
 import '../../core/engine/package_identity.dart';
 import '../../core/engine/timeline_merge.dart';
 import '../../platform/storage/hive_package.dart';
@@ -747,8 +748,13 @@ final pendingPackagesProvider = Provider<List<Package>>((ref) {
     final urgencyCompare = b.compositeUrgencyScore.compareTo(a.compositeUrgencyScore);
     if (urgencyCompare != 0) return urgencyCompare;
 
-    // 4. 最新到达或更新的时间从新到旧排序
-    return b.addedAt.compareTo(a.addedAt);
+    // 5. 同等紧急度：有 arrivedAt 的按到站从早到晚；null 排最后（绝不回退 addedAt）
+    final aArr = a.arrivedAt;
+    final bArr = b.arrivedAt;
+    if (aArr == null && bArr == null) return 0;
+    if (aArr == null) return 1;
+    if (bArr == null) return -1;
+    return aArr.compareTo(bArr);
   });
   
   return pending;
@@ -765,16 +771,9 @@ final completedPackagesProvider = Provider<List<Package>>((ref) {
 /// 包裹进入终结状态的时间（取件、归档或拒收），用于已完成列表排序
 DateTime _completedAt(Package p) => p.pickedUpAt ?? p.archivedAt ?? p.addedAt;
 
-final groupedPendingPackagesProvider = Provider<Map<String, List<Package>>>((ref) {
-  final pending = ref.watch(pendingPackagesProvider);
-  final grouped = <String, List<Package>>{};
-  
-  for (final package in pending) {
-    final location = package.displayLocation;
-    grouped.putIfAbsent(location, () => []).add(package);
-  }
-  
-  return grouped;
+/// 待取件按驿站分组（读 [Package.arrivedAt]；见 [groupPackagesByStation]）。
+final groupedPendingPackagesProvider = Provider<List<StationGroup>>((ref) {
+  return groupPackagesByStation(ref.watch(packageListProvider));
 });
 
 final heroDecisionProvider = Provider<HeroDecision>((ref) {

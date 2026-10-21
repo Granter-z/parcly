@@ -107,6 +107,18 @@ void main() {
     expect(n.state.single.pickedUpAt, isNull);
   });
 
+  test('restorePackage 只清 pickedUpAt，不动 arrivedAt', () {
+    final arrivedAt = DateTime(2026, 10, 3, 8);
+    final n = FakePackageList([
+      _arrived().copyWith(arrivedAt: arrivedAt),
+    ]);
+    n.markPickedUp('p1');
+    expect(n.state.single.arrivedAt, arrivedAt);
+    n.restorePackage('p1');
+    expect(n.state.single.pickedUpAt, isNull);
+    expect(n.state.single.arrivedAt, arrivedAt);
+  });
+
   test('撤销后离开已完成列表，回到 pending', () {
     final n = FakePackageList([_arrived()]);
     n.markPickedUp('p1');
