@@ -776,6 +776,23 @@ final groupedPendingPackagesProvider = Provider<List<StationGroup>>((ref) {
   return groupPackagesByStation(ref.watch(packageListProvider));
 });
 
+/// 在途扁平列表：pending 里不算「待取件」的（派送中 / 运送中 / 待发货），不按驿站分组。
+final inTransitPackagesProvider = Provider<List<Package>>((ref) {
+  final all = ref.watch(packageListProvider);
+  final inTransit = all.where((p) => p.status.isPending && !isAwaitingPickup(p)).toList();
+  inTransit.sort((a, b) {
+    int rank(Package p) {
+      if (p.status == PackageStatus.delivering) return 0;
+      if (p.status == PackageStatus.transit) return 1;
+      return 2; // pendingShipment 等
+    }
+    final byStatus = rank(a).compareTo(rank(b));
+    if (byStatus != 0) return byStatus;
+    return b.compositeUrgencyScore.compareTo(a.compositeUrgencyScore);
+  });
+  return inTransit;
+});
+
 final heroDecisionProvider = Provider<HeroDecision>((ref) {
   final packages = ref.watch(packageListProvider);
   return HeroDecisionService.decide(packages);
