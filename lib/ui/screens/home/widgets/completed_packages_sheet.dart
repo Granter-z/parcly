@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../../core/models/package.dart';
+import '../../../../core/models/package_status.dart';
 import '../../../providers/package_provider.dart';
 import '../../../components/spring_card.dart';
 import '../../../components/platform_badge.dart';
@@ -111,7 +112,7 @@ class CompletedPackagesSheet extends ConsumerWidget {
   }
 }
 
-/// 已完成列表里的单张卡片：点击进入物流轨迹抽屉，长按可删除。
+/// 已完成列表里的单张卡片：点击进入物流轨迹抽屉；长按可撤销已取或删除。
 class _CompletedPackageCard extends ConsumerWidget {
   final Package package;
 
@@ -132,6 +133,26 @@ class _CompletedPackageCard extends ConsumerWidget {
           builder: (ctx) => SafeArea(
             child: Wrap(
               children: [
+                if (pkg.status == PackageStatus.pickedUp)
+                  ListTile(
+                    leading: const Icon(Icons.undo_rounded),
+                    title: const Text('撤销已取'),
+                    subtitle: const Text('恢复到待取件，可再次取件'),
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      ref
+                          .read(packageListProvider.notifier)
+                          .restorePackage(pkg.id);
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('已撤销取件，包裹回到待取列表'),
+                          duration: Duration(seconds: 2),
+                          behavior: SnackBarBehavior.floating,
+                          persist: false,
+                        ),
+                      );
+                    },
+                  ),
                 ListTile(
                   leading: const Icon(
                     Icons.delete_outline_rounded,
@@ -187,6 +208,28 @@ class _CompletedPackageCard extends ConsumerWidget {
           // 已取件 / 已归档 / 已拒收 共用同一套状态胶囊，
           // 不再把 #34C759 直接当 12px 正文（白底上只有 2.22:1）。
           StatusPill(status: pkg.status),
+          if (pkg.status == PackageStatus.pickedUp) ...[
+            const SizedBox(width: AppSpacing.xs),
+            IconButton(
+              tooltip: '撤销已取',
+              visualDensity: VisualDensity.compact,
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+              icon: const Icon(Icons.undo_rounded, size: 20),
+              onPressed: () {
+                HapticFeedback.lightImpact();
+                ref.read(packageListProvider.notifier).restorePackage(pkg.id);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('已撤销取件，包裹回到待取列表'),
+                    duration: Duration(seconds: 2),
+                    behavior: SnackBarBehavior.floating,
+                    persist: false,
+                  ),
+                );
+              },
+            ),
+          ],
         ],
       ),
     );

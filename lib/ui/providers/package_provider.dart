@@ -564,13 +564,55 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
   void markPickedUp(String id) {
     // 取消该包裹的通知
     NotificationAdapter().cancelNotification(id);
-    
+
     state = [
       for (final p in state)
         if (p.id == id)
           p.copyWith(
             status: PackageStatus.pickedUp,
             pickedUpAt: DateTime.now(),
+            statusHistory: [
+              ...p.statusHistory,
+              StatusTransition(
+                from: p.status,
+                to: PackageStatus.pickedUp,
+                timestamp: DateTime.now(),
+                reason: 'user_mark_picked_up',
+              ),
+            ],
+          )
+        else
+          p,
+    ];
+    _sync();
+  }
+
+  /// 撤销「已取件」：仅当仍为已取时，恢复到标记前的待处理状态并清空 pickedUpAt。
+  /// 首页 5 秒 SnackBar 与已完成抽屉共用；状态未知时回落到 arrived。
+  void restorePackage(String id) {
+    Package? current;
+    for (final p in state) {
+      if (p.id == id) {
+        current = p;
+        break;
+      }
+    }
+    if (current == null || current.status != PackageStatus.pickedUp) return;
+
+    var previous = PackageStatus.arrived;
+    for (final t in current.statusHistory.reversed) {
+      if (t.to == PackageStatus.pickedUp && t.from.isPending) {
+        previous = t.from;
+        break;
+      }
+    }
+
+    state = [
+      for (final p in state)
+        if (p.id == id)
+          p.copyWith(
+            status: previous,
+            clearPickedUpAt: true,
           )
         else
           p,

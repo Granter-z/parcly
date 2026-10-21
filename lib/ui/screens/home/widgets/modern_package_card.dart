@@ -224,13 +224,26 @@ class ModernPackageCard extends ConsumerWidget {
                 if (isArrived)
                   _PickupConfirmButton(
                     onConfirmed: () {
-                      ScaffoldMessenger.of(context).showSnackBar(
+                      final notifier = ref.read(packageListProvider.notifier);
+                      final pkgId = package.id;
+                      notifier.markPickedUp(pkgId);
+                      final messenger = ScaffoldMessenger.of(context);
+                      messenger.hideCurrentSnackBar();
+                      messenger.showSnackBar(
                         SnackBar(
-                          content: Text('已完成「${package.goodsName ?? "包裹"}」取件'),
-                          duration: const Duration(seconds: 2),
+                          content: Text(
+                            '已标记取件「${package.goodsName ?? "包裹"}」',
+                          ),
+                          duration: const Duration(seconds: 5),
+                          behavior: SnackBarBehavior.floating,
+                          // Flutter 3.47：有 action 时 persist 默认 true；撤销窗应自动消失。
+                          persist: false,
+                          action: SnackBarAction(
+                            label: '撤销',
+                            onPressed: () => notifier.restorePackage(pkgId),
+                          ),
                         ),
                       );
-                      ref.read(packageListProvider.notifier).markPickedUp(package.id);
                     },
                   )
                 else
