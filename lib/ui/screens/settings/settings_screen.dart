@@ -5,14 +5,13 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import '../../providers/platform_auth_status_provider.dart';
 import '../../../core/models/platform_ids.dart';
 import '../../../platform/storage/platform_auth_store.dart';
 import '../../../platform/connectors/connector_manager.dart';
 import '../../components/platform_meta.dart';
 import '../../providers/package_provider.dart';
-import '../login/platform_login_screen.dart';
-import '../pdd/pdd_web_screen.dart';
+import '../../providers/platform_auth_status_provider.dart';
+import '../login/platform_login_flow.dart';
 import 'background_sync_test_screen.dart';
 import 'keep_alive_status_screen.dart';
 
@@ -253,7 +252,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     final icon = platformIcon(platform);
     final brandColor = platformBrandColor(platform);
     final isBound = _authStore.isBound(platform);
-    // 主真相 isExpired；provider 用 resolvePlatformAuthStatus，不再靠裸关键词误判
+    // 主真相 isExpired；provider 用 resolvePlatformAuthStatus
     final authStatus = ref.watch(platformAuthStatusProvider(platform));
     final isExpired = authStatus == PlatformAuthStatus.needsRelogin;
     final isSyncFailed = authStatus == PlatformAuthStatus.syncFailed;
@@ -305,19 +304,27 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                       decoration: BoxDecoration(
                         color: isExpired
                             ? Colors.orange.withValues(alpha: 0.15)
-                            : (isBound
-                                ? const Color(0xFF34C759).withValues(alpha: 0.12)
-                                : Colors.grey.withValues(alpha: 0.12)),
+                            : (isSyncFailed
+                                ? const Color(0xFFFF9500).withValues(alpha: 0.15)
+                                : (isBound
+                                    ? const Color(0xFF34C759).withValues(alpha: 0.12)
+                                    : Colors.grey.withValues(alpha: 0.12))),
                         borderRadius: BorderRadius.circular(4),
                       ),
                       child: Text(
-                        isExpired ? '已失效' : (isBound ? '已绑定' : '未绑定'),
+                        isExpired
+                            ? '已失效'
+                            : (isSyncFailed
+                                ? '同步失败'
+                                : (isBound ? '已绑定' : '未绑定')),
                         style: TextStyle(
                           fontSize: 10.5,
                           fontWeight: FontWeight.bold,
                           color: isExpired
                               ? Colors.orange.shade800
-                              : (isBound ? const Color(0xFF34C759) : Colors.grey.shade600),
+                              : (isSyncFailed
+                                  ? const Color(0xFFB35F00)
+                                  : (isBound ? const Color(0xFF34C759) : Colors.grey.shade600)),
                         ),
                       ),
                     ),
@@ -336,7 +343,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                     fontSize: 11.5,
                     color: isExpired
                         ? Colors.orange.shade800
-                        : (isSyncFailed ? Colors.grey.shade700 : Colors.grey.shade600),
+                        : (isSyncFailed ? const Color(0xFFB35F00) : Colors.grey.shade600),
                   ),
                 ),
               ],
@@ -446,6 +453,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       await _openLogin(platform: platform, displayName: displayName, brandColor: brandColor);
     } else if (val == 'unbind') {
       await _authStore.unbind(platform);
+      ref.invalidate(platformAuthStatusProvider);
       if (mounted) {
         setState(() {});
         ScaffoldMessenger.of(context).showSnackBar(
@@ -455,32 +463,32 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     }
   }
 
-  /// 平台登录入口：拼多多内置移动网页端直接打开，其他平台使用专属登录
+
+  /// 平台登录入口：走共用 openPlatformLogin（成功后清 issue + 只同步该平台）。
   Future<void> _openLogin({
     required String platform,
     required String displayName,
     required Color brandColor,
   }) async {
-    if (platform.toLowerCase() == 'pdd') {
-      await PddWebScreen.open(context, url: 'https://mobile.yangkeduo.com/login.html');
-      if (mounted) setState(() {});
-      return;
-    }
-
-    if (!mounted) return;
-    final ok = await PlatformLoginScreen.show(
+    final ok = await openPlatformLogin(
       context,
+      ref,
       platform: platform,
       displayName: displayName,
       brandColor: brandColor,
     );
-    if (ok == true && mounted) {
-      setState(() {});
-      // 只清本平台 issue，避免抹掉其它平台仍有效的失效提示
-      final manager = ref.read(connectorManagerProvider);
-      manager.clearLastIssueFor(platform);
-      ref.invalidate(platformAuthStatusProvider);
-      manager.syncAll();
+    if (mounted) setState(() {});
+    if (ok && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('$displayName 已登录，正在同步'),
+          behavior: SnackBarBehavior.floating,
+          persist: false,
+        ),
+      );
     }
   }
+
+  // _issueKeyword 已由 resolvePlatformAuthStatus / platformIssueKeyword 取代
 }
+

@@ -16,17 +16,23 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../providers/package_provider.dart';
+import '../../../core/engine/station_grouping.dart';
 import '../../../app/hero_decision.dart';
+import '../../../core/engine/platform_auth_status.dart' show kLoginExpiredSignals, PlatformAuthStatus;
 import '../../../platform/connectors/connector_manager.dart';
 import '../../../platform/sync/background_sync_service.dart';
 import '../../../platform/keep_alive/keep_alive_controller.dart';
+import '../../components/platform_status_bar.dart';
 import '../../constants/app_constants.dart';
+import '../../providers/platform_auth_status_provider.dart';
 import '../../theme/motion.dart';
+import '../login/platform_login_flow.dart';
 import '../settings/settings_screen.dart';
 import '../pdd/pdd_web_screen.dart';
 import 'widgets/animated_package_list.dart';
 import 'widgets/hero_stats_dashboard.dart';
 import 'widgets/completed_packages_sheet.dart';
+import 'widgets/station_group_header.dart';
 
 class HomeScreen extends ConsumerStatefulWidget {
   const HomeScreen({super.key});
@@ -45,6 +51,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   /// 同步刚结束时短暂展示「已同步」完成态。
   bool _justSynced = false;
   Timer? _justSyncedTimer;
+
+  /// 折叠起来的驿站分组（按组名记）。
+  final Set<String> _collapsedStations = {};
 
   @override
   void initState() {
@@ -92,18 +101,29 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       if (!mounted) return;
       final issue = manager.lastIssue;
       if (issue != null) {
+        final loginExpired = kLoginExpiredSignals.any(issue.contains);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(issue),
+            behavior: SnackBarBehavior.floating,
             duration: const Duration(seconds: 6),
-            action: SnackBarAction(
-              label: '去重新登录',
-              onPressed: () {
-                Navigator.of(context).push(
-                  MaterialPageRoute(builder: (_) => const SettingsScreen()),
-                );
-              },
-            ),
+            // Flutter 3.47：有 action 时 persist 默认 true，会一直挂着；失败提示应自动消失。
+            persist: false,
+            action: loginExpired
+                ? SnackBarAction(
+                    label: '去重新登录',
+                    onPressed: () {
+                      Navigator.of(context).push(
+                        MaterialPageRoute(builder: (_) => const SettingsScreen()),
+                      );
+                    },
+                  )
+                : SnackBarAction(
+                    label: '重试',
+                    onPressed: () {
+                      if (mounted) _runSync();
+                    },
+                  ),
           ),
         );
       }
@@ -125,10 +145,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
 
   @override
   Widget build(BuildContext context) {
-    final pendingPackages = ref.watch(pendingPackagesProvider);
+    final stationGroups = ref.watch(groupedPendingPackagesProvider);
+    final inTransitPackages = ref.watch(inTransitPackagesProvider);
     final completedPackages = ref.watch(completedPackagesProvider);
     final decision = ref.watch(heroDecisionProvider);
     final isSyncing = ref.watch(syncStateProvider);
+    // 全部未绑定只加横幅，绝不整页盖住本地包裹（#9 修好后 #15 曾丢掉状态条，这里一并恢复）。
+    final allUnbound = kPlatforms.every(
+      (p) => ref.watch(platformAuthStatusProvider(p.id)) == PlatformAuthStatus.unbound,
+    );
 
     ref.listen<bool>(syncStateProvider, (previous, next) {
       if (previous == true && next == false) _flashSynced();
@@ -146,7 +171,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     const weekdays = ['一', '二', '三', '四', '五', '六', '日'];
     final now = DateTime.now();
     final todayStr = '${now.month}月${now.day}日 星期${weekdays[now.weekday - 1]}';
-    final hasPending = pendingPackages.isNotEmpty;
+    final pickupCount =
+        stationGroups.fold<int>(0, (sum, g) => sum + g.packages.length);
+    final hasPending = pickupCount > 0 || inTransitPackages.isNotEmpty;
 
     return Scaffold(
       backgroundColor: AppColors.background,
@@ -163,6 +190,22 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
             ),
             slivers: [
               SliverToBoxAdapter(child: _buildHeader(todayStr, isSyncing)),
+
+              // ① 平台登录状态条（需重登 / 同步失败 / 去绑定）
+              const SliverToBoxAdapter(
+                child: Padding(
+                  padding: EdgeInsets.fromLTRB(
+                    AppSpacing.xl,
+                    0,
+                    AppSpacing.xl,
+                    AppSpacing.sm,
+                  ),
+                  child: PlatformStatusBar(),
+                ),
+              ),
+
+              // 全部未绑定：横幅引导，本地包裹仍在下面
+              if (allUnbound) const SliverToBoxAdapter(child: _BindBanner()),
 
               // Hero：有在途件才出现，与下方空态互斥
               if (hasPending)
@@ -184,13 +227,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
               // 列表标题栏 + 构成明细
               SliverToBoxAdapter(
                 child: _buildListHeader(
-                  pendingPackages.length,
+                  pickupCount,
+                  inTransitPackages.length,
                   completedPackages.length,
                   decision,
                 ),
               ),
 
-              // 空状态：仅在无在途件时出现，与列表之间做淡入淡出 + 高度过渡
+              // 空状态：仅在无待取/在途时出现
               SliverToBoxAdapter(
                 child: AnimatedSwitcher(
                   duration: Motion.of(context, Motion.normal),
@@ -207,21 +251,92 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                 ),
               ),
 
-              // 在途包裹主列表：插入 / 移除 / 重排均带过渡动画
-              AnimatedPackageList(
-                packages: pendingPackages,
-                padding: EdgeInsets.fromLTRB(
-                  AppSpacing.xl,
-                  AppSpacing.xs,
-                  AppSpacing.xl,
-                  AppSpacing.xxl + MediaQuery.paddingOf(context).bottom,
+              // ② 待取件：按驿站分组（arrivedAt 排序 / 快过期由卡片读）
+              if (pickupCount > 0) ...[
+                SliverToBoxAdapter(
+                  child: _sectionTitle('待取件', pickupCount),
                 ),
-              ),
+                for (final group in stationGroups) ..._stationGroupSlivers(group),
+              ],
+
+              // ③ 在途：扁平列表，不按驿站分组
+              if (inTransitPackages.isNotEmpty) ...[
+                SliverToBoxAdapter(
+                  child: _sectionTitle('在途', inTransitPackages.length),
+                ),
+                AnimatedPackageList(
+                  packages: inTransitPackages,
+                  padding: const EdgeInsets.fromLTRB(
+                    AppSpacing.xl,
+                    AppSpacing.xs,
+                    AppSpacing.xl,
+                    AppSpacing.lg,
+                  ),
+                ),
+              ],
+
+              // 底部留白
+              if (hasPending)
+                SliverToBoxAdapter(
+                  child: SizedBox(
+                    height: AppSpacing.xxl + MediaQuery.paddingOf(context).bottom,
+                  ),
+                ),
             ],
           ),
         ),
       ),
     );
+  }
+
+  /// 分区小标题（待取件 / 在途）。
+  Widget _sectionTitle(String label, int count) {
+    final text = Theme.of(context).textTheme;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(
+        AppSpacing.xl,
+        AppSpacing.md,
+        AppSpacing.xl,
+        AppSpacing.sm,
+      ),
+      child: Text('$label ($count)', style: text.titleMedium),
+    );
+  }
+
+  /// 一个驿站分组：可折叠标题 + 组内卡片列表。
+  List<Widget> _stationGroupSlivers(StationGroup group) {
+    final collapsed = _collapsedStations.contains(group.name);
+    return [
+      SliverToBoxAdapter(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: AppSpacing.xl),
+          child: StationGroupHeader(
+            group: group,
+            collapsed: collapsed,
+            onToggle: () {
+              setState(() {
+                if (collapsed) {
+                  _collapsedStations.remove(group.name);
+                } else {
+                  _collapsedStations.add(group.name);
+                }
+              });
+            },
+          ),
+        ),
+      ),
+      if (!collapsed)
+        AnimatedPackageList(
+          key: ValueKey('station_${group.name}'),
+          packages: group.packages,
+          padding: const EdgeInsets.fromLTRB(
+            AppSpacing.xl,
+            0,
+            AppSpacing.xl,
+            AppSpacing.sm,
+          ),
+        ),
+    ];
   }
 
   /// 顶栏：日期 + 应用名 + 页面级动作（同步 / 设置）。
@@ -389,17 +504,19 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   /// 明细原先挤在 Hero 里（三个数字 + 两根竖分隔线），把 Hero 变成了功能清单。
   /// 它描述的是列表构成，放在列表标题下更贴切。
   Widget _buildListHeader(
-    int pendingCount,
+    int pickupCount,
+    int inTransitCount,
     int completedCount,
     HeroDecision decision,
   ) {
     final parts = <String>[
-      if (decision.arrivedCount > 0) '${decision.arrivedCount} 件待取',
+      if (pickupCount > 0) '$pickupCount 件待取',
       if (decision.deliveringCount > 0) '${decision.deliveringCount} 件派送中',
       if (decision.transitCount > 0) '${decision.transitCount} 件在途',
       if (decision.pendingShipmentCount > 0) '${decision.pendingShipmentCount} 件待发货',
     ];
     final text = Theme.of(context).textTheme;
+    final total = pickupCount + inTransitCount;
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(
@@ -414,7 +531,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text('待取与在途快件 ($pendingCount)', style: text.titleLarge),
+              Text('待取与在途快件 ($total)', style: text.titleLarge),
               if (completedCount > 0)
                 InkWell(
                   onTap: () {
@@ -499,6 +616,55 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
             },
             icon: const Icon(Icons.sync_rounded, size: 16),
             label: const Text('一键同步'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 三个平台都没绑定时的引导横幅。只是一条横幅，下面的包裹照常显示。
+class _BindBanner extends ConsumerWidget {
+  const _BindBanner();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return Container(
+      margin: const EdgeInsets.fromLTRB(AppSpacing.xl, 0, AppSpacing.xl, AppSpacing.sm),
+      padding: const EdgeInsets.fromLTRB(AppSpacing.md, AppSpacing.md, AppSpacing.md, AppSpacing.sm),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: AppRadius.mdAll,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '绑定拼多多 / 京东 / 淘宝，包裹自动出现在这里',
+            style: Theme.of(context).textTheme.titleMedium,
+          ),
+          const SizedBox(height: AppSpacing.sm),
+          Wrap(
+            spacing: AppSpacing.sm,
+            runSpacing: AppSpacing.xs,
+            children: [
+              for (final p in kPlatforms)
+                FilledButton.tonal(
+                  style: FilledButton.styleFrom(
+                    foregroundColor: p.brandColor,
+                    minimumSize: const Size(0, 44),
+                    padding: const EdgeInsets.symmetric(horizontal: 14),
+                  ),
+                  onPressed: () => openPlatformLogin(
+                    context,
+                    ref,
+                    platform: p.id,
+                    displayName: p.displayName,
+                    brandColor: p.brandColor,
+                  ),
+                  child: Text('绑定${p.shortName}'),
+                ),
+            ],
           ),
         ],
       ),

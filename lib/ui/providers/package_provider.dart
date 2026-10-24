@@ -4,6 +4,8 @@ import 'package:hive/hive.dart';
 import '../../main.dart';
 import '../../core/debug/debug_trace.dart';
 import '../../core/debug/metrics.dart';
+import '../../core/engine/arrived_at.dart';
+import '../../core/engine/station_grouping.dart';
 import '../../core/engine/package_identity.dart';
 import '../../core/engine/timeline_merge.dart';
 import '../../platform/storage/hive_package.dart';
@@ -183,6 +185,15 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
               : existing.goodsName)
           : (hasSpecificGoodsName ? existing.goodsName : (package.goodsName ?? existing.goodsName));
 
+      final mergedTimeline =
+          _mergeTimelineJson(existing.rawTimelineJson, package.rawTimelineJson);
+      final arrivedDecision = resolveArrivedAt(
+        existingArrivedAt: existing.arrivedAt,
+        resolvedStatus: resolvedStatus,
+        previousStatus: existing.status,
+        rawTimelineJson: mergedTimeline,
+      );
+
       final updated = existing.copyWith(
         // 旧的 TB_<打码运单号> / CN_<运单号> 换成 TB_<订单号>；用户状态（已取、归档、pickedUpAt）随 existing 带过去，
         // _sync 会删掉 Hive 里的旧 key
@@ -237,7 +248,9 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
         pickedUpAt: existing.pickedUpAt ?? (resolvedStatus == PackageStatus.rejected ? DateTime.now() : null),
         transitFingerprint: package.transitFingerprint ?? existing.transitFingerprint,
         // 时间轴取并集：避免某次详情页加载不全时把完整轨迹覆盖成残缺版本
-        rawTimelineJson: _mergeTimelineJson(existing.rawTimelineJson, package.rawTimelineJson),
+        rawTimelineJson: mergedTimeline,
+        arrivedAt: arrivedDecision.value,
+        clearArrivedAt: arrivedDecision.clear,
       );
 
       debugPrint('[PackageListNotifier] merged: status=${updated.status.label} '
@@ -268,11 +281,21 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
       debugPrint('[PackageListNotifier] no existing package found, creating new');
       debugPrint('[PackageListNotifier] new: id=${packageIdForLog(package.id)}');
 
-      state = [...state, package];
+      final createDecision = resolveArrivedAt(
+        existingArrivedAt: package.arrivedAt,
+        resolvedStatus: package.status,
+        previousStatus: null,
+        rawTimelineJson: package.rawTimelineJson,
+      );
+      final created = package.copyWith(
+        arrivedAt: createDecision.value,
+        clearArrivedAt: createDecision.clear,
+      );
+      state = [...state, created];
 
-      if (package.status.isArrived && !package.notifiedArrived) {
+      if (created.status.isArrived && !created.notifiedArrived) {
         debugPrint('[PackageListNotifier] arrived, triggering notification');
-        _triggerArrivedNotification(package);
+        _triggerArrivedNotification(created);
       }
     }
 
@@ -503,6 +526,14 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
       notifiedArrived: primary.notifiedArrived || secondary.notifiedArrived,
       // 保留任一条上的取件确认时间，避免合并后丢失手动确认痕迹
       pickedUpAt: primary.pickedUpAt ?? secondary.pickedUpAt,
+      // 到站时间取较早非空（已有值不丢）
+      arrivedAt: () {
+        final a = primary.arrivedAt;
+        final b = secondary.arrivedAt;
+        if (a == null) return b;
+        if (b == null) return a;
+        return a.isBefore(b) ? a : b;
+      }(),
     );
   }
 
@@ -564,13 +595,55 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
   void markPickedUp(String id) {
     // 取消该包裹的通知
     NotificationAdapter().cancelNotification(id);
-    
+
     state = [
       for (final p in state)
         if (p.id == id)
           p.copyWith(
             status: PackageStatus.pickedUp,
             pickedUpAt: DateTime.now(),
+            statusHistory: [
+              ...p.statusHistory,
+              StatusTransition(
+                from: p.status,
+                to: PackageStatus.pickedUp,
+                timestamp: DateTime.now(),
+                reason: 'user_mark_picked_up',
+              ),
+            ],
+          )
+        else
+          p,
+    ];
+    _sync();
+  }
+
+  /// 撤销「已取件」：仅当仍为已取时，恢复到标记前的待处理状态并清空 pickedUpAt。
+  /// 首页 5 秒 SnackBar 与已完成抽屉共用；状态未知时回落到 arrived。
+  void restorePackage(String id) {
+    Package? current;
+    for (final p in state) {
+      if (p.id == id) {
+        current = p;
+        break;
+      }
+    }
+    if (current == null || current.status != PackageStatus.pickedUp) return;
+
+    var previous = PackageStatus.arrived;
+    for (final t in current.statusHistory.reversed) {
+      if (t.to == PackageStatus.pickedUp && t.from.isPending) {
+        previous = t.from;
+        break;
+      }
+    }
+
+    state = [
+      for (final p in state)
+        if (p.id == id)
+          p.copyWith(
+            status: previous,
+            clearPickedUpAt: true,
           )
         else
           p,
@@ -675,8 +748,13 @@ final pendingPackagesProvider = Provider<List<Package>>((ref) {
     final urgencyCompare = b.compositeUrgencyScore.compareTo(a.compositeUrgencyScore);
     if (urgencyCompare != 0) return urgencyCompare;
 
-    // 4. 最新到达或更新的时间从新到旧排序
-    return b.addedAt.compareTo(a.addedAt);
+    // 5. 同等紧急度：有 arrivedAt 的按到站从早到晚；null 排最后（绝不回退 addedAt）
+    final aArr = a.arrivedAt;
+    final bArr = b.arrivedAt;
+    if (aArr == null && bArr == null) return 0;
+    if (aArr == null) return 1;
+    if (bArr == null) return -1;
+    return aArr.compareTo(bArr);
   });
   
   return pending;
@@ -693,16 +771,26 @@ final completedPackagesProvider = Provider<List<Package>>((ref) {
 /// 包裹进入终结状态的时间（取件、归档或拒收），用于已完成列表排序
 DateTime _completedAt(Package p) => p.pickedUpAt ?? p.archivedAt ?? p.addedAt;
 
-final groupedPendingPackagesProvider = Provider<Map<String, List<Package>>>((ref) {
-  final pending = ref.watch(pendingPackagesProvider);
-  final grouped = <String, List<Package>>{};
-  
-  for (final package in pending) {
-    final location = package.displayLocation;
-    grouped.putIfAbsent(location, () => []).add(package);
-  }
-  
-  return grouped;
+/// 待取件按驿站分组（读 [Package.arrivedAt]；见 [groupPackagesByStation]）。
+final groupedPendingPackagesProvider = Provider<List<StationGroup>>((ref) {
+  return groupPackagesByStation(ref.watch(packageListProvider));
+});
+
+/// 在途扁平列表：pending 里不算「待取件」的（派送中 / 运送中 / 待发货），不按驿站分组。
+final inTransitPackagesProvider = Provider<List<Package>>((ref) {
+  final all = ref.watch(packageListProvider);
+  final inTransit = all.where((p) => p.status.isPending && !isAwaitingPickup(p)).toList();
+  inTransit.sort((a, b) {
+    int rank(Package p) {
+      if (p.status == PackageStatus.delivering) return 0;
+      if (p.status == PackageStatus.transit) return 1;
+      return 2; // pendingShipment 等
+    }
+    final byStatus = rank(a).compareTo(rank(b));
+    if (byStatus != 0) return byStatus;
+    return b.compositeUrgencyScore.compareTo(a.compositeUrgencyScore);
+  });
+  return inTransit;
 });
 
 final heroDecisionProvider = Provider<HeroDecision>((ref) {
