@@ -15,6 +15,7 @@ library;
 import 'dart:convert';
 
 import 'trace_time.dart';
+import 'package:pickup_app/core/parser/pickup_point_name.dart';
 
 /// SSR 页里数据的赋值标记
 const String taobaoSsrMarker = "__ICE_SUSPENSE_LOADER__']['undefined'] = ";
@@ -294,21 +295,9 @@ class TaobaoTraceParser {
     return '';
   }
 
-  static final _stationAfterVerbReg = RegExp(
-    r'(?:暂存至|存放至|放至|放入|已到达|到达|已在|送至|投递至|已由)\s*'
-    r'([\u4e00-\u9fa5A-Za-z0-9（）()·\-]{2,40}(?:菜鸟驿站|驿站|快递柜|丰巢柜|自提点|代收点|服务站|门店|超市))',
-  );
-  static final _stationBracketReg =
-      RegExp(r'【([^【】]{2,40}(?:菜鸟驿站|驿站|快递柜|丰巢柜|自提点|代收点|服务站|门店|超市))】');
-
-  /// 从一段轨迹正文里取驿站/代收点名，取不到返回空串
-  static String extractStationName(String text) {
-    final b = _stationBracketReg.firstMatch(text);
-    if (b != null) return b.group(1)!.trim();
-    final m = _stationAfterVerbReg.firstMatch(text);
-    if (m != null) return m.group(1)!.trim();
-    return '';
-  }
+  /// 从一段轨迹正文里取取件点名（柜/店/代收/自提/驿站等），取不到返回空串。
+  /// 实现见 [extractPickupPointName]（P28-c）。
+  static String extractStationName(String text) => extractPickupPointName(text);
 
   /// 物流公司编码 → 中文名（页面 name 缺失或被打码时的兜底；未知编码原样返回）
   static String cpNameFromCode(String cpCode) {
