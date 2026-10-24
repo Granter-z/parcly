@@ -15,6 +15,9 @@ enum KeepAliveOutcomeKind {
   authFailure,
 
   /// 网络 / 超时 / 未知错误（累计失败）
+  ///
+  /// P36-b：京东双探「不确定」（如 wqs 像登录但 trade 未确认）也归此类，
+  /// **勿**立刻 setExpired；达 [KeepAlivePlan.failureThreshold] 才标失效。
   networkFailure,
 
   /// 本轮未真正探活（忙 / 不可用）；不得改失效标记或失败计数

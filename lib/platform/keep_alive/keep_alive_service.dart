@@ -281,7 +281,7 @@ class KeepAliveService {
     if (kind == KeepAliveOutcomeKind.success) {
       debugPrint('[KeepAliveService] ✓ $platform heartbeat success');
     } else if (kind == KeepAliveOutcomeKind.authFailure) {
-      debugPrint('[KeepAliveService] ! $platform login expired (auth failure detected)');
+      debugPrint('[KeepAliveService] ! $platform login expired (auth failure detected): ${result.errorMessage}');
     } else {
       debugPrint('[KeepAliveService] ✗ $platform heartbeat failed: ${result.errorMessage}');
       if (plan.touchExpired) {
