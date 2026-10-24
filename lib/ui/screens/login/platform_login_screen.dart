@@ -60,6 +60,8 @@ class _PlatformLoginScreenState extends State<PlatformLoginScreen> {
   bool _loginCommitted = false;
   bool _showSlowHint = false;
   Timer? _slowHintTimer;
+  /// P37-a：主文档至少成功 finished 一次后，用于忽略后续非主框 -1 误报
+  bool _mainDocumentFinished = false;
 
   String get _initialUrl {
     if (widget.initialUrl != null && widget.initialUrl!.isNotEmpty) {
@@ -94,6 +96,11 @@ class _PlatformLoginScreenState extends State<PlatformLoginScreen> {
           onNavigationRequest: (request) {
             final url = request.url;
             final lower = url.toLowerCase();
+            // P37-c：京东登录流禁止唤端，避免「前往京东APP」干扰绑定
+            if (_shouldBlockJdAppLaunch(lower)) {
+              debugPrint('[WebView] P37 block JD app launch: $url');
+              return NavigationDecision.prevent;
+            }
             // 非 http(s) 的 DeepLink（如 pinduoduo://、taobao://）：交给系统用官方客户端打开
             if (!lower.startsWith('http://') && !lower.startsWith('https://')) {
               debugPrint('[WebView] External app scheme: $url');
@@ -103,7 +110,21 @@ class _PlatformLoginScreenState extends State<PlatformLoginScreen> {
             return NavigationDecision.navigate;
           },
           onWebResourceError: (error) {
-            debugPrint('[WebView Error] code: ${error.errorCode}, desc: ${error.description}');
+            debugPrint(
+              '[WebView Error] code: ${error.errorCode}, desc: ${error.description}, '
+              'mainFrame: ${error.isForMainFrame}',
+            );
+            // P37-a：仅主框架失败才 toast；非主框（子资源/唤端）只打 log
+            if (error.isForMainFrame == false) {
+              return;
+            }
+            // 主文档已成功 finished 后，忽略后续 -1（常见子资源误报且 isForMainFrame 偶发 null）
+            if (_mainDocumentFinished &&
+                error.errorCode == -1 &&
+                error.isForMainFrame != true) {
+              debugPrint('[WebView Error] P37 ignore -1 after main page finished');
+              return;
+            }
             if (mounted && !_loginCommitted) {
               ScaffoldMessenger.of(context).showSnackBar(
                 SnackBar(
@@ -114,6 +135,7 @@ class _PlatformLoginScreenState extends State<PlatformLoginScreen> {
             }
           },
           onPageFinished: (url) async {
+            _mainDocumentFinished = true;
             if (widget.platform.toLowerCase() == 'jd') {
               final anomaly = await _detectJdAnomaly(url);
               if (anomaly) {
@@ -152,7 +174,16 @@ class _PlatformLoginScreenState extends State<PlatformLoginScreen> {
     });
 
     final saved = _baselineCookies;
-    if (saved != null && saved.trim().isNotEmpty) {
+    // P37-b：已失效重登不注入旧 cookie，清罐并清空门闸基线，避免同指纹拒绑
+    if (_wasExpiredAtOpen) {
+      try {
+        await WebViewCookieManager().clearCookies();
+      } catch (e) {
+        debugPrint('[Login] clearCookies failed: $e');
+      }
+      _baselineCookies = null;
+      debugPrint('[Login] P37 skip inject: expired re-auth, jar cleared');
+    } else if (saved != null && saved.trim().isNotEmpty) {
       final hosts = _cookieHosts.map((e) => Uri.parse(e).host).toSet();
       // 补充根域，确保阿里 SSO 全域有效
       if (widget.platform.toLowerCase() == 'taobao' || widget.platform.toLowerCase() == 'tmall') {
@@ -189,6 +220,7 @@ class _PlatformLoginScreenState extends State<PlatformLoginScreen> {
         return [
           'https://www.jd.com',
           'https://home.m.jd.com',
+          'https://my.m.jd.com',
           'https://trade.m.jd.com',
           'https://api.m.jd.com',
         ];
@@ -213,7 +245,11 @@ class _PlatformLoginScreenState extends State<PlatformLoginScreen> {
           lowerUrl.contains('cainiao') ||
           lowerUrl.contains('station') ||
           lowerUrl.contains('last-mile-fe'),
-      'jd' => lowerUrl.contains('home.m.jd.com') || lowerUrl.contains('orderlist') || lowerUrl.contains('trade.m.jd.com'),
+      'jd' => lowerUrl.contains('home.m.jd.com') ||
+          lowerUrl.contains('my.m.jd.com') ||
+          lowerUrl.contains('myjd') ||
+          lowerUrl.contains('orderlist') ||
+          lowerUrl.contains('trade.m.jd.com'),
       'pdd' => !lowerUrl.contains('login') && (lowerUrl.contains('orders') || lowerUrl.contains('personal') || lowerUrl.contains('index') || lowerUrl.contains('home')),
       _ => false,
     };
@@ -362,6 +398,24 @@ class _PlatformLoginScreenState extends State<PlatformLoginScreen> {
     'weixin',
   };
 
+  /// P37-c：京东登录页是否应拦截唤端（openapp / jd:// / 带 openapp 的中间页）
+  bool _shouldBlockJdAppLaunch(String lowerUrl) {
+    if (widget.platform.toLowerCase() != 'jd') return false;
+    if (lowerUrl.startsWith('openapp.jdmobile:') ||
+        lowerUrl.startsWith('jdmobile:') ||
+        lowerUrl.startsWith('jd:')) {
+      return true;
+    }
+    // http(s) 中间页若夹带唤端参数也拦，避免跳到「前往京东APP」
+    if (lowerUrl.startsWith('http://') || lowerUrl.startsWith('https://')) {
+      if (lowerUrl.contains('openapp.jdmobile') ||
+          (lowerUrl.contains('openapp') && lowerUrl.contains('jdmobile'))) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   /// 用系统外部应用打开 DeepLink（跳转电商官方客户端）；未安装时给出提示
   Future<void> _openExternalApp(String url) async {
     try {
@@ -492,6 +546,7 @@ class _PlatformLoginScreenState extends State<PlatformLoginScreen> {
             collectedCookies: cookieStr,
             baselineCookies: _baselineCookies,
             anomalyDetected: _anomalyDetected,
+            wasExpiredAtOpen: _wasExpiredAtOpen,
           )) {
         debugPrint(
           '[Login] Reject commit: anomaly=$_anomalyDetected '
