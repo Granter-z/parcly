@@ -1,7 +1,7 @@
 /// 带有弹簧物理触感与按压回弹的现代卡片组件
 ///
-/// P32：`glass: true` 已改为 **内容抬升面**（无 BackdropFilter）。
-/// 真 Liquid Glass 请用 [GlassChrome]（仅功能层）。
+/// P33：`glass: true` → **内容抬升面**（无 BackdropFilter）。
+/// 功能层用 [GlassChrome]；空态/PDD 用 [LightGlassSurface]。
 library;
 
 import 'package:flutter/material.dart';
