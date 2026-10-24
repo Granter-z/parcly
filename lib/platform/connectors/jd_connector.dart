@@ -14,6 +14,7 @@ import '../../core/parser/trace_time.dart';
 import '../../core/sanitizer/goods_name_cleaner.dart';
 import '../storage/platform_auth_store.dart';
 import 'jd_delivery_filter.dart';
+import 'jd_sync_network.dart';
 import 'jd_trace_parser.dart';
 import 'platform_connector.dart';
 import 'concurrent_limiter.dart';
@@ -69,6 +70,19 @@ class JdH5Connector implements PlatformConnector {
   final List<String> _capturedLogisticsJson = [];
   Completer<void>? _logisticsCapturedCompleter;
 
+  /// P42-a/c：本轮主 frame 网络硬失败 / 外层 8s 超时 → soft，禁止 expire
+  final JdNetworkSoftFailGate _networkGate = JdNetworkSoftFailGate();
+
+  bool get _networkSoftFail => _networkGate.failed;
+
+  void _applyNetworkSoftFail(String reason) {
+    _networkGate.apply(reason);
+    if (_networkGate.issue != null) {
+      _lastIssue = _networkGate.issue;
+    }
+    _logJd('[JD] network soft fail: $reason');
+  }
+
   @override
   Stream<Package> streamSync() async* {
     final cookies = _authStore.getCookies('jd');
@@ -78,6 +92,9 @@ class JdH5Connector implements PlatformConnector {
     }
 
     _lastIssue = null;
+    _networkGate.failed = false;
+    _networkGate.issue = null;
+    _networkGate.wake = null;
     _capturedJsonList.clear();
     _logJd('[JD] Starting sync with cookies (len: ${cookies.length})');
     await _injectCookies(cookies);
@@ -124,8 +141,18 @@ class JdH5Connector implements PlatformConnector {
               return NavigationDecision.navigate;
             },
             onWebResourceError: (error) {
-              if (error.isForMainFrame ?? false) {
+              final main = error.isForMainFrame ?? false;
+              if (main) {
                 _logJd('[JD] main frame error: ${error.errorCode} ${error.description}');
+              }
+              // P42-a：主 frame 网络硬失败 → soft + 立刻结束（唤醒 hook 等待）
+              _networkGate.onMainFrameError(
+                errorCode: error.errorCode,
+                description: error.description,
+                isForMainFrame: main,
+              );
+              if (_networkGate.failed && _networkGate.issue != null) {
+                _lastIssue = _networkGate.issue;
               }
             },
           ),
@@ -134,6 +161,7 @@ class JdH5Connector implements PlatformConnector {
 
     final completer = Completer<void>();
     _orderCapturedCompleter = completer;
+    _networkGate.wake = completer;
 
     // P30-b ① / P30-b′：本轮 plogin / setExpired(true) / 开始前已失效 → finally 禁止 persist
     final alreadyExpiredAtStart = _authStore.isExpired('jd');
@@ -143,133 +171,27 @@ class JdH5Connector implements PlatformConnector {
     }
 
     try {
-      // 1) 注入请求拦截钩子并直接导航到订单列表（消除加载 home.m.jd.com 造成的 10s 死等）
-      _logJd('[JD] Navigating directly to orderlist_jdm.shtml...');
-      await controller.loadRequest(Uri.parse(_orderUrl));
-      await _injectNetworkHook(controller);
-
-      // 2) 极速拦截通道：等待网络钩子捕获 order_list_m 接口返回，最多等待 3.5 秒（通常 1~2 秒即可截获）
-      try {
-        await completer.future.timeout(const Duration(milliseconds: 3500));
-        _logJd('[JD] Fast hook capture hit! Captured ${_capturedJsonList.length} JSON responses');
-      } on TimeoutException {
-        _logJd('[JD] Hook fast path timed out (3.5s), proceeding to fallback check');
-      } finally {
-        _orderCapturedCompleter = null;
-      }
-
-      final orders = <_JdOrder>[];
-
-      // 3) 优先从拦截到的 JSON 响应中解析订单
-      if (_capturedJsonList.isNotEmpty) {
-        for (final jsonStr in _capturedJsonList) {
-          orders.addAll(_parseOrdersFromJson(jsonStr));
-        }
-      }
-
-      // 4) 仅在未拦截到 JSON 时才执行耗时的 DOM 兜底与登录态校验
-      if (orders.isEmpty) {
-        final landedUrl = await _locationHref(controller);
-        _logJd('[JD] Fallback landed: $landedUrl');
-        if (landedUrl.contains('plogin') || (landedUrl.contains('login') && !landedUrl.contains('orderlist'))) {
-          _lastIssue = '京东登录态已失效，请在「设置」中重新登录';
-          skipPersist = true; // 落 plogin / 登录页 → 禁止 finally 回写
-          await _authStore.setExpired('jd', true);
-          return;
-        }
-
-        // 尝试等待 DOM 渲染并提取
-        await _awaitPageReady();
-        final rawExtracted = await _extractWaitReceiveOrdersViaJs(controller);
-        if (rawExtracted != null && rawExtracted.isNotEmpty) {
-          orders.addAll(_parseExtractedOrdersFromDom(rawExtracted));
-        }
-      }
-
-      // 去重并排除已归档订单（外卖/秒送已在 _parseOrdersFromJson 按快递白名单过滤）
-      final validOrders = <String, _JdOrder>{};
-      for (final o in orders) {
-        if (o.status == PackageStatus.archived) {
-          continue;
-        }
-        validOrders[o.orderId] = o;
-      }
-
-      _logJd('[JD] Final valid shopping orders: ${validOrders.length}');
-
-      // 能拉到有效订单说明会话还能拉数；但若同步前已失效（保活自然掉），
-      // 不得仅凭 orderlist 冲回已绑定——清失效留给设置页重登（P30-b′）。
-      if (validOrders.isNotEmpty && !alreadyExpiredAtStart) {
-        await _authStore.setExpired('jd', false);
-      } else if (validOrders.isNotEmpty && alreadyExpiredAtStart) {
-        _logJd('[JD] keep expired: orders ok but already expired before sync');
-      }
-
-      // ⚡ 优化：并发拉取物流详情（限制并发数为 3）
-      final executor = ThrottledExecutor(
-        maxConcurrent: 3,
-        minDelay: const Duration(milliseconds: 150),
-        maxDelay: const Duration(milliseconds: 350),
+      // P42-a：外层硬超时 8s；超时与主 frame 硬失败同一 soft 出口
+      yield* _streamSyncBody(
+        controller,
+        alreadyExpiredAtStart: alreadyExpiredAtStart,
+        markSkipPersist: () {
+          skipPersist = true;
+        },
+      ).timeout(
+        kJdStreamSyncHardTimeout,
+        onTimeout: (EventSink<Package> sink) {
+          _applyNetworkSoftFail(
+            'streamSync hard timeout ${kJdStreamSyncHardTimeout.inSeconds}s',
+          );
+          sink.close();
+        },
       );
-
-      final detailTasks = validOrders.values.where((o) => o.progressLink.isNotEmpty).map((o) {
-        return () => _fetchLogisticsDetail(o.orderId, o.progressLink).then((detail) {
-          return {'orderId': o.orderId, 'detail': detail};
-        });
-      }).toList();
-
-      final results = await executor.executeAll(detailTasks);
-
-      // 构建 orderId -> detail 的映射
-      final detailMap = <String, _JdLogisticsDetail?>{};
-      for (final result in results) {
-        final orderId = result['orderId'] as String;
-        final detail = result['detail'] as _JdLogisticsDetail?;
-        detailMap[orderId] = detail;
-      }
-
-      for (final o in validOrders.values) {
-        // 从映射中获取物流详情
-        final detail = detailMap[o.orderId];
-
-        final timelineJson = (detail != null && detail.timelineNodes.isNotEmpty)
-            ? jsonEncode(detail.timelineNodes)
-            : null;
-
-        final status = detail != null
-            ? LogisticsStatusEngine.derive(
-                events: detail.timelineNodes,
-                isPendingShipment: o.status == PackageStatus.pendingShipment,
-                isOrderSigned: o.status == PackageStatus.pickedUp,
-                pickupCode: o.pickupCode,
-                stationName: o.stationName,
-              ).status
-            : o.status;
-
-        _logJd('[JD Yield] Order: ${o.goodsName}, id: ${o.orderId}, status: ${status.label}, '
-            'tracking=${detail?.trackingNumber ?? ''} nodes=${detail?.timelineNodes.length ?? 0}');
-
-        yield Package(
-          id: 'JD_${o.orderId}',
-          trackingNumber: (detail != null && detail.trackingNumber.isNotEmpty)
-              ? detail.trackingNumber
-              : o.orderId,
-          courier: CourierType.jd,
-          goodsName: o.goodsName.isNotEmpty ? o.goodsName : '京东商品快件',
-          goodsImageUrl: o.imageUrl.isNotEmpty ? o.imageUrl : null,
-          pickupCode: o.pickupCode,
-          stationName: o.stationName.isNotEmpty ? o.stationName : '京东自提/配送',
-          location: (detail != null && detail.address.isNotEmpty) ? detail.address : o.statusText,
-          platform: 'jd',
-          urgency: LogisticsStatusEngine.urgencyFor(status: status, pickupCode: o.pickupCode),
-          status: status,
-          addedAt: DateTime.now(),
-          rawTimelineJson: timelineJson,
-        );
-      }
     } catch (e, stack) {
       _logJd('[JD] streamSync error: $e\n$stack');
     } finally {
+      _networkGate.wake = null;
+      _orderCapturedCompleter = null;
       // P30-b ① / P30-b′：plogin / 本轮标失效 / 开始前已失效 → 绝不 persist
       if (skipPersist) {
         _logJd(
@@ -280,6 +202,167 @@ class JdH5Connector implements PlatformConnector {
       } else {
         await _persistJdCookiesIfHealthy(cookies);
       }
+    }
+  }
+
+  /// P42-a 主体：可被外层 8s timeout 取消；网络 soft 后立刻 return。
+  Stream<Package> _streamSyncBody(
+    WebViewController controller, {
+    required bool alreadyExpiredAtStart,
+    required void Function() markSkipPersist,
+  }) async* {
+    // 1) 注入请求拦截钩子并直接导航到订单列表（消除加载 home.m.jd.com 造成的 10s 死等）
+    _logJd('[JD] Navigating directly to orderlist_jdm.shtml...');
+    await controller.loadRequest(Uri.parse(_orderUrl));
+    if (_networkSoftFail) {
+      _logJd('[JD] abort after navigate: network soft fail');
+      return;
+    }
+    await _injectNetworkHook(controller);
+    if (_networkSoftFail) {
+      _logJd('[JD] abort after hook inject: network soft fail');
+      return;
+    }
+
+    // 2) 极速拦截通道：等待网络钩子捕获 order_list_m；硬失败会 complete wake 提前结束
+    final completer = _orderCapturedCompleter;
+    if (completer != null) {
+      try {
+        await completer.future.timeout(const Duration(milliseconds: 3500));
+        if (!_networkSoftFail) {
+          _logJd('[JD] Fast hook capture hit! Captured ${_capturedJsonList.length} JSON responses');
+        }
+      } on TimeoutException {
+        if (!_networkSoftFail) {
+          _logJd('[JD] Hook fast path timed out (3.5s), proceeding to fallback check');
+        }
+      }
+    }
+    if (_networkSoftFail) {
+      _logJd('[JD] abort after hook wait: network soft fail');
+      return;
+    }
+
+    final orders = <_JdOrder>[];
+
+    // 3) 优先从拦截到的 JSON 响应中解析订单
+    if (_capturedJsonList.isNotEmpty) {
+      for (final jsonStr in _capturedJsonList) {
+        orders.addAll(_parseOrdersFromJson(jsonStr));
+      }
+    }
+
+    // 4) 仅在未拦截到 JSON 时才执行耗时的 DOM 兜底与登录态校验
+    if (orders.isEmpty) {
+      if (_networkSoftFail) return;
+      final landedUrl = await _locationHref(controller);
+      _logJd('[JD] Fallback landed: $landedUrl');
+      if (_networkSoftFail) return;
+      // P42-c：网络 soft 本轮禁止因 plogin/login 误 expire
+      if (jdShouldExpireOnLoginLanding(
+        networkSoftFailThisRound: _networkSoftFail,
+        landedUrl: landedUrl,
+      )) {
+        _lastIssue = '京东登录态已失效，请在「设置」中重新登录';
+        markSkipPersist();
+        await _authStore.setExpired('jd', true);
+        return;
+      }
+
+      // 尝试等待 DOM 渲染并提取（P42-a：≤3s，且网络 soft 不进）
+      await _awaitPageReady();
+      if (_networkSoftFail) return;
+      final rawExtracted = await _extractWaitReceiveOrdersViaJs(controller);
+      if (rawExtracted != null && rawExtracted.isNotEmpty) {
+        orders.addAll(_parseExtractedOrdersFromDom(rawExtracted));
+      }
+    }
+
+    if (_networkSoftFail) return;
+
+    // 去重并排除已归档订单（外卖/秒送已在 _parseOrdersFromJson 按快递白名单过滤）
+    final validOrders = <String, _JdOrder>{};
+    for (final o in orders) {
+      if (o.status == PackageStatus.archived) {
+        continue;
+      }
+      validOrders[o.orderId] = o;
+    }
+
+    _logJd('[JD] Final valid shopping orders: ${validOrders.length}');
+
+    // 能拉到有效订单说明会话还能拉数；但若同步前已失效（保活自然掉），
+    // 不得仅凭 orderlist 冲回已绑定——清失效留给设置页重登（P30-b′）。
+    if (validOrders.isNotEmpty && !alreadyExpiredAtStart) {
+      await _authStore.setExpired('jd', false);
+    } else if (validOrders.isNotEmpty && alreadyExpiredAtStart) {
+      _logJd('[JD] keep expired: orders ok but already expired before sync');
+    }
+
+    if (_networkSoftFail) return;
+
+    // ⚡ 优化：并发拉取物流详情（限制并发数为 3）
+    final executor = ThrottledExecutor(
+      maxConcurrent: 3,
+      minDelay: const Duration(milliseconds: 150),
+      maxDelay: const Duration(milliseconds: 350),
+    );
+
+    final detailTasks = validOrders.values.where((o) => o.progressLink.isNotEmpty).map((o) {
+      return () => _fetchLogisticsDetail(o.orderId, o.progressLink).then((detail) {
+        return {'orderId': o.orderId, 'detail': detail};
+      });
+    }).toList();
+
+    final results = await executor.executeAll(detailTasks);
+    if (_networkSoftFail) return;
+
+    // 构建 orderId -> detail 的映射
+    final detailMap = <String, _JdLogisticsDetail?>{};
+    for (final result in results) {
+      final orderId = result['orderId'] as String;
+      final detail = result['detail'] as _JdLogisticsDetail?;
+      detailMap[orderId] = detail;
+    }
+
+    for (final o in validOrders.values) {
+      if (_networkSoftFail) return;
+      final detail = detailMap[o.orderId];
+
+      final timelineJson = (detail != null && detail.timelineNodes.isNotEmpty)
+          ? jsonEncode(detail.timelineNodes)
+          : null;
+
+      final status = detail != null
+          ? LogisticsStatusEngine.derive(
+              events: detail.timelineNodes,
+              isPendingShipment: o.status == PackageStatus.pendingShipment,
+              isOrderSigned: o.status == PackageStatus.pickedUp,
+              pickupCode: o.pickupCode,
+              stationName: o.stationName,
+            ).status
+          : o.status;
+
+      _logJd('[JD Yield] Order: ${o.goodsName}, id: ${o.orderId}, status: ${status.label}, '
+          'tracking=${detail?.trackingNumber ?? ''} nodes=${detail?.timelineNodes.length ?? 0}');
+
+      yield Package(
+        id: 'JD_${o.orderId}',
+        trackingNumber: (detail != null && detail.trackingNumber.isNotEmpty)
+            ? detail.trackingNumber
+            : o.orderId,
+        courier: CourierType.jd,
+        goodsName: o.goodsName.isNotEmpty ? o.goodsName : '京东商品快件',
+        goodsImageUrl: o.imageUrl.isNotEmpty ? o.imageUrl : null,
+        pickupCode: o.pickupCode,
+        stationName: o.stationName.isNotEmpty ? o.stationName : '京东自提/配送',
+        location: (detail != null && detail.address.isNotEmpty) ? detail.address : o.statusText,
+        platform: 'jd',
+        urgency: LogisticsStatusEngine.urgencyFor(status: status, pickupCode: o.pickupCode),
+        status: status,
+        addedAt: DateTime.now(),
+        rawTimelineJson: timelineJson,
+      );
     }
   }
 
@@ -492,10 +575,13 @@ class JdH5Connector implements PlatformConnector {
   }
 
   Future<void> _awaitPageReady() async {
+    // P42-a：网络硬失败本轮不进；上限 ≤3s（原 10s）
+    if (_networkSoftFail) return;
     final controller = _controller;
     if (controller == null) return;
-    final deadline = DateTime.now().add(const Duration(seconds: 10));
+    final deadline = DateTime.now().add(const Duration(seconds: 3));
     while (DateTime.now().isBefore(deadline)) {
+      if (_networkSoftFail) return;
       await Future.delayed(const Duration(milliseconds: 350));
       try {
         final r = await controller.runJavaScriptReturningResult(
@@ -504,7 +590,6 @@ class JdH5Connector implements PlatformConnector {
         if (r.toString().contains('1')) break;
       } catch (_) {}
     }
-    await Future.delayed(const Duration(milliseconds: 600));
   }
 
   /// 确保页面处于「购物」分类（排斥秒送外卖，保持全量购物物流流）
