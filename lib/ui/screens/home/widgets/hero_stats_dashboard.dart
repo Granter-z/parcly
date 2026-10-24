@@ -1,6 +1,6 @@
 /// 首页顶部 Hero —— 只回答一个问题：现在最该关心几件包裹。
 ///
-/// P32：按 HIG，Hero 是**内容层**（数字 + 文案），用 [ContentSurface] 近实心抬升面，
+/// P33：Hero 仍是**内容层**（数字 + 文案），用 [ContentSurface] 近实心抬升面，
 /// 不再套 Liquid Glass（玻璃留给功能层 chrome）。
 library;
 

@@ -11,10 +11,10 @@ import '../theme/glass_tokens.dart';
 import '../providers/platform_auth_status_provider.dart';
 import '../screens/login/platform_login_flow.dart';
 
-/// 首页顶部的平台登录状态条（P4 / P25 / P32，见 docs/pickup_app-界面.md）。
+/// 首页顶部的平台登录状态条（P4 / P25 / P33，见 docs/pickup_app-界面.md）。
 ///
-/// P32：整条是功能层 [GlassChrome]（Regular Medium Frost + specular）；
-/// 芯片文字本身用实心对比色，不嵌套玻璃（HIG：无 glass-on-glass）。
+/// P33：整条功能层强 Frost（sigma=[GlassTokens.blurSigma]）+ 低面洗 + 厚 specular；
+/// P32 弱 blur+偏高白填充被 CEO 拒为「乳白膜」。芯片文字实心对比色，不嵌套玻璃。
 ///
 /// - 有平台需重登：淡红底，不能关；点那个平台直接进登录页。
 /// - 全部正常：透明玻璃条 + 实心字芯片，不抢待取件的位置。
@@ -49,8 +49,8 @@ class PlatformStatusBar extends ConsumerWidget {
           borderRadius: radius,
           child: BackdropFilter(
             filter: ImageFilter.blur(
-              sigmaX: GlassTokens.blurSigmaSoft,
-              sigmaY: GlassTokens.blurSigmaSoft,
+              sigmaX: GlassTokens.blurSigma,
+              sigmaY: GlassTokens.blurSigma,
             ),
             child: Stack(
               children: [
@@ -59,7 +59,7 @@ class PlatformStatusBar extends ConsumerWidget {
                     top: 0,
                     left: 0,
                     right: 0,
-                    height: 22,
+                    height: 32,
                     child: IgnorePointer(
                       child: DecoratedBox(
                         decoration: BoxDecoration(
@@ -80,8 +80,8 @@ class PlatformStatusBar extends ConsumerWidget {
                     border: Border.all(
                       color: anyExpired
                           ? AppColors.statusRejected.withValues(alpha: 0.22)
-                          : GlassTokens.border,
-                      width: 1,
+                          : GlassTokens.borderInner,
+                      width: anyExpired ? 1 : 1.2,
                     ),
                   ),
                   child: Wrap(

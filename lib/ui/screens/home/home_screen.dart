@@ -462,13 +462,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
             PddWebScreen.open(context);
           },
           borderRadius: GlassTokens.radiusContentAll,
-          child: ContentSurface(
+          child: LightGlassSurface(
             padding: const EdgeInsets.symmetric(
               horizontal: AppSpacing.md,
               vertical: AppSpacing.md,
             ),
             borderRadius: GlassTokens.radiusContentAll,
-            borderColor: const Color(0xFFE02E24).withValues(alpha: 0.22),
+            borderColor: const Color(0xFFE02E24).withValues(alpha: 0.28),
             child: Row(
               children: [
                 Container(
@@ -610,7 +610,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
         AppSpacing.xl,
         AppSpacing.lg,
       ),
-      child: ContentSurface(
+      child: LightGlassSurface(
         padding: const EdgeInsets.all(AppSpacing.xxxl),
         borderRadius: GlassTokens.radiusAll,
         child: Column(
@@ -669,7 +669,7 @@ class _GlassIconButton extends StatelessWidget {
           child: GlassChrome(
             padding: const EdgeInsets.all(10),
             borderRadius: AppRadius.pillAll,
-            fill: GlassTokens.fill,
+            fill: GlassTokens.fillSoft,
             blurSigma: GlassTokens.blurSigmaSoft,
             boxShadow: const [],
             child: SizedBox(width: 24, height: 24, child: Center(child: icon)),
