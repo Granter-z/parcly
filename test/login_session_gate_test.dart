@@ -75,6 +75,43 @@ void main() {
         isFalse,
       );
     });
+
+    test('P37-b 已失效重登：同指纹仍可 commit', () {
+      expect(
+        mayCommitNewLoginSuccess(
+          platform: 'jd',
+          collectedCookies: sameEcho,
+          baselineCookies: baseline,
+          wasExpiredAtOpen: true,
+        ),
+        isTrue,
+      );
+    });
+
+    test('P37-b 已失效但 anomaly 仍拒', () {
+      expect(
+        mayCommitNewLoginSuccess(
+          platform: 'jd',
+          collectedCookies: sameEcho,
+          baselineCookies: baseline,
+          wasExpiredAtOpen: true,
+          anomalyDetected: true,
+        ),
+        isFalse,
+      );
+    });
+
+    test('P37-b 未失效同指纹仍拒（防假成功）', () {
+      expect(
+        mayCommitNewLoginSuccess(
+          platform: 'jd',
+          collectedCookies: sameEcho,
+          baselineCookies: baseline,
+          wasExpiredAtOpen: false,
+        ),
+        isFalse,
+      );
+    });
   });
 
   group('looksLikeJdLoginAnomaly', () {

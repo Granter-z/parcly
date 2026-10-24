@@ -95,16 +95,20 @@ bool looksLikeJdLoginAnomaly({required String url, String? pageText}) {
 /// 是否允许把本轮采集当成「新登录成功」（可 saveCookies + 清失效 + pop(true)）。
 ///
 /// - 无会话 / 异常页 → 否
-/// - 与打开前指纹相同 → 否（堵住注入旧 cookie 的静默假成功）
+/// - 已失效重登（[wasExpiredAtOpen]）：有合法会话且非 anomaly → 是（P37-b，允许同指纹重绑）
+/// - 未失效且与打开前指纹相同 → 否（堵住注入旧 cookie 的静默假成功）
 /// - 否则 → 是
 bool mayCommitNewLoginSuccess({
   required String platform,
   required String collectedCookies,
   required String? baselineCookies,
   bool anomalyDetected = false,
+  bool wasExpiredAtOpen = false,
 }) {
   if (anomalyDetected) return false;
   if (!cookieStringHasLoginSession(platform, collectedCookies)) return false;
+  // P37-b：失效重登必须能重新绑上，即使采集指纹与 store 旧值相同
+  if (wasExpiredAtOpen) return true;
   if (isSameLoginSession(
     platform: platform,
     baselineCookies: baselineCookies,
