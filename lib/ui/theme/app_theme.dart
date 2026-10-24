@@ -1,6 +1,8 @@
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+
 import '../constants/app_constants.dart';
+import 'glass_tokens.dart';
 
 /// 应用主题 —— 只做一件事：把 [AppColors] / [AppRadius] 令牌翻译成 Material 主题。
 ///
@@ -42,11 +44,12 @@ class AppTheme {
       brightness: Brightness.light,
       colorScheme: scheme,
       scaffoldBackgroundColor: AppColors.background,
-      appBarTheme: const AppBarTheme(
-        backgroundColor: AppColors.surface,
+      appBarTheme: AppBarTheme(
+        backgroundColor: GlassTokens.fillStrong,
         surfaceTintColor: Colors.transparent,
         elevation: 0,
         scrolledUnderElevation: 0,
+        foregroundColor: AppColors.textPrimary,
       ),
       cardTheme: CardThemeData(
         color: AppColors.surface,
@@ -72,10 +75,13 @@ class AppTheme {
         shape: RoundedRectangleBorder(borderRadius: AppRadius.smAll),
       ),
       bottomSheetTheme: const BottomSheetThemeData(
-        backgroundColor: AppColors.surface,
+        backgroundColor: GlassTokens.fillStrong,
         surfaceTintColor: Colors.transparent,
+        dragHandleColor: AppColors.textTertiary,
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(AppRadius.lg)),
+          borderRadius: BorderRadius.vertical(
+            top: Radius.circular(GlassTokens.radius),
+          ),
         ),
       ),
       splashFactory: InkSparkle.splashFactory,

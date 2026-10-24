@@ -1,22 +1,16 @@
 /// 首页顶部 Hero —— 只回答一个问题：现在最该关心几件包裹。
 ///
-/// 改版前的三个问题：
-/// 1. **没用 core 的决策结果**。`HeroCardEngine` 已经算出 arrivedCount / deliveringCount /
-///    urgencyScore / 「建议一起取」这类结论，也接进了 `heroDecisionProvider`，但仪表盘
-///    自己在 widget 里又 `where(...)` 数了一遍，且两边对「待取件」的配色还相反。
-///    现在只读 [heroDecisionProvider]。
-/// 2. **把 Hero 写成了功能清单**。原先一屏里塞了三个数字、两根竖分隔线、一句解释，
-///    再加一个同步按钮。Hero 是一个瞬间，不是列表：现在只留「主数字 + 一句话」。
-/// 3. **拿 `fontFamily: 'monospace'` 撑数字、拿 `FittedBox` 补溢出**。
-///    改用等宽数字特性（tabular figures），字号按最长内容预留，不需要缩放兜底。
+/// P31：墨色硬块改为液态玻璃面板；主数字用深墨字压在玻璃上，保证对比度。
 library;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../app/hero_decision.dart';
+import '../../../components/glass_surface.dart';
 import '../../../constants/app_constants.dart';
 import '../../../providers/package_provider.dart';
+import '../../../theme/glass_tokens.dart';
 import '../../../theme/motion.dart';
 
 class HeroStatsDashboard extends ConsumerWidget {
@@ -34,13 +28,10 @@ class HeroStatsDashboard extends ConsumerWidget {
     final theme = Theme.of(context);
     final isUrgent = decision.heroEmotionState == HeroEmotionState.urgent;
 
-    return Container(
-      width: double.infinity,
+    return GlassSurface(
       padding: const EdgeInsets.all(AppSpacing.xl),
-      decoration: BoxDecoration(
-        color: AppColors.inkSurface,
-        borderRadius: AppRadius.lgAll,
-      ),
+      borderRadius: GlassTokens.radiusAll,
+      fill: GlassTokens.fillStrong,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -51,7 +42,7 @@ class HeroStatsDashboard extends ConsumerWidget {
               _RollingNumber(
                 value: lead.count,
                 style: theme.textTheme.displaySmall!.copyWith(
-                  color: AppColors.onInkPrimary,
+                  color: AppColors.textPrimary,
                 ),
               ),
               const SizedBox(width: AppSpacing.sm),
@@ -60,7 +51,7 @@ class HeroStatsDashboard extends ConsumerWidget {
                 style: const TextStyle(
                   fontSize: 17,
                   fontWeight: FontWeight.w600,
-                  color: AppColors.onInkPrimary,
+                  color: AppColors.textPrimary,
                 ),
               ),
               const Spacer(),
@@ -74,7 +65,7 @@ class HeroStatsDashboard extends ConsumerWidget {
             style: const TextStyle(
               fontSize: 12.5,
               height: 1.4,
-              color: AppColors.onInkTertiary,
+              color: AppColors.textSecondary,
             ),
           ),
         ],
@@ -149,10 +140,8 @@ class _RollingNumber extends StatelessWidget {
       tween: Tween<double>(end: value.toDouble()),
       duration: duration,
       curve: Motion.standard,
-      builder: (context, animated, _) => Text(
-        animated.round().toString(),
-        style: style,
-      ),
+      builder: (context, animated, _) =>
+          Text(animated.round().toString(), style: style),
     );
   }
 }

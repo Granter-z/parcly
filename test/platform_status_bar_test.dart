@@ -5,6 +5,7 @@ import 'package:pickup_app/platform/connectors/connector_manager.dart';
 import 'package:pickup_app/ui/components/platform_status_bar.dart';
 import 'package:pickup_app/ui/constants/app_constants.dart';
 import 'package:pickup_app/ui/providers/platform_auth_status_provider.dart';
+import 'package:pickup_app/ui/theme/glass_tokens.dart';
 
 Future<void> pumpBar(
   WidgetTester tester,
@@ -36,11 +37,15 @@ void main() {
     expect(find.text('京东'), findsOneWidget);
     expect(find.text('淘宝'), findsOneWidget);
     expect(find.textContaining('需重登'), findsNothing);
-    expect(barColor(tester), Colors.transparent);
+    expect(barColor(tester), GlassTokens.fillSoft);
   });
 
   testWidgets('淘宝掉线：明确写出是淘宝需重登，整条变红底，其他平台不受影响', (tester) async {
-    await pumpBar(tester, {'pdd': ok, 'jd': ok, 'taobao': PlatformAuthStatus.needsRelogin});
+    await pumpBar(tester, {
+      'pdd': ok,
+      'jd': ok,
+      'taobao': PlatformAuthStatus.needsRelogin,
+    });
     expect(find.text('淘宝 需重登'), findsOneWidget);
     expect(find.text('京东'), findsOneWidget);
     expect(find.text('拼多多'), findsOneWidget);
@@ -48,7 +53,11 @@ void main() {
   });
 
   testWidgets('没绑定的平台显示「去绑定」', (tester) async {
-    await pumpBar(tester, {'pdd': PlatformAuthStatus.unbound, 'jd': ok, 'taobao': ok});
+    await pumpBar(tester, {
+      'pdd': PlatformAuthStatus.unbound,
+      'jd': ok,
+      'taobao': ok,
+    });
     expect(find.text('拼多多 去绑定'), findsOneWidget);
   });
 
@@ -60,18 +69,29 @@ void main() {
   });
 
   testWidgets('同步失败（不是掉线）：显示「同步失败」，不显示需重登，也没有红底', (tester) async {
-    await pumpBar(tester, {'pdd': ok, 'jd': ok, 'taobao': PlatformAuthStatus.syncFailed});
+    await pumpBar(tester, {
+      'pdd': ok,
+      'jd': ok,
+      'taobao': PlatformAuthStatus.syncFailed,
+    });
     expect(find.text('淘宝 同步失败'), findsOneWidget);
     expect(find.textContaining('需重登'), findsNothing);
-    expect(barColor(tester), Colors.transparent);
+    expect(barColor(tester), GlassTokens.fillSoft);
   });
 
   testWidgets('读屏每个平台只读一遍，点击区域不小于 44', (tester) async {
     final handle = tester.ensureSemantics();
-    await pumpBar(tester, {'pdd': ok, 'jd': ok, 'taobao': PlatformAuthStatus.needsRelogin});
+    await pumpBar(tester, {
+      'pdd': ok,
+      'jd': ok,
+      'taobao': PlatformAuthStatus.needsRelogin,
+    });
     expect(find.bySemanticsLabel('淘宝 需重登'), findsOneWidget);
     for (final e in find.byType(InkWell).evaluate()) {
-      expect(tester.getSize(find.byWidget(e.widget)).height, greaterThanOrEqualTo(44));
+      expect(
+        tester.getSize(find.byWidget(e.widget)).height,
+        greaterThanOrEqualTo(44),
+      );
     }
     handle.dispose();
   });
