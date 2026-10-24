@@ -1,4 +1,4 @@
-// 首页待取件按驿站、在途扁平：provider 切分口径。
+// 首页待取件按取件点、在途扁平：provider 切分口径。
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:pickup_app/core/engine/station_grouping.dart';

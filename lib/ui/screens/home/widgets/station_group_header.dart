@@ -1,4 +1,4 @@
-/// 首页待取件驿站分组标题：站名 + 件数，点一下折叠/展开。
+/// 首页待取件取件点分组标题：站名 + 件数，点一下折叠/展开。
 library;
 
 import 'package:flutter/material.dart';

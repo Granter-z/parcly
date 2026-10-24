@@ -1,4 +1,4 @@
-/// 首页「待取件」按驿站分组（P4，见 docs/pickup_app-界面.md 第 3 节）。
+/// 首页「待取件」按快递取件点分组（P4 / P28，见 docs/pickup_app-界面.md 第 3 节）。
 ///
 /// 纯 Dart，不依赖 Flutter，方便单测。
 library;
@@ -9,10 +9,19 @@ import '../models/package_status.dart';
 /// 到站超过这个时长就标「快过期」。
 const Duration nearlyOverdueAfter = Duration(days: 3);
 
-/// 没有驿站信息时的组名。
-const String unknownStationName = '未知驿站';
+/// 没有取件点信息时的组名（P28：原「未知驿站」）。
+const String unknownStationName = '未知取件点';
 
-/// 一个驿站分组：显示名 + 组内包裹（到站从早到晚，不知道到站时间的排后面）。
+/// 旧版未知组文案，合并/分组时与 [unknownStationName] 同等对待，避免拆组。
+const String legacyUnknownStationName = '未知驿站';
+
+/// 是否为「未知取件点」标签（空串 / 新旧文案）。
+bool isUnknownStationLabel(String? name) {
+  final n = (name ?? '').trim();
+  return n.isEmpty || n == unknownStationName || n == legacyUnknownStationName;
+}
+
+/// 一个取件点分组：显示名 + 组内包裹（到站从早到晚，不知道到站时间的排后面）。
 class StationGroup {
   final String name;
   final List<Package> packages;
@@ -34,7 +43,7 @@ bool isNearlyOverdue(Package p, DateTime now) {
   return arrived != null && now.difference(arrived) > nearlyOverdueAfter;
 }
 
-/// 包裹的驿站组名：只用 stationName，没有返回空串（归进「未知驿站」）。
+/// 包裹的取件点组名：只用 stationName，没有返回空串（归进「未知取件点」）。
 ///
 /// 不用 location：京东的 location 可能是收货地址，不能显示在首页（技术负责人 10-07 定）。
 String stationLabelOf(Package p) => (p.stationName ?? '').trim();
@@ -45,7 +54,7 @@ bool isAwaitingPickup(Package p) {
   return p.status.isPending && p.status != PackageStatus.pendingShipment && p.pickupCode.trim().isNotEmpty;
 }
 
-/// 比较用的驿站名：去掉所有空白，全角字符转半角，英文转小写。
+/// 比较用的取件点名：去掉所有空白，全角字符转半角，英文转小写。
 String normalizeStationName(String raw) {
   final buf = StringBuffer();
   for (final rune in raw.runes) {
@@ -59,12 +68,12 @@ String normalizeStationName(String raw) {
   return buf.toString().toLowerCase();
 }
 
-/// 把待取件（见 [isAwaitingPickup]）的包裹按驿站分组。
+/// 把待取件（见 [isAwaitingPickup]）的包裹按取件点分组。
 ///
-/// - 规范化后同名的算同一个驿站，显示名用组里第一个出现的写法；
+/// - 规范化后同名的算同一个取件点，显示名用组里第一个出现的写法；
 /// - 组内按到站时间从早到晚；
 /// - 组按最早到站时间从早到晚（等得越久越靠前）；
-/// - 没有驿站信息的放进「未知驿站」，永远排最后；
+/// - 没有取件点信息的放进「未知取件点」，永远排最后；
 /// - 不是待取件的包裹不参与分组。
 List<StationGroup> groupPackagesByStation(List<Package> packages) {
   final named = <String, List<Package>>{};
@@ -74,6 +83,11 @@ List<StationGroup> groupPackagesByStation(List<Package> packages) {
   for (final p in packages) {
     if (!isAwaitingPickup(p)) continue;
     final label = stationLabelOf(p);
+    // 空串 / 「未知取件点」/ 旧「未知驿站」一律进未知组，避免字面量残留拆组（P28-b）
+    if (isUnknownStationLabel(label)) {
+      unknown.add(p);
+      continue;
+    }
     final key = normalizeStationName(label);
     if (key.isEmpty) {
       unknown.add(p);

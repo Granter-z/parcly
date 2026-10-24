@@ -173,14 +173,16 @@ class Package {
       return '运输途中';
     }
 
-    // 包裹已到达：优先显示驿站信息
-    if (stationName != null && stationName!.isNotEmpty && stationName != '未知驿站') {
-      // 确定是驿站
-      if (location.isNotEmpty) return '$stationName · $location';
-      return stationName!;
+    // 包裹已到达：优先显示取件点信息（排除未知组文案，含旧「未知驿站」）
+    final station = stationName?.trim() ?? '';
+    if (station.isNotEmpty &&
+        station != '未知取件点' &&
+        station != '未知驿站') {
+      if (location.isNotEmpty) return '$station · $location';
+      return station;
     }
 
-    // 包裹已到达但不是驿站：显示取货地点
+    // 包裹已到达但无明确取件点名：显示取货地点
     if (location.isNotEmpty && originalStation.isNotEmpty) return '$originalStation · $location';
     if (location.isNotEmpty) return location;
     if (originalStation.isNotEmpty) return originalStation;

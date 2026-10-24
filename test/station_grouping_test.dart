@@ -124,7 +124,7 @@ void main() {
       expect(ids(groups[1]), ['x1', 'x2']);
     });
 
-    test('没有 stationName 的进「未知驿站」并排最后', () {
+    test('没有 stationName 的进「未知取件点」并排最后', () {
       final groups = groupPackagesByStation([
         pkg('u', location: '示例路 1 号', arrivedAt: DateTime(2026, 9, 1)),
         pkg('a', station: '驿站A', arrivedAt: DateTime(2026, 10, 3)),
@@ -132,6 +132,27 @@ void main() {
       ]);
       expect(groups.map((g) => g.name), ['驿站A', unknownStationName]);
       expect(ids(groups.last), ['u', 'b']);
+    });
+
+    test('旧文案「未知驿站」与空名并入同一未知取件点组', () {
+      final groups = groupPackagesByStation([
+        pkg('legacy', station: legacyUnknownStationName, arrivedAt: DateTime(2026, 10, 1)),
+        pkg('empty', arrivedAt: DateTime(2026, 10, 2)),
+        pkg('newLabel', station: unknownStationName, arrivedAt: DateTime(2026, 10, 3)),
+        pkg('named', station: '丰巢柜 · 东门', arrivedAt: DateTime(2026, 10, 4)),
+      ]);
+      expect(groups.map((g) => g.name), ['丰巢柜 · 东门', unknownStationName]);
+      expect(ids(groups.last), ['legacy', 'empty', 'newLabel']);
+    });
+
+    test('分组键只用 stationName，不用 location', () {
+      final groups = groupPackagesByStation([
+        pkg('a', station: '同名点', location: '地址甲', arrivedAt: DateTime(2026, 10, 1)),
+        pkg('b', station: '同名点', location: '地址乙', arrivedAt: DateTime(2026, 10, 2)),
+      ]);
+      expect(groups, hasLength(1));
+      expect(groups.single.name, '同名点');
+      expect(ids(groups.single), ['a', 'b']);
     });
 
     test('绝不拿 addedAt 顶替：只有 arrivedAt 参与排序与快过期', () {
