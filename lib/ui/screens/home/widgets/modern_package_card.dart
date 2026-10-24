@@ -203,9 +203,10 @@ class ModernPackageCard extends ConsumerWidget {
                 Expanded(
                   child: isArrived && package.pickupCode.isNotEmpty
                       ? Wrap(
+                          // P38：徽标固有宽完整显示；放不下时单独换行，勿再 Flexible/ellipsis
                           crossAxisAlignment: WrapCrossAlignment.center,
                           spacing: AppSpacing.sm,
-                          runSpacing: 6,
+                          runSpacing: 8,
                           children: [
                             const Text(
                               '取件码',

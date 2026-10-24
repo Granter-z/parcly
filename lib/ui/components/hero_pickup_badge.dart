@@ -86,23 +86,25 @@ class _HeroPickupBadgeState extends State<HeroPickupBadge> {
             vertical: widget.isLarge ? AppSpacing.sm : 6,
           ),
           decoration: BoxDecoration(color: fill, borderRadius: AppRadius.xsAll),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(
-                _isCopied ? Icons.check_rounded : Icons.copy_rounded,
-                size: fontSize * 0.8,
-                color: Colors.white,
-              ),
-              const SizedBox(width: 6),
-              // 徽标可能被放进很窄的容器（详情抽屉里它和驿站信息并排）。
-              // 允许文字收缩并省略，好过整块 Row 直接报溢出 —— 点击复制仍拿到完整取件码。
-              Flexible(
-                child: AnimatedCrossFade(
+          // P38：去掉内部 Flexible+ellipsis。徽标以完整码固有宽参与布局；
+          // 父级给出有界 maxWidth 时 FittedBox 才略缩小，优先一眼可读。
+          child: FittedBox(
+            fit: BoxFit.scaleDown,
+            alignment: Alignment.centerLeft,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  _isCopied ? Icons.check_rounded : Icons.copy_rounded,
+                  size: fontSize * 0.8,
+                  color: Colors.white,
+                ),
+                const SizedBox(width: 6),
+                AnimatedCrossFade(
                   firstChild: Text(
                     widget.pickupCode,
                     maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
+                    softWrap: false,
                     style: TextStyle(
                       fontSize: fontSize,
                       fontWeight: FontWeight.w800,
@@ -115,7 +117,7 @@ class _HeroPickupBadgeState extends State<HeroPickupBadge> {
                   secondChild: Text(
                     '已复制',
                     maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
+                    softWrap: false,
                     style: TextStyle(
                       fontSize: fontSize * 0.85,
                       fontWeight: FontWeight.w700,
@@ -127,8 +129,8 @@ class _HeroPickupBadgeState extends State<HeroPickupBadge> {
                       : CrossFadeState.showFirst,
                   duration: Motion.of(context, Motion.fast),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),

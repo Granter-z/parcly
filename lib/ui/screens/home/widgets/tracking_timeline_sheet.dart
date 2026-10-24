@@ -364,6 +364,7 @@ class _TrackingTimelineSheetState extends State<TrackingTimelineSheet> {
                     ),
 
                     // ── 模块 4：取件码突出展示（若已到驿站） ──
+                    // P38：纵排，避免大号徽标与驿站名横排抢宽把文案挤成竖排截断。
                     if (pkg.pickupCode.isNotEmpty) ...[
                       const SizedBox(height: 12),
                       Container(
@@ -375,42 +376,39 @@ class _TrackingTimelineSheetState extends State<TrackingTimelineSheet> {
                             color: const Color(0xFF007AFF).withValues(alpha: 0.22),
                           ),
                         ),
-                        child: Row(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
                           children: [
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  const Text(
-                                    '取件凭证',
-                                    style: TextStyle(
-                                      fontSize: 12,
-                                      fontWeight: FontWeight.w500,
-                                      color: Color(0xFF007AFF),
-                                    ),
-                                  ),
-                                  const SizedBox(height: 2),
-                                  Text(
-                                    _credentialLocation(pkg),
-                                    style: const TextStyle(
-                                      fontSize: 13.5,
-                                      fontWeight: FontWeight.bold,
-                                    ),
-                                    maxLines: 2,
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
-                                  // 驿站/派送员电话：从最新轨迹节点里提取，点一下直接拨打
-                                  if (stationPhone != null) ...[
-                                    const SizedBox(height: 6),
-                                    _buildCallButton(stationPhone),
-                                  ],
-                                ],
+                            const Text(
+                              '取件凭证',
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w500,
+                                color: Color(0xFF007AFF),
                               ),
                             ),
-                            const SizedBox(width: 10),
-                            HeroPickupBadge(
-                              pickupCode: pkg.pickupCode,
-                              isLarge: true,
+                            const SizedBox(height: 2),
+                            Text(
+                              _credentialLocation(pkg),
+                              style: const TextStyle(
+                                fontSize: 13.5,
+                                fontWeight: FontWeight.bold,
+                              ),
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            // 驿站/派送员电话：从最新轨迹节点里提取，点一下直接拨打
+                            if (stationPhone != null) ...[
+                              const SizedBox(height: 6),
+                              _buildCallButton(stationPhone),
+                            ],
+                            const SizedBox(height: 10),
+                            Align(
+                              alignment: Alignment.centerLeft,
+                              child: HeroPickupBadge(
+                                pickupCode: pkg.pickupCode,
+                                isLarge: true,
+                              ),
                             ),
                           ],
                         ),
