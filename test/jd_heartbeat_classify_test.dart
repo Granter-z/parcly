@@ -17,10 +17,10 @@ void main() {
   });
 
   group('JdHeartbeat.classifyResponse', () {
-    test('200 + 登录关键词 → authFailure', () {
+    test('200 + 请登录硬文案 → authFailure', () {
       final r = JdHeartbeat.classifyResponse(
         statusCode: 200,
-        body: '请登录后再查看订单',
+        body: '请登录后再查看',
       );
       expect(r.success, isFalse);
       expect(r.isAuthFailure, isTrue);
@@ -53,6 +53,73 @@ void main() {
         JdHeartbeat.classifyResponse(statusCode: 500, body: '').isAuthFailure,
         isFalse,
       );
+    });
+
+    // --- P36-b′：硬 / 软 / 订单阳性 ---
+
+    test('P36-b′：SPA 壳含 plogin.m.jd.com + title 订单 → success（本案复现）', () {
+      // plogin 子串会命中 login.m.jd.com，但是软信号；订单阳性优先 success
+      const body =
+          '<html><head><title>订单</title>'
+          '<script src="//plogin.m.jd.com/user/login.js"></script>'
+          '</head><body>我的订单列表</body></html>';
+      final r = JdHeartbeat.classifyResponse(statusCode: 200, body: body);
+      expect(r.success, isTrue);
+      expect(r.isAuthFailure, isFalse);
+    });
+
+    test('P36-b′：200 + login.m.jd.com SPA 壳、无订单 → 非 authFailure', () {
+      final r = JdHeartbeat.classifyResponse(
+        statusCode: 200,
+        body: '<script>var u="//login.m.jd.com/oauth";</script><div>loading</div>',
+      );
+      expect(r.success, isFalse);
+      expect(r.isAuthFailure, isFalse);
+      expect(r.errorMessage, contains('软信号'));
+    });
+
+    test('P36-b′：200 + passport.jd.com 壳、无订单 → 非 authFailure', () {
+      final r = JdHeartbeat.classifyResponse(
+        statusCode: 200,
+        body: 'cdn passport.jd.com/script.js bootstrap',
+      );
+      expect(r.isAuthFailure, isFalse);
+      expect(r.success, isFalse);
+    });
+
+    test('P36-b′：200 + "isLogin":false → authFailure', () {
+      final r = JdHeartbeat.classifyResponse(
+        statusCode: 200,
+        body: '{"isLogin":false,"msg":"need login"}',
+      );
+      expect(r.isAuthFailure, isTrue);
+      expect(r.success, isFalse);
+    });
+
+    test('P36-b′：200 + "loginFlag":false → authFailure', () {
+      final r = JdHeartbeat.classifyResponse(
+        statusCode: 200,
+        body: '{"loginFlag":false}',
+      );
+      expect(r.isAuthFailure, isTrue);
+    });
+
+    test('P36-b′：硬 auth 与订单词并存 → 硬优先 authFailure', () {
+      final r = JdHeartbeat.classifyResponse(
+        statusCode: 200,
+        body: '请登录后查看订单 orderList',
+      );
+      expect(r.isAuthFailure, isTrue);
+      expect(r.success, isFalse);
+    });
+
+    test('P36-b′：302 Location 含 plogin → authFailure', () {
+      final r = JdHeartbeat.classifyResponse(
+        statusCode: 302,
+        body: '',
+        location: 'https://plogin.m.jd.com/login/login',
+      );
+      expect(r.isAuthFailure, isTrue);
     });
   });
 
@@ -136,6 +203,25 @@ void main() {
       );
       expect(combined.isAuthFailure, isFalse);
       expect(combined.success, isFalse);
+    });
+
+    test('P36-b′：wqs login-like + trade soft → 非 auth，不得 touchExpired', () {
+      final tradeSoft = HeartbeatResult.failure(
+        '无法确认登录态（软信号，不 expire）',
+        isAuthFailure: false,
+      );
+      final combined = JdHeartbeat.combineDualProbe(
+        wqs: auth(),
+        trade: tradeSoft,
+      );
+      expect(combined.success, isFalse);
+      expect(combined.isAuthFailure, isFalse);
+
+      final plan = planKeepAliveOutcome(
+        kind: KeepAliveOutcomeKind.networkFailure,
+        currentFailureCount: 0,
+      );
+      expect(plan.touchExpired, isFalse);
     });
   });
 }
