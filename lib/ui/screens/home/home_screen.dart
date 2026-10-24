@@ -19,7 +19,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../providers/package_provider.dart';
 import '../../../core/engine/station_grouping.dart';
-import '../../../app/hero_decision.dart';
 import '../../../core/engine/platform_auth_status.dart'
     show kLoginExpiredSignals, PlatformAuthStatus;
 import '../../../platform/connectors/connector_manager.dart';
@@ -156,7 +155,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     final stationGroups = ref.watch(groupedPendingPackagesProvider);
     final inTransitPackages = ref.watch(inTransitPackagesProvider);
     final completedPackages = ref.watch(completedPackagesProvider);
-    final decision = ref.watch(heroDecisionProvider);
     final isSyncing = ref.watch(syncStateProvider);
     // 全部未绑定只加横幅，绝不整页盖住本地包裹（#9 修好后 #15 曾丢掉状态条，这里一并恢复）。
     final allUnbound = kPlatforms.every(
@@ -243,15 +241,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                   // 拼多多内置商城：全页唯一入口
                   SliverToBoxAdapter(child: _buildPddEntry()),
 
-                  // 列表标题栏 + 构成明细
-                  SliverToBoxAdapter(
-                    child: _buildListHeader(
-                      pickupCount,
-                      inTransitPackages.length,
-                      completedPackages.length,
-                      decision,
+                  // 无待取/在途但有已完成：保留右侧已完成入口
+                  if (!hasPending && completedPackages.isNotEmpty)
+                    SliverToBoxAdapter(
+                      child: _completedOnlyBar(completedPackages.length),
                     ),
-                  ),
 
                   // 空状态：仅在无待取/在途时出现
                   SliverToBoxAdapter(
@@ -273,9 +267,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                   ),
 
                   // ② 待取件：按取件点分组（arrivedAt 排序 / 快过期由卡片读）
+                  // 已完成胶囊挂在首个分区行右侧，去掉「待取与在途」重复层
                   if (pickupCount > 0) ...[
                     SliverToBoxAdapter(
-                      child: _sectionTitle('待取件', pickupCount),
+                      child: _sectionTitle(
+                        '待取件',
+                        pickupCount,
+                        completedCount: completedPackages.length,
+                      ),
                     ),
                     for (final group in stationGroups)
                       ..._stationGroupSlivers(group),
@@ -284,7 +283,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                   // ③ 在途：扁平列表，不按取件点分组
                   if (inTransitPackages.isNotEmpty) ...[
                     SliverToBoxAdapter(
-                      child: _sectionTitle('在途', inTransitPackages.length),
+                      child: _sectionTitle(
+                        '在途',
+                        inTransitPackages.length,
+                        completedCount:
+                            pickupCount == 0 ? completedPackages.length : 0,
+                      ),
                     ),
                     AnimatedPackageList(
                       packages: inTransitPackages,
@@ -314,8 +318,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     );
   }
 
-  /// 分区小标题（待取件 / 在途）。
-  Widget _sectionTitle(String label, int count) {
+  /// 分区小标题（待取件 / 在途）；可选右侧「已完成」胶囊。
+  Widget _sectionTitle(
+    String label,
+    int count, {
+    int completedCount = 0,
+  }) {
     final text = Theme.of(context).textTheme;
     return Padding(
       padding: const EdgeInsets.fromLTRB(
@@ -324,7 +332,69 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
         AppSpacing.xl,
         AppSpacing.sm,
       ),
-      child: Text('$label ($count)', style: text.titleMedium),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text('$label ($count)', style: text.titleMedium),
+          if (completedCount > 0) _completedChip(completedCount),
+        ],
+      ),
+    );
+  }
+
+  /// 空态上方：仅右侧已完成入口（无待取/在途时）。
+  Widget _completedOnlyBar(int completedCount) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(
+        AppSpacing.xl,
+        AppSpacing.md,
+        AppSpacing.xl,
+        AppSpacing.sm,
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.end,
+        children: [_completedChip(completedCount)],
+      ),
+    );
+  }
+
+  Widget _completedChip(int completedCount) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: () {
+          HapticFeedback.lightImpact();
+          CompletedPackagesSheet.show(context);
+        },
+        borderRadius: GlassTokens.radiusCapsuleAll,
+        child: LightGlassSurface(
+          padding: const EdgeInsets.symmetric(
+            horizontal: 10,
+            vertical: 6,
+          ),
+          borderRadius: GlassTokens.radiusCapsuleAll,
+          blurSigma: 22,
+          boxShadow: GlassTokens.lightGlassShadow,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                '已完成 ($completedCount)',
+                style: const TextStyle(
+                  fontSize: 13,
+                  color: AppColors.primaryStrong,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const Icon(
+                Icons.chevron_right_rounded,
+                size: 16,
+                color: AppColors.primaryStrong,
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 
@@ -517,90 +587,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
             ),
           ),
         ),
-      ),
-    );
-  }
-
-  /// 列表标题栏：标题 + 件数，第二行是构成明细。
-  ///
-  /// 明细原先挤在 Hero 里（三个数字 + 两根竖分隔线），把 Hero 变成了功能清单。
-  /// 它描述的是列表构成，放在列表标题下更贴切。
-  Widget _buildListHeader(
-    int pickupCount,
-    int inTransitCount,
-    int completedCount,
-    HeroDecision decision,
-  ) {
-    final parts = <String>[
-      if (pickupCount > 0) '$pickupCount 件待取',
-      if (decision.deliveringCount > 0) '${decision.deliveringCount} 件派送中',
-      if (decision.transitCount > 0) '${decision.transitCount} 件在途',
-      if (decision.pendingShipmentCount > 0)
-        '${decision.pendingShipmentCount} 件待发货',
-    ];
-    final text = Theme.of(context).textTheme;
-    final total = pickupCount + inTransitCount;
-
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(
-        AppSpacing.xl,
-        0,
-        AppSpacing.xl,
-        AppSpacing.sm,
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text('待取与在途快件 ($total)', style: text.titleLarge),
-              if (completedCount > 0)
-                Material(
-                  color: Colors.transparent,
-                  child: InkWell(
-                    onTap: () {
-                      HapticFeedback.lightImpact();
-                      CompletedPackagesSheet.show(context);
-                    },
-                    borderRadius: GlassTokens.radiusCapsuleAll,
-                    child: LightGlassSurface(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 10,
-                        vertical: 6,
-                      ),
-                      borderRadius: GlassTokens.radiusCapsuleAll,
-                      blurSigma: 22,
-                      boxShadow: GlassTokens.lightGlassShadow,
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Text(
-                            '已完成 ($completedCount)',
-                            style: const TextStyle(
-                              fontSize: 13,
-                              color: AppColors.primaryStrong,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                          const Icon(
-                            Icons.chevron_right_rounded,
-                            size: 16,
-                            color: AppColors.primaryStrong,
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-            ],
-          ),
-          if (parts.isNotEmpty) ...[
-            const SizedBox(height: AppSpacing.xs),
-            // 用间距分组，不用中点分隔符堆一行
-            Text(parts.join('    '), style: text.bodySmall),
-          ],
-        ],
       ),
     );
   }

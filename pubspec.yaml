@@ -1,7 +1,7 @@
 name: pickup_app
 description: iOS-style pickup management app
 publish_to: 'none'
-version: 1.0.0+2
+version: 1.0.0+3
 
 environment:
   sdk: ^3.6.0
