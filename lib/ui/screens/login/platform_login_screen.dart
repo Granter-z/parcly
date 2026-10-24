@@ -440,17 +440,17 @@ class _PlatformLoginScreenState extends State<PlatformLoginScreen> {
       await _rememberEntryUrl();
 
       HapticFeedback.mediumImpact();
-      if (mounted) {
-        if (!silent) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('${widget.displayName} 账号绑定成功！'),
-              behavior: SnackBarBehavior.floating,
-            ),
-          );
-          Navigator.of(context).pop(true);
-        }
+      if (!mounted) return;
+      // P27：成功瞬间必须离开登录页（含 onPageFinished 静默检测路径）
+      if (!silent) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('${widget.displayName} 账号绑定成功！'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
       }
+      Navigator.of(context).pop(true);
     } catch (e) {
       if (!silent && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(

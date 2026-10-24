@@ -35,6 +35,7 @@ Future<int> syncSinglePlatform(WidgetRef ref, String platform) {
 /// 打开某个平台的登录（或重新登录）页面。登录成功返回 true。
 ///
 /// 成功后清掉旧的失效提示、刷新登录状态，并只同步这个平台（三个平台一样）。
+/// P27：成功后 pop 到根路由（默认回首页）；失败/取消不跳转。
 Future<bool> openPlatformLogin(
   BuildContext context,
   WidgetRef ref, {
@@ -45,10 +46,18 @@ Future<bool> openPlatformLogin(
   final manager = ref.read(connectorManagerProvider);
   final bool ok;
   if (platform.toLowerCase() == 'pdd') {
-    // 拼多多登录页是 WebView，没有返回值；回来后看登录态有没有恢复。
-    await PddWebScreen.open(context, url: 'https://mobile.yangkeduo.com/login.html');
-    final store = PlatformAuthStore();
-    ok = store.isBound(platform) && !store.isExpired(platform);
+    // P27：登录意图打开时，检测到有效会话后自动 pop(true)；取消/失败不误跳。
+    final result = await PddWebScreen.open(
+      context,
+      url: 'https://mobile.yangkeduo.com/login.html',
+      popOnLoginSuccess: true,
+    );
+    if (result == true) {
+      ok = true;
+    } else {
+      final store = PlatformAuthStore();
+      ok = store.isBound(platform) && !store.isExpired(platform);
+    }
   } else {
     ok = await PlatformLoginScreen.show(
           context,
@@ -65,5 +74,9 @@ Future<bool> openPlatformLogin(
   manager.clearLastIssueFor(platform);
   ref.invalidate(platformAuthStatusProvider);
   syncSinglePlatform(ref, platform);
+  // P27-b：默认回首页（从设置进的也 pop 到根 Navigator）
+  if (context.mounted) {
+    Navigator.of(context).popUntil((route) => route.isFirst);
+  }
   return true;
 }

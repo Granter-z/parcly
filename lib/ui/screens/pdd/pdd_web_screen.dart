@@ -25,12 +25,27 @@ import '../../providers/package_provider.dart';
 class PddWebScreen extends ConsumerStatefulWidget {
   final String? initialUrl;
 
-  const PddWebScreen({super.key, this.initialUrl});
+  /// 为 true 时：登录流程打开，首次检测到有效会话后自动关闭并 `pop(true)`（P27）。
+  /// 浏览入口（首页「打开拼多多」）保持 false，不自动关。
+  final bool popOnLoginSuccess;
 
-  static Future<void> open(BuildContext context, {String? url}) {
-    return Navigator.of(context).push(
+  const PddWebScreen({
+    super.key,
+    this.initialUrl,
+    this.popOnLoginSuccess = false,
+  });
+
+  static Future<bool?> open(
+    BuildContext context, {
+    String? url,
+    bool popOnLoginSuccess = false,
+  }) {
+    return Navigator.of(context).push<bool>(
       MaterialPageRoute(
-        builder: (_) => PddWebScreen(initialUrl: url),
+        builder: (_) => PddWebScreen(
+          initialUrl: url,
+          popOnLoginSuccess: popOnLoginSuccess,
+        ),
       ),
     );
   }
@@ -98,6 +113,9 @@ class _PddWebScreenState extends ConsumerState<PddWebScreen>
   String? _lastWxPayRefererUrl;
   bool _isWaitingPaymentReturn = false;
   String _currentPaymentName = '支付';
+
+  /// P27：登录成功自动 pop 只触发一次，避免重复 pop。
+  bool _didAutoPopLogin = false;
 
   static const String _defaultHomeUrl = 'https://mobile.yangkeduo.com/';
   static const String _ordersUrl = 'https://mobile.yangkeduo.com/orders.html?tab=0';
@@ -584,14 +602,25 @@ class _PddWebScreenState extends ConsumerState<PddWebScreen>
       final hasToken = markers.any(merged.contains);
 
       if (hasToken) {
-        await PlatformAuthStore().saveCookies('pdd', merged);
+        final store = PlatformAuthStore();
+        final alreadyOk = store.isBound('pdd') && !store.isExpired('pdd');
+        await store.saveCookies('pdd', merged);
+        await store.setExpired('pdd', false);
         final currentHref = await _controller.runJavaScriptReturningResult('location.href');
         var hrefStr = currentHref.toString();
         if (hrefStr.startsWith('"') && hrefStr.endsWith('"')) {
           hrefStr = hrefStr.substring(1, hrefStr.length - 1);
         }
         if (hrefStr.startsWith('http') && !hrefStr.contains('login')) {
-          await PlatformAuthStore().saveEntryUrl('pdd', hrefStr);
+          await store.saveEntryUrl('pdd', hrefStr);
+        }
+        // P27：登录意图下，从非健康态首次拿到会话后立刻离开登录 WebView
+        if (widget.popOnLoginSuccess &&
+            !alreadyOk &&
+            !_didAutoPopLogin &&
+            mounted) {
+          _didAutoPopLogin = true;
+          Navigator.of(context).pop(true);
         }
       }
     } catch (e) {
@@ -799,8 +828,9 @@ class _PddWebScreenState extends ConsumerState<PddWebScreen>
     HapticFeedback.lightImpact();
     await _sniffCurrentPageLogistics();
     await _collectAndSaveCookies();
-    if (mounted) {
-      Navigator.of(context).pop();
+    // 若 _collectAndSaveCookies 已因登录成功 auto-pop，则不再二次 pop
+    if (mounted && !_didAutoPopLogin) {
+      Navigator.of(context).pop(widget.popOnLoginSuccess ? false : null);
     }
   }
 
@@ -813,8 +843,8 @@ class _PddWebScreenState extends ConsumerState<PddWebScreen>
       onPopInvokedWithResult: (didPop, result) async {
         if (didPop) return;
         final shouldPop = await _handleBackPress();
-        if (shouldPop && context.mounted) {
-          Navigator.of(context).pop();
+        if (shouldPop && context.mounted && !_didAutoPopLogin) {
+          Navigator.of(context).pop(widget.popOnLoginSuccess ? false : null);
         }
       },
       child: Scaffold(
