@@ -556,33 +556,40 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
             children: [
               Text('待取与在途快件 ($total)', style: text.titleLarge),
               if (completedCount > 0)
-                InkWell(
-                  onTap: () {
-                    HapticFeedback.lightImpact();
-                    CompletedPackagesSheet.show(context);
-                  },
-                  borderRadius: AppRadius.xsAll,
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 6,
-                      vertical: AppSpacing.xs,
-                    ),
-                    child: Row(
-                      children: [
-                        Text(
-                          '已完成 ($completedCount)',
-                          style: const TextStyle(
-                            fontSize: 13,
-                            color: AppColors.primaryStrong,
-                            fontWeight: FontWeight.w600,
+                Material(
+                  color: Colors.transparent,
+                  child: InkWell(
+                    onTap: () {
+                      HapticFeedback.lightImpact();
+                      CompletedPackagesSheet.show(context);
+                    },
+                    borderRadius: GlassTokens.radiusCapsuleAll,
+                    child: LightGlassSurface(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 6,
+                      ),
+                      borderRadius: GlassTokens.radiusCapsuleAll,
+                      blurSigma: 22,
+                      boxShadow: GlassTokens.lightGlassShadow,
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            '已完成 ($completedCount)',
+                            style: const TextStyle(
+                              fontSize: 13,
+                              color: AppColors.primaryStrong,
+                              fontWeight: FontWeight.w600,
+                            ),
                           ),
-                        ),
-                        const Icon(
-                          Icons.chevron_right_rounded,
-                          size: 16,
-                          color: AppColors.primaryStrong,
-                        ),
-                      ],
+                          const Icon(
+                            Icons.chevron_right_rounded,
+                            size: 16,
+                            color: AppColors.primaryStrong,
+                          ),
+                        ],
+                      ),
                     ),
                   ),
                 ),
