@@ -140,7 +140,11 @@ class TaobaoHeartbeat implements PlatformHeartbeat {
   }
 }
 
-/// 京东心跳
+/// 京东心跳（P36-b：双探，以 trade 为失效真相源）
+///
+/// wqs 与同步用的 trade.m.jd.com 常不一致；仅当 **trade** 也要求登录才
+/// `isAuthFailure:true`（进而 setExpired）。wqs 单边像登录 → 记不确定/
+/// 网络失败，不立刻 expire。
 class JdHeartbeat implements PlatformHeartbeat {
   static const _ua =
       'Mozilla/5.0 (Linux; Android 14; 25102RKBEC Build/UP1A.231005.007) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36';
@@ -148,7 +152,14 @@ class JdHeartbeat implements PlatformHeartbeat {
   @override
   String get platformId => 'jd';
 
-  /// 根据 HTTP 状态 / 响应体 / Location 判定心跳结局（纯函数，可单测）
+  /// 历史探活端点（wqs）；P36-b 仍探测，但不再单独决定失效
+  static const probeUrl = 'https://wqs.jd.com/order/orderlist_jdm.shtml';
+
+  /// 与同步 WebView 一致的订单列表（失效真相源）
+  static const tradeProbeUrl =
+      'https://trade.m.jd.com/order/orderlist_jdm.shtml';
+
+  /// 根据 HTTP 状态 / 响应体 / Location 判定单次探活结局（纯函数，可单测）
   static HeartbeatResult classifyResponse({
     required int statusCode,
     required String body,
@@ -184,19 +195,64 @@ class JdHeartbeat implements PlatformHeartbeat {
     return HeartbeatResult.failure('HTTP $statusCode', isAuthFailure: false);
   }
 
+  /// 合并 wqs + trade 双探结果（纯函数，可单测）
+  ///
+  /// - trade 成功 → 成功（即使 wqs 像登录，P36-a 已坐实误标）
+  /// - trade 明确要登录 → authFailure（才可 setExpired）
+  /// - wqs 单边像登录且 trade 未确认 → 非 auth（→ networkFailure/uncertain）
+  /// - 其余网络/异常 → 非 auth
+  static HeartbeatResult combineDualProbe({
+    required HeartbeatResult wqs,
+    required HeartbeatResult trade,
+  }) {
+    if (trade.success) {
+      if (wqs.isAuthFailure) {
+        // 保留 success；文案留给日志；errorMessage 在 success 时通常不用
+        return HeartbeatResult.success();
+      }
+      return HeartbeatResult.success();
+    }
+
+    if (trade.isAuthFailure) {
+      return HeartbeatResult.failure(
+        '登录态已失效（trade 要求登录）',
+        isAuthFailure: true,
+      );
+    }
+
+    // trade 网络/不确定
+    if (wqs.isAuthFailure) {
+      return HeartbeatResult.failure(
+        '登录态不确定（wqs 像登录但 trade 未确认）',
+        isAuthFailure: false,
+      );
+    }
+    if (wqs.success) {
+      // trade 抖但 wqs 活着：不 expire；按网络失败累计，避免误标
+      return HeartbeatResult.failure(
+        'trade 探活未确认（wqs 正常）: ${trade.errorMessage ?? "未知"}',
+        isAuthFailure: false,
+      );
+    }
+
+    return HeartbeatResult.failure(
+      '网络错误（wqs: ${wqs.errorMessage ?? "?"} / trade: ${trade.errorMessage ?? "?"})',
+      isAuthFailure: false,
+    );
+  }
+
   /// 网络抖动短重试间隔（socket/超时最多再试 1 次再落盘）
   static const _networkRetryDelay = Duration(milliseconds: 400);
 
-  /// 既定探活端点（与同步 WebView 的 trade.m.jd.com 分工不同，勿擅自改域名）
-  static const probeUrl = 'https://wqs.jd.com/order/orderlist_jdm.shtml';
-
-  Future<HeartbeatResult> _probeOnce(String cookies) async {
+  Future<HeartbeatResult> _probeOnce(String url, String cookies) async {
+    final uri = Uri.parse(url);
+    final referer = '${uri.scheme}://${uri.host}/';
     final response = await http.get(
-      Uri.parse(probeUrl),
+      uri,
       headers: {
         'Cookie': cookies,
         'User-Agent': _ua,
-        'Referer': 'https://wqs.jd.com/',
+        'Referer': referer,
       },
     ).timeout(const Duration(seconds: 10));
 
@@ -207,56 +263,76 @@ class JdHeartbeat implements PlatformHeartbeat {
     );
   }
 
-  @override
-  Future<HeartbeatResult> performHeartbeat(String cookies) async {
-    debugPrint('[KeepAlive] JD heartbeat starting...');
+  /// 单 host 探活：网络/超时短重试 1 次；鉴权结果不重试
+  Future<HeartbeatResult> _probeHost(String url, String cookies, String hostTag) async {
     try {
-      final result = await _probeOnce(cookies);
-      if (result.success) {
-        debugPrint('[KeepAlive] JD heartbeat success');
-      } else if (result.isAuthFailure) {
-        debugPrint('[KeepAlive] JD heartbeat failed: login required');
-      } else {
-        debugPrint('[KeepAlive] JD heartbeat failed: ${result.errorMessage}');
-      }
+      final result = await _probeOnce(url, cookies);
+      _logHost(hostTag, result);
       return result;
     } on TimeoutException {
-      debugPrint('[KeepAlive] JD heartbeat timeout, retry once...');
+      debugPrint('[KeepAlive] JD $hostTag timeout, retry once...');
       await Future.delayed(_networkRetryDelay);
       try {
-        final result = await _probeOnce(cookies);
-        if (result.success) {
-          debugPrint('[KeepAlive] JD heartbeat success (after retry)');
-        } else if (result.isAuthFailure) {
-          debugPrint('[KeepAlive] JD heartbeat failed: login required (after retry)');
-        }
+        final result = await _probeOnce(url, cookies);
+        _logHost(hostTag, result, afterRetry: true);
         return result;
       } on TimeoutException {
-        debugPrint('[KeepAlive] JD heartbeat timeout');
+        debugPrint('[KeepAlive] JD $hostTag timeout');
         return HeartbeatResult.failure('请求超时', isAuthFailure: false);
       } catch (e) {
-        debugPrint('[KeepAlive] JD heartbeat error: $e');
+        debugPrint('[KeepAlive] JD $hostTag error: $e');
         return HeartbeatResult.failure('网络错误: $e', isAuthFailure: false);
       }
     } catch (e) {
-      // socket / ClientException 等：短重试 1 次再落盘；鉴权分类不走此路径
-      debugPrint('[KeepAlive] JD heartbeat error: $e, retry once...');
+      debugPrint('[KeepAlive] JD $hostTag error: $e, retry once...');
       await Future.delayed(_networkRetryDelay);
       try {
-        final result = await _probeOnce(cookies);
-        if (result.success) {
-          debugPrint('[KeepAlive] JD heartbeat success (after retry)');
-        } else if (result.isAuthFailure) {
-          debugPrint('[KeepAlive] JD heartbeat failed: login required (after retry)');
-        }
+        final result = await _probeOnce(url, cookies);
+        _logHost(hostTag, result, afterRetry: true);
         return result;
       } on TimeoutException {
-        debugPrint('[KeepAlive] JD heartbeat timeout');
+        debugPrint('[KeepAlive] JD $hostTag timeout');
         return HeartbeatResult.failure('请求超时', isAuthFailure: false);
       } catch (e2) {
-        debugPrint('[KeepAlive] JD heartbeat error: $e2');
+        debugPrint('[KeepAlive] JD $hostTag error: $e2');
         return HeartbeatResult.failure('网络错误: $e2', isAuthFailure: false);
       }
     }
+  }
+
+  void _logHost(String hostTag, HeartbeatResult result, {bool afterRetry = false}) {
+    final suffix = afterRetry ? ' (after retry)' : '';
+    if (result.success) {
+      debugPrint('[KeepAlive] JD $hostTag OK$suffix');
+    } else if (result.isAuthFailure) {
+      debugPrint('[KeepAlive] JD $hostTag login-like$suffix');
+    } else {
+      debugPrint('[KeepAlive] JD $hostTag fail: ${result.errorMessage}$suffix');
+    }
+  }
+
+  @override
+  Future<HeartbeatResult> performHeartbeat(String cookies) async {
+    debugPrint('[KeepAlive] JD heartbeat starting (dual probe wqs+trade)...');
+    final wqs = await _probeHost(probeUrl, cookies, 'wqs');
+    final trade = await _probeHost(tradeProbeUrl, cookies, 'trade');
+    final combined = combineDualProbe(wqs: wqs, trade: trade);
+
+    if (combined.success) {
+      if (wqs.isAuthFailure) {
+        debugPrint(
+          '[KeepAlive] JD heartbeat success (trade OK; ignored wqs login-like)',
+        );
+      } else {
+        debugPrint('[KeepAlive] JD heartbeat success');
+      }
+    } else if (combined.isAuthFailure) {
+      debugPrint(
+        '[KeepAlive] JD heartbeat failed: login required (host=trade)',
+      );
+    } else {
+      debugPrint('[KeepAlive] JD heartbeat failed: ${combined.errorMessage}');
+    }
+    return combined;
   }
 }

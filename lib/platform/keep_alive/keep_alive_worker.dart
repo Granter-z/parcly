@@ -109,7 +109,7 @@ Future<void> _runBackgroundKeepAlive() async {
     if (kind == KeepAliveOutcomeKind.success) {
       debugPrint('[KeepAliveWorker] $platform refreshed');
     } else if (kind == KeepAliveOutcomeKind.authFailure) {
-      debugPrint('[KeepAliveWorker] $platform login expired');
+      debugPrint('[KeepAliveWorker] $platform login expired: ${result.errorMessage}');
     } else if (kind == KeepAliveOutcomeKind.skipped) {
       debugPrint('[KeepAliveWorker] $platform skipped: ${result.errorMessage}');
     } else {
