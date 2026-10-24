@@ -68,14 +68,44 @@ String normalizeStationName(String raw) {
   return buf.toString().toLowerCase();
 }
 
+/// 把 [aliases]（别名 → 规范显示名）建成规范化查找表；空键/空值跳过。
+///
+/// 生产默认表为空：真机由用户在设置里声明（P28-d）。
+Map<String, String> buildAliasLookup(Map<String, String> aliases) {
+  final out = <String, String>{};
+  for (final e in aliases.entries) {
+    final k = normalizeStationName(e.key);
+    final v = e.value.trim();
+    if (k.isEmpty || v.isEmpty) continue;
+    out[k] = v;
+  }
+  return out;
+}
+
+/// 经别名表得到规范显示名；未命中则返回原 [raw]（去首尾空白）。
+///
+/// 查找键用 [normalizeStationName]，与分组键一致。仍不用 location（P28-d）。
+String resolveCanonicalName(String raw, Map<String, String> aliases) {
+  final trimmed = raw.trim();
+  if (trimmed.isEmpty || aliases.isEmpty) return trimmed;
+  final hit = buildAliasLookup(aliases)[normalizeStationName(trimmed)];
+  return (hit == null || hit.isEmpty) ? trimmed : hit;
+}
+
 /// 把待取件（见 [isAwaitingPickup]）的包裹按取件点分组。
 ///
-/// - 规范化后同名的算同一个取件点，显示名用组里第一个出现的写法；
+/// - 分组前经 [aliases] 映射到规范名，再用规范化键合并（P28-d）；
+/// - 规范化后同名的算同一个取件点，组头显示规范名（或组内首次写法）；
 /// - 组内按到站时间从早到晚；
 /// - 组按最早到站时间从早到晚（等得越久越靠前）；
 /// - 没有取件点信息的放进「未知取件点」，永远排最后；
-/// - 不是待取件的包裹不参与分组。
-List<StationGroup> groupPackagesByStation(List<Package> packages) {
+/// - 不是待取件的包裹不参与分组；
+/// - 仍**不用** location 作键。
+List<StationGroup> groupPackagesByStation(
+  List<Package> packages, {
+  Map<String, String> aliases = const {},
+}) {
+  final lookup = buildAliasLookup(aliases);
   final named = <String, List<Package>>{};
   final labels = <String, String>{};
   final unknown = <Package>[];
@@ -88,13 +118,18 @@ List<StationGroup> groupPackagesByStation(List<Package> packages) {
       unknown.add(p);
       continue;
     }
-    final key = normalizeStationName(label);
+    final display = lookup[normalizeStationName(label)] ?? label;
+    if (isUnknownStationLabel(display)) {
+      unknown.add(p);
+      continue;
+    }
+    final key = normalizeStationName(display);
     if (key.isEmpty) {
       unknown.add(p);
       continue;
     }
     named.putIfAbsent(key, () => []).add(p);
-    labels.putIfAbsent(key, () => label);
+    labels.putIfAbsent(key, () => display);
   }
 
   int byArrival(Package a, Package b) => _compareArrival(arrivalTimeOf(a), arrivalTimeOf(b));

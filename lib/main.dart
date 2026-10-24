@@ -8,6 +8,7 @@ import 'core/debug/debug_trace.dart';
 import 'platform/storage/hive_package.dart';
 import 'platform/storage/platform_auth_store.dart';
 import 'platform/storage/keep_alive_store.dart';
+import 'platform/storage/pickup_point_alias_store.dart';
 import 'platform/sync/sync_history_manager.dart';
 import 'platform/notification/notification_adapter.dart';
 import 'platform/keep_alive/keep_alive_worker.dart';
@@ -48,6 +49,11 @@ Future<void> main() async {
   // 预打开同步历史：保活靠「最近同步时间」跳过刚同步过的平台
   await SyncHistoryManager.initialize();
   print('SyncHistoryManager initialized');
+
+  // 取件点别名表（P28-d）：默认空，真机在设置里声明
+  await PickupPointAliasStore.initialize();
+  await PickupPointAliasStore().ensureSchemaVersion();
+  print('PickupPointAliasStore initialized');
 
   DebugTrace.separator('MAIN: NotificationAdapter');
   await NotificationAdapter().initialize();

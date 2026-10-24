@@ -177,4 +177,63 @@ void main() {
       );
     });
   });
+
+  group('P28-d resolveCanonicalName / aliases', () {
+    test('未命中别名原样返回；空表不改写', () {
+      expect(resolveCanonicalName('北门对面大院', const {}), '北门对面大院');
+      expect(resolveCanonicalName(' 北门店 ', {'菜鸟驿站': '北门店'}), '北门店');
+    });
+
+    test('别名经规范化命中（空白/全角无关）', () {
+      expect(
+        resolveCanonicalName('北 门 店', {'北门店': '菜鸟驿站'}),
+        '菜鸟驿站',
+      );
+    });
+  });
+
+  group('P28-d groupPackagesByStation + aliases', () {
+    // 样例只进单测：北门店 ↔ 含「菜鸟驿站」的北门写法；不进 release 默认表
+    const aliases = {'北门店': '菜鸟驿站'};
+
+    test('北门店与菜鸟驿站并组，组头为规范名', () {
+      final groups = groupPackagesByStation([
+        pkg('a', station: '北门店', arrivedAt: DateTime(2026, 10, 1)),
+        pkg('b', station: '菜鸟驿站', arrivedAt: DateTime(2026, 10, 2)),
+      ], aliases: aliases);
+      expect(groups, hasLength(1));
+      expect(groups.single.name, '菜鸟驿站');
+      expect(ids(groups.single), ['a', 'b']);
+    });
+
+    test('北门对面大院无别名 → 独立组', () {
+      final groups = groupPackagesByStation([
+        pkg('a', station: '北门店', arrivedAt: DateTime(2026, 10, 1)),
+        pkg('b', station: '菜鸟驿站', arrivedAt: DateTime(2026, 10, 2)),
+        pkg('c', station: '北门对面大院', arrivedAt: DateTime(2026, 10, 3)),
+      ], aliases: aliases);
+      expect(groups.map((g) => g.name).toList(), ['菜鸟驿站', '北门对面大院']);
+      expect(ids(groups[0]), ['a', 'b']);
+      expect(ids(groups[1]), ['c']);
+    });
+
+    test('未知仍垫底「未知取件点」；location 不作键', () {
+      final groups = groupPackagesByStation([
+        pkg('u', arrivedAt: DateTime(2026, 9, 1)),
+        pkg('a', station: '北门店', location: '地址甲', arrivedAt: DateTime(2026, 10, 1)),
+        pkg('b', station: '菜鸟驿站', location: '地址乙', arrivedAt: DateTime(2026, 10, 2)),
+      ], aliases: aliases);
+      expect(groups.map((g) => g.name).toList(), ['菜鸟驿站', unknownStationName]);
+      expect(ids(groups.first), ['a', 'b']);
+    });
+
+    test('无 aliases 参数时行为与旧版一致（两名不并）', () {
+      final groups = groupPackagesByStation([
+        pkg('a', station: '北门店', arrivedAt: DateTime(2026, 10, 1)),
+        pkg('b', station: '菜鸟驿站', arrivedAt: DateTime(2026, 10, 2)),
+      ]);
+      expect(groups.map((g) => g.name).toSet(), {'北门店', '菜鸟驿站'});
+    });
+  });
+
 }

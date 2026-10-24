@@ -6,6 +6,7 @@ import '../../core/debug/debug_trace.dart';
 import '../../core/debug/metrics.dart';
 import '../../core/engine/arrived_at.dart';
 import '../../core/engine/station_grouping.dart';
+import 'pickup_point_alias_provider.dart';
 import '../../core/engine/package_identity.dart';
 import '../../core/engine/timeline_merge.dart';
 import '../../platform/storage/hive_package.dart';
@@ -771,9 +772,12 @@ final completedPackagesProvider = Provider<List<Package>>((ref) {
 /// 包裹进入终结状态的时间（取件、归档或拒收），用于已完成列表排序
 DateTime _completedAt(Package p) => p.pickedUpAt ?? p.archivedAt ?? p.addedAt;
 
-/// 待取件按取件点分组（读 [Package.arrivedAt]；见 [groupPackagesByStation]）。
+/// 待取件按取件点分组（读 [Package.arrivedAt]；经别名表后再分组，见 [groupPackagesByStation]）。
 final groupedPendingPackagesProvider = Provider<List<StationGroup>>((ref) {
-  return groupPackagesByStation(ref.watch(packageListProvider));
+  return groupPackagesByStation(
+    ref.watch(packageListProvider),
+    aliases: ref.watch(pickupPointAliasesProvider),
+  );
 });
 
 /// 在途扁平列表：pending 里不算「待取件」的（派送中 / 运送中 / 待发货），不按取件点分组。
