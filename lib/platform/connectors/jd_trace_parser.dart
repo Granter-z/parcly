@@ -135,9 +135,11 @@ const List<String> kJdPersistCookieHosts = [
   'https://home.m.jd.com',
 ];
 
-/// P30-b ①：本轮 Fallback 见登录页 / 已 `setExpired(true)` → 禁止 persist。
+/// P30-b ① / P30-b′：本轮 Fallback 见登录页 / 已 `setExpired(true)` /
+/// 同步开始前就已失效 → 禁止 persist（及成功路径清失效）。
 bool shouldSkipJdCookiePersist({
   required bool landedLoginPage,
   required bool markedExpiredThisRound,
+  bool alreadyExpiredAtStart = false,
 }) =>
-    landedLoginPage || markedExpiredThisRound;
+    landedLoginPage || markedExpiredThisRound || alreadyExpiredAtStart;

@@ -58,6 +58,18 @@ void main() {
       );
     });
 
+
+    test('同步开始前已失效 → skip（P30-b\'）', () {
+      expect(
+        shouldSkipJdCookiePersist(
+          landedLoginPage: false,
+          markedExpiredThisRound: false,
+          alreadyExpiredAtStart: true,
+        ),
+        isTrue,
+      );
+    });
+
     test('正常成功路径 → 不 skip', () {
       expect(
         shouldSkipJdCookiePersist(

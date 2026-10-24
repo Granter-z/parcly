@@ -135,8 +135,12 @@ class JdH5Connector implements PlatformConnector {
     final completer = Completer<void>();
     _orderCapturedCompleter = completer;
 
-    // P30-b ①：本轮若 Fallback 见登录页 / setExpired(true)，finally 禁止 persist
-    var skipPersist = false;
+    // P30-b ① / P30-b′：本轮 plogin / setExpired(true) / 开始前已失效 → finally 禁止 persist
+    final alreadyExpiredAtStart = _authStore.isExpired('jd');
+    var skipPersist = alreadyExpiredAtStart;
+    if (alreadyExpiredAtStart) {
+      _logJd('[JD] skip cookie persist: already expired before sync (P30-b\')');
+    }
 
     try {
       // 1) 注入请求拦截钩子并直接导航到订单列表（消除加载 home.m.jd.com 造成的 10s 死等）
@@ -193,9 +197,12 @@ class JdH5Connector implements PlatformConnector {
 
       _logJd('[JD] Final valid shopping orders: ${validOrders.length}');
 
-      // 能拉到有效订单说明登录仍有效；清失效标记（与淘宝/拼多多成功路径对齐）
-      if (validOrders.isNotEmpty) {
+      // 能拉到有效订单说明会话还能拉数；但若同步前已失效（保活自然掉），
+      // 不得仅凭 orderlist 冲回已绑定——清失效留给设置页重登（P30-b′）。
+      if (validOrders.isNotEmpty && !alreadyExpiredAtStart) {
         await _authStore.setExpired('jd', false);
+      } else if (validOrders.isNotEmpty && alreadyExpiredAtStart) {
+        _logJd('[JD] keep expired: orders ok but already expired before sync');
       }
 
       // ⚡ 优化：并发拉取物流详情（限制并发数为 3）
@@ -263,9 +270,13 @@ class JdH5Connector implements PlatformConnector {
     } catch (e, stack) {
       _logJd('[JD] streamSync error: $e\n$stack');
     } finally {
-      // P30-b ①：落 plogin / setExpired(true) 的本轮绝不 persist（含 finally）
+      // P30-b ① / P30-b′：plogin / 本轮标失效 / 开始前已失效 → 绝不 persist
       if (skipPersist) {
-        _logJd('[JD] skip cookie persist: landed login/expired this round');
+        _logJd(
+          alreadyExpiredAtStart
+              ? '[JD] skip cookie persist: already expired before sync'
+              : '[JD] skip cookie persist: landed login/expired this round',
+        );
       } else {
         await _persistJdCookiesIfHealthy(cookies);
       }
