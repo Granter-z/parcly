@@ -135,6 +135,9 @@ class JdH5Connector implements PlatformConnector {
     final completer = Completer<void>();
     _orderCapturedCompleter = completer;
 
+    // P30-b ①：本轮若 Fallback 见登录页 / setExpired(true)，finally 禁止 persist
+    var skipPersist = false;
+
     try {
       // 1) 注入请求拦截钩子并直接导航到订单列表（消除加载 home.m.jd.com 造成的 10s 死等）
       _logJd('[JD] Navigating directly to orderlist_jdm.shtml...');
@@ -166,6 +169,7 @@ class JdH5Connector implements PlatformConnector {
         _logJd('[JD] Fallback landed: $landedUrl');
         if (landedUrl.contains('plogin') || (landedUrl.contains('login') && !landedUrl.contains('orderlist'))) {
           _lastIssue = '京东登录态已失效，请在「设置」中重新登录';
+          skipPersist = true; // 落 plogin / 登录页 → 禁止 finally 回写
           await _authStore.setExpired('jd', true);
           return;
         }
@@ -259,7 +263,12 @@ class JdH5Connector implements PlatformConnector {
     } catch (e, stack) {
       _logJd('[JD] streamSync error: $e\n$stack');
     } finally {
-      await _persistJdCookiesIfHealthy(cookies);
+      // P30-b ①：落 plogin / setExpired(true) 的本轮绝不 persist（含 finally）
+      if (skipPersist) {
+        _logJd('[JD] skip cookie persist: landed login/expired this round');
+      } else {
+        await _persistJdCookiesIfHealthy(cookies);
+      }
     }
   }
 
@@ -268,14 +277,7 @@ class JdH5Connector implements PlatformConnector {
     try {
       final cm = WebViewCookieManager();
       final map = <String, String>{};
-      for (final host in const [
-        'https://www.jd.com',
-        'https://trade.m.jd.com',
-        'https://wqs.jd.com',
-        'https://api.m.jd.com',
-        'https://home.m.jd.com',
-        'https://plogin.m.jd.com',
-      ]) {
+      for (final host in kJdPersistCookieHosts) {
         try {
           final list = await cm.getCookies(domain: Uri.parse(host));
           for (final c in list) {
