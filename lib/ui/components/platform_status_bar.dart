@@ -1,3 +1,5 @@
+import 'dart:ui';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -5,13 +7,14 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../platform/connectors/connector_manager.dart';
 import '../../platform/storage/platform_auth_store.dart';
 import '../constants/app_constants.dart';
+import '../theme/glass_tokens.dart';
 import '../providers/platform_auth_status_provider.dart';
 import '../screens/login/platform_login_flow.dart';
 
-/// 首页顶部的平台登录状态条（P4 / P25，见 docs/pickup_app-界面.md 第 2 节）。
+/// 首页顶部的平台登录状态条（P4 / P25 / P31，见 docs/pickup_app-界面.md）。
 ///
-/// - 有平台需重登：整条淡红底，不能关；点那个平台直接进登录页。
-/// - 全部正常：缩成一行小字，不抢待取件的位置。
+/// - 有平台需重登：淡红玻璃底，不能关；点那个平台直接进登录页。
+/// - 全部正常：半透明玻璃芯片行，不抢待取件的位置。
 /// - 未绑定：灰色「去绑定」。
 /// - 同步失败：橙色「同步失败」，点开可单平台重试；不跟「需重登」混。
 /// - 同步中：圆点换成转圈，不响应点击。
@@ -22,30 +25,54 @@ class PlatformStatusBar extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final syncing = ref.watch(syncStateProvider);
     final statuses = {
-      for (final p in kPlatforms) p.id: ref.watch(platformAuthStatusProvider(p.id)),
+      for (final p in kPlatforms)
+        p.id: ref.watch(platformAuthStatusProvider(p.id)),
     };
-    final anyExpired = statuses.values.contains(PlatformAuthStatus.needsRelogin);
+    final anyExpired = statuses.values.contains(
+      PlatformAuthStatus.needsRelogin,
+    );
 
-    return AnimatedContainer(
-      duration: const Duration(milliseconds: 200),
-      padding: EdgeInsets.symmetric(horizontal: 12, vertical: anyExpired ? 8 : 4),
-      decoration: BoxDecoration(
-        color: anyExpired ? AppColors.urgentBg : Colors.transparent,
-        borderRadius: AppRadius.mdAll,
-      ),
-      child: Wrap(
-        spacing: 12,
-        runSpacing: 4,
-        crossAxisAlignment: WrapCrossAlignment.center,
-        children: [
-          for (final p in kPlatforms)
-            _PlatformChip(
-              info: p,
-              status: statuses[p.id]!,
-              syncing: syncing,
-              emphasized: anyExpired,
+    // 过期时外层填充仍用 urgentBg，单测 `barColor` 依赖这一语义色。
+    final fill = anyExpired ? AppColors.urgentBg : GlassTokens.fillSoft;
+
+    return ClipRRect(
+      borderRadius: GlassTokens.radiusAll,
+      child: BackdropFilter(
+        filter: ImageFilter.blur(
+          sigmaX: GlassTokens.blurSigmaSoft,
+          sigmaY: GlassTokens.blurSigmaSoft,
+        ),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 200),
+          padding: EdgeInsets.symmetric(
+            horizontal: 12,
+            vertical: anyExpired ? 8 : 4,
+          ),
+          decoration: BoxDecoration(
+            color: fill,
+            borderRadius: GlassTokens.radiusAll,
+            border: Border.all(
+              color: anyExpired
+                  ? AppColors.statusRejected.withValues(alpha: 0.22)
+                  : GlassTokens.border,
             ),
-        ],
+            boxShadow: anyExpired ? null : GlassTokens.softShadow,
+          ),
+          child: Wrap(
+            spacing: 12,
+            runSpacing: 4,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              for (final p in kPlatforms)
+                _PlatformChip(
+                  info: p,
+                  status: statuses[p.id]!,
+                  syncing: syncing,
+                  emphasized: anyExpired,
+                ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -105,10 +132,17 @@ class _PlatformChip extends ConsumerWidget {
             ? SizedBox(
                 width: 10,
                 height: 10,
-                child: CircularProgressIndicator(strokeWidth: 1.5, color: info.brandColor),
+                child: CircularProgressIndicator(
+                  strokeWidth: 1.5,
+                  color: info.brandColor,
+                ),
               )
             // 正常用绿勾，不用品牌色：拼多多/京东的品牌红和「需重登」的红点太像。
-            : const Icon(Icons.check_circle, size: 12, color: AppColors.statusPickedUp);
+            : const Icon(
+                Icons.check_circle,
+                size: 12,
+                color: AppColors.statusPickedUp,
+              );
         label = info.shortName;
         textColor = AppColors.textPrimary;
     }
@@ -155,7 +189,8 @@ class _PlatformChip extends ConsumerWidget {
 
   Future<void> _onTap(BuildContext context, WidgetRef ref) async {
     HapticFeedback.selectionClick();
-    if (status == PlatformAuthStatus.ok || status == PlatformAuthStatus.syncFailed) {
+    if (status == PlatformAuthStatus.ok ||
+        status == PlatformAuthStatus.syncFailed) {
       _showPlatformSheet(context, ref);
       return;
     }
@@ -183,6 +218,7 @@ class _PlatformChip extends ConsumerWidget {
     showModalBottomSheet<void>(
       context: context,
       showDragHandle: true,
+      backgroundColor: GlassTokens.fillStrong,
       builder: (sheetContext) => SafeArea(
         child: Padding(
           padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
@@ -192,7 +228,10 @@ class _PlatformChip extends ConsumerWidget {
             children: [
               Text(
                 info.displayName,
-                style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
+                style: const TextStyle(
+                  fontSize: 17,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
               const SizedBox(height: 6),
               Text(
@@ -202,7 +241,10 @@ class _PlatformChip extends ConsumerWidget {
                       : '登录正常',
                   if (bound != null) '${_formatDate(bound)} 绑定',
                 ].join(' · '),
-                style: const TextStyle(fontSize: 13, color: AppColors.textSecondary),
+                style: const TextStyle(
+                  fontSize: 13,
+                  color: AppColors.textSecondary,
+                ),
               ),
               const SizedBox(height: 16),
               SizedBox(

@@ -12,16 +12,22 @@
 library;
 
 import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+
 import '../../providers/package_provider.dart';
 import '../../../core/engine/station_grouping.dart';
 import '../../../app/hero_decision.dart';
-import '../../../core/engine/platform_auth_status.dart' show kLoginExpiredSignals, PlatformAuthStatus;
+import '../../../core/engine/platform_auth_status.dart'
+    show kLoginExpiredSignals, PlatformAuthStatus;
 import '../../../platform/connectors/connector_manager.dart';
 import '../../../platform/sync/background_sync_service.dart';
 import '../../../platform/keep_alive/keep_alive_controller.dart';
+import '../../components/glass_backdrop.dart';
+import '../../components/glass_surface.dart';
+import '../../theme/glass_tokens.dart';
 import '../../components/platform_status_bar.dart';
 import '../../constants/app_constants.dart';
 import '../../providers/platform_auth_status_provider.dart';
@@ -114,7 +120,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                     label: '去重新登录',
                     onPressed: () {
                       Navigator.of(context).push(
-                        MaterialPageRoute(builder: (_) => const SettingsScreen()),
+                        MaterialPageRoute(
+                          builder: (_) => const SettingsScreen(),
+                        ),
                       );
                     },
                   )
@@ -152,7 +160,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     final isSyncing = ref.watch(syncStateProvider);
     // 全部未绑定只加横幅，绝不整页盖住本地包裹（#9 修好后 #15 曾丢掉状态条，这里一并恢复）。
     final allUnbound = kPlatforms.every(
-      (p) => ref.watch(platformAuthStatusProvider(p.id)) == PlatformAuthStatus.unbound,
+      (p) =>
+          ref.watch(platformAuthStatusProvider(p.id)) ==
+          PlatformAuthStatus.unbound,
     );
 
     ref.listen<bool>(syncStateProvider, (previous, next) {
@@ -171,120 +181,135 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     const weekdays = ['一', '二', '三', '四', '五', '六', '日'];
     final now = DateTime.now();
     final todayStr = '${now.month}月${now.day}日 星期${weekdays[now.weekday - 1]}';
-    final pickupCount =
-        stationGroups.fold<int>(0, (sum, g) => sum + g.packages.length);
+    final pickupCount = stationGroups.fold<int>(
+      0,
+      (sum, g) => sum + g.packages.length,
+    );
     final hasPending = pickupCount > 0 || inTransitPackages.isNotEmpty;
 
     return Scaffold(
-      backgroundColor: AppColors.background,
-      body: SafeArea(
-        bottom: false,
-        child: RefreshIndicator(
-          onRefresh: () async {
-            HapticFeedback.lightImpact();
-            await _runSync();
-          },
-          child: CustomScrollView(
-            physics: const AlwaysScrollableScrollPhysics(
-              parent: BouncingScrollPhysics(),
-            ),
-            slivers: [
-              SliverToBoxAdapter(child: _buildHeader(todayStr, isSyncing)),
-
-              // ① 平台登录状态条（需重登 / 同步失败 / 去绑定）
-              const SliverToBoxAdapter(
-                child: Padding(
-                  padding: EdgeInsets.fromLTRB(
-                    AppSpacing.xl,
-                    0,
-                    AppSpacing.xl,
-                    AppSpacing.sm,
-                  ),
-                  child: PlatformStatusBar(),
+      backgroundColor: Colors.transparent,
+      body: Stack(
+        fit: StackFit.expand,
+        children: [
+          const GlassBackdrop(),
+          SafeArea(
+            bottom: false,
+            child: RefreshIndicator(
+              color: AppColors.primaryStrong,
+              backgroundColor: GlassTokens.fillStrong,
+              onRefresh: () async {
+                HapticFeedback.lightImpact();
+                await _runSync();
+              },
+              child: CustomScrollView(
+                physics: const AlwaysScrollableScrollPhysics(
+                  parent: BouncingScrollPhysics(),
                 ),
-              ),
+                slivers: [
+                  SliverToBoxAdapter(child: _buildHeader(todayStr, isSyncing)),
 
-              // 全部未绑定：横幅引导，本地包裹仍在下面
-              if (allUnbound) const SliverToBoxAdapter(child: _BindBanner()),
-
-              // Hero：有在途件才出现，与下方空态互斥
-              if (hasPending)
-                const SliverToBoxAdapter(
-                  child: Padding(
-                    padding: EdgeInsets.fromLTRB(
-                      AppSpacing.xl,
-                      AppSpacing.xs,
-                      AppSpacing.xl,
-                      AppSpacing.lg,
+                  // ① 平台登录状态条（需重登 / 同步失败 / 去绑定）
+                  const SliverToBoxAdapter(
+                    child: Padding(
+                      padding: EdgeInsets.fromLTRB(
+                        AppSpacing.xl,
+                        0,
+                        AppSpacing.xl,
+                        AppSpacing.sm,
+                      ),
+                      child: PlatformStatusBar(),
                     ),
-                    child: HeroStatsDashboard(),
                   ),
-                ),
 
-              // 拼多多内置商城：全页唯一入口
-              SliverToBoxAdapter(child: _buildPddEntry()),
+                  // 全部未绑定：横幅引导，本地包裹仍在下面
+                  if (allUnbound)
+                    const SliverToBoxAdapter(child: _BindBanner()),
 
-              // 列表标题栏 + 构成明细
-              SliverToBoxAdapter(
-                child: _buildListHeader(
-                  pickupCount,
-                  inTransitPackages.length,
-                  completedPackages.length,
-                  decision,
-                ),
+                  // Hero：有在途件才出现，与下方空态互斥
+                  if (hasPending)
+                    const SliverToBoxAdapter(
+                      child: Padding(
+                        padding: EdgeInsets.fromLTRB(
+                          AppSpacing.xl,
+                          AppSpacing.xs,
+                          AppSpacing.xl,
+                          AppSpacing.lg,
+                        ),
+                        child: HeroStatsDashboard(),
+                      ),
+                    ),
+
+                  // 拼多多内置商城：全页唯一入口
+                  SliverToBoxAdapter(child: _buildPddEntry()),
+
+                  // 列表标题栏 + 构成明细
+                  SliverToBoxAdapter(
+                    child: _buildListHeader(
+                      pickupCount,
+                      inTransitPackages.length,
+                      completedPackages.length,
+                      decision,
+                    ),
+                  ),
+
+                  // 空状态：仅在无待取/在途时出现
+                  SliverToBoxAdapter(
+                    child: AnimatedSwitcher(
+                      duration: Motion.of(context, Motion.normal),
+                      switchInCurve: Motion.standard,
+                      switchOutCurve: Motion.exit,
+                      transitionBuilder: (child, animation) => SizeTransition(
+                        sizeFactor: animation,
+                        axisAlignment: -1.0,
+                        child: FadeTransition(opacity: animation, child: child),
+                      ),
+                      child: hasPending
+                          ? const SizedBox.shrink(
+                              key: ValueKey('packages_present'),
+                            )
+                          : _buildEmptyState(),
+                    ),
+                  ),
+
+                  // ② 待取件：按取件点分组（arrivedAt 排序 / 快过期由卡片读）
+                  if (pickupCount > 0) ...[
+                    SliverToBoxAdapter(
+                      child: _sectionTitle('待取件', pickupCount),
+                    ),
+                    for (final group in stationGroups)
+                      ..._stationGroupSlivers(group),
+                  ],
+
+                  // ③ 在途：扁平列表，不按取件点分组
+                  if (inTransitPackages.isNotEmpty) ...[
+                    SliverToBoxAdapter(
+                      child: _sectionTitle('在途', inTransitPackages.length),
+                    ),
+                    AnimatedPackageList(
+                      packages: inTransitPackages,
+                      padding: const EdgeInsets.fromLTRB(
+                        AppSpacing.xl,
+                        AppSpacing.xs,
+                        AppSpacing.xl,
+                        AppSpacing.lg,
+                      ),
+                    ),
+                  ],
+
+                  // 底部留白
+                  if (hasPending)
+                    SliverToBoxAdapter(
+                      child: SizedBox(
+                        height: AppSpacing.xxl +
+                            MediaQuery.paddingOf(context).bottom,
+                      ),
+                    ),
+                ],
               ),
-
-              // 空状态：仅在无待取/在途时出现
-              SliverToBoxAdapter(
-                child: AnimatedSwitcher(
-                  duration: Motion.of(context, Motion.normal),
-                  switchInCurve: Motion.standard,
-                  switchOutCurve: Motion.exit,
-                  transitionBuilder: (child, animation) => SizeTransition(
-                    sizeFactor: animation,
-                    axisAlignment: -1.0,
-                    child: FadeTransition(opacity: animation, child: child),
-                  ),
-                  child: hasPending
-                      ? const SizedBox.shrink(key: ValueKey('packages_present'))
-                      : _buildEmptyState(),
-                ),
-              ),
-
-              // ② 待取件：按取件点分组（arrivedAt 排序 / 快过期由卡片读）
-              if (pickupCount > 0) ...[
-                SliverToBoxAdapter(
-                  child: _sectionTitle('待取件', pickupCount),
-                ),
-                for (final group in stationGroups) ..._stationGroupSlivers(group),
-              ],
-
-              // ③ 在途：扁平列表，不按取件点分组
-              if (inTransitPackages.isNotEmpty) ...[
-                SliverToBoxAdapter(
-                  child: _sectionTitle('在途', inTransitPackages.length),
-                ),
-                AnimatedPackageList(
-                  packages: inTransitPackages,
-                  padding: const EdgeInsets.fromLTRB(
-                    AppSpacing.xl,
-                    AppSpacing.xs,
-                    AppSpacing.xl,
-                    AppSpacing.lg,
-                  ),
-                ),
-              ],
-
-              // 底部留白
-              if (hasPending)
-                SliverToBoxAdapter(
-                  child: SizedBox(
-                    height: AppSpacing.xxl + MediaQuery.paddingOf(context).bottom,
-                  ),
-                ),
-            ],
+            ),
           ),
-        ),
+        ],
       ),
     );
   }
@@ -367,15 +392,19 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
             children: [
               _buildSyncAction(isSyncing),
               const SizedBox(width: AppSpacing.sm),
-              IconButton.filledTonal(
+              _GlassIconButton(
+                tooltip: '平台账号绑定与设置',
                 onPressed: () {
                   HapticFeedback.lightImpact();
                   Navigator.of(context).push(
                     MaterialPageRoute(builder: (_) => const SettingsScreen()),
                   );
                 },
-                icon: const Icon(Icons.tune_rounded, size: 20),
-                tooltip: '平台账号绑定与设置',
+                icon: const Icon(
+                  Icons.tune_rounded,
+                  size: 20,
+                  color: AppColors.textPrimary,
+                ),
               ),
             ],
           ),
@@ -400,7 +429,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       );
     }
 
-    return IconButton.filledTonal(
+    return _GlassIconButton(
       onPressed: isSyncing
           ? null
           : () async {
@@ -408,9 +437,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
               await _runSync();
             },
       icon: icon,
-      tooltip: _justSynced
-          ? '已同步'
-          : (isSyncing ? '同步中...' : '一键同步包裹'),
+      tooltip: _justSynced ? '已同步' : (isSyncing ? '同步中...' : '一键同步包裹'),
     );
   }
 
@@ -428,25 +455,21 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
         AppSpacing.md,
       ),
       child: Material(
-        color: AppColors.surface,
-        borderRadius: AppRadius.mdAll,
+        color: Colors.transparent,
         child: InkWell(
           onTap: () {
             HapticFeedback.lightImpact();
             PddWebScreen.open(context);
           },
-          borderRadius: AppRadius.mdAll,
-          child: Container(
+          borderRadius: GlassTokens.radiusAll,
+          child: GlassSurface(
+            enableBlur: false,
             padding: const EdgeInsets.symmetric(
               horizontal: AppSpacing.md,
               vertical: AppSpacing.md,
             ),
-            decoration: BoxDecoration(
-              borderRadius: AppRadius.mdAll,
-              border: Border.all(
-                color: const Color(0xFFE02E24).withValues(alpha: 0.18),
-              ),
-            ),
+            borderRadius: GlassTokens.radiusAll,
+            borderColor: const Color(0xFFE02E24).withValues(alpha: 0.22),
             child: Row(
               children: [
                 Container(
@@ -489,7 +512,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                 const Icon(
                   Icons.chevron_right_rounded,
                   size: 18,
-                  color: AppColors.textTertiary,
+                  color: AppColors.textSecondary,
                 ),
               ],
             ),
@@ -513,7 +536,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       if (pickupCount > 0) '$pickupCount 件待取',
       if (decision.deliveringCount > 0) '${decision.deliveringCount} 件派送中',
       if (decision.transitCount > 0) '${decision.transitCount} 件在途',
-      if (decision.pendingShipmentCount > 0) '${decision.pendingShipmentCount} 件待发货',
+      if (decision.pendingShipmentCount > 0)
+        '${decision.pendingShipmentCount} 件待发货',
     ];
     final text = Theme.of(context).textTheme;
     final total = pickupCount + inTransitCount;
@@ -579,45 +603,81 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   Widget _buildEmptyState() {
     final text = Theme.of(context).textTheme;
 
-    return Container(
+    return Padding(
       key: const ValueKey('pending_empty_state'),
-      margin: const EdgeInsets.fromLTRB(
+      padding: const EdgeInsets.fromLTRB(
         AppSpacing.xl,
         0,
         AppSpacing.xl,
         AppSpacing.lg,
       ),
-      padding: const EdgeInsets.all(AppSpacing.xxxl),
-      decoration: BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: AppRadius.lgAll,
+      child: GlassSurface(
+        enableBlur: false,
+        padding: const EdgeInsets.all(AppSpacing.xxxl),
+        borderRadius: GlassTokens.radiusAll,
+        fill: GlassTokens.fillStrong,
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(
+              Icons.inbox_outlined,
+              size: 56,
+              color: AppColors.textTertiary,
+            ),
+            const SizedBox(height: AppSpacing.md),
+            Text('暂无待取快件', style: text.titleMedium),
+            const SizedBox(height: 6),
+            Text(
+              '下拉同步，或前往平台绑定页聚合在途包裹与取件码',
+              textAlign: TextAlign.center,
+              style: text.bodyMedium,
+            ),
+            const SizedBox(height: AppSpacing.xl),
+            FilledButton.tonalIcon(
+              onPressed: () async {
+                HapticFeedback.lightImpact();
+                await _runSync();
+              },
+              icon: const Icon(Icons.sync_rounded, size: 16),
+              label: const Text('一键同步'),
+            ),
+          ],
+        ),
       ),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          const Icon(
-            Icons.inbox_outlined,
-            size: 56,
-            color: AppColors.textTertiary,
+    );
+  }
+}
+
+/// 顶栏圆形玻璃按钮（同步 / 设置）。
+class _GlassIconButton extends StatelessWidget {
+  final Widget icon;
+  final String tooltip;
+  final VoidCallback? onPressed;
+
+  const _GlassIconButton({
+    required this.icon,
+    required this.tooltip,
+    this.onPressed,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: tooltip,
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: onPressed,
+          customBorder: const CircleBorder(),
+          child: GlassSurface(
+            enableBlur: false,
+            padding: const EdgeInsets.all(10),
+            borderRadius: AppRadius.pillAll,
+            fill: GlassTokens.fill,
+            boxShadow: const [],
+            child: SizedBox(width: 24, height: 24, child: Center(child: icon)),
           ),
-          const SizedBox(height: AppSpacing.md),
-          Text('暂无待取快件', style: text.titleMedium),
-          const SizedBox(height: 6),
-          Text(
-            '下拉同步，或前往平台绑定页聚合在途包裹与取件码',
-            textAlign: TextAlign.center,
-            style: text.bodyMedium,
-          ),
-          const SizedBox(height: AppSpacing.xl),
-          FilledButton.tonalIcon(
-            onPressed: () async {
-              HapticFeedback.lightImpact();
-              await _runSync();
-            },
-            icon: const Icon(Icons.sync_rounded, size: 16),
-            label: const Text('一键同步'),
-          ),
-        ],
+        ),
       ),
     );
   }
@@ -629,44 +689,54 @@ class _BindBanner extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    return Container(
-      margin: const EdgeInsets.fromLTRB(AppSpacing.xl, 0, AppSpacing.xl, AppSpacing.sm),
-      padding: const EdgeInsets.fromLTRB(AppSpacing.md, AppSpacing.md, AppSpacing.md, AppSpacing.sm),
-      decoration: BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: AppRadius.mdAll,
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(
+        AppSpacing.xl,
+        0,
+        AppSpacing.xl,
+        AppSpacing.sm,
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            '绑定拼多多 / 京东 / 淘宝，包裹自动出现在这里',
-            style: Theme.of(context).textTheme.titleMedium,
-          ),
-          const SizedBox(height: AppSpacing.sm),
-          Wrap(
-            spacing: AppSpacing.sm,
-            runSpacing: AppSpacing.xs,
-            children: [
-              for (final p in kPlatforms)
-                FilledButton.tonal(
-                  style: FilledButton.styleFrom(
-                    foregroundColor: p.brandColor,
-                    minimumSize: const Size(0, 44),
-                    padding: const EdgeInsets.symmetric(horizontal: 14),
+      child: GlassSurface(
+        enableBlur: false,
+        padding: const EdgeInsets.fromLTRB(
+          AppSpacing.md,
+          AppSpacing.md,
+          AppSpacing.md,
+          AppSpacing.sm,
+        ),
+        borderRadius: GlassTokens.radiusAll,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '绑定拼多多 / 京东 / 淘宝，包裹自动出现在这里',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+            const SizedBox(height: AppSpacing.sm),
+            Wrap(
+              spacing: AppSpacing.sm,
+              runSpacing: AppSpacing.xs,
+              children: [
+                for (final p in kPlatforms)
+                  FilledButton.tonal(
+                    style: FilledButton.styleFrom(
+                      foregroundColor: p.brandColor,
+                      minimumSize: const Size(0, 44),
+                      padding: const EdgeInsets.symmetric(horizontal: 14),
+                    ),
+                    onPressed: () => openPlatformLogin(
+                      context,
+                      ref,
+                      platform: p.id,
+                      displayName: p.displayName,
+                      brandColor: p.brandColor,
+                    ),
+                    child: Text('绑定${p.shortName}'),
                   ),
-                  onPressed: () => openPlatformLogin(
-                    context,
-                    ref,
-                    platform: p.id,
-                    displayName: p.displayName,
-                    brandColor: p.brandColor,
-                  ),
-                  child: Text('绑定${p.shortName}'),
-                ),
-            ],
-          ),
-        ],
+              ],
+            ),
+          ],
+        ),
       ),
     );
   }

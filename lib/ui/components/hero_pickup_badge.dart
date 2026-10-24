@@ -1,7 +1,7 @@
 /// 大号醒目取件码徽标 - 支持一键复制与触觉反馈
 ///
 /// 取件码是这个 App 里最重要的一条信息（用户就是来读它的），所以它值得：
-/// - 更大的字号（18 / 24），而不是塞在 16px 里；
+/// - 更大的字号（默认 28 / 大号 32+），驿站门口一眼可读；
 /// - 等宽数字 + 字距，避免不同数字宽度导致复制时看串位；
 /// - 实心强调色底 + 白字，白字对比 5.80:1（WCAG AA）。
 ///
@@ -70,7 +70,7 @@ class _HeroPickupBadgeState extends State<HeroPickupBadge> {
       );
     }
 
-    final fontSize = widget.isLarge ? 22.0 : 18.0;
+    final fontSize = widget.isLarge ? 32.0 : 28.0;
     final fill = _isCopied ? AppColors.statusPickedUp : AppColors.primaryStrong;
 
     return Material(
@@ -85,10 +85,7 @@ class _HeroPickupBadgeState extends State<HeroPickupBadge> {
             horizontal: widget.isLarge ? 14 : AppSpacing.md,
             vertical: widget.isLarge ? AppSpacing.sm : 6,
           ),
-          decoration: BoxDecoration(
-            color: fill,
-            borderRadius: AppRadius.xsAll,
-          ),
+          decoration: BoxDecoration(color: fill, borderRadius: AppRadius.xsAll),
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [

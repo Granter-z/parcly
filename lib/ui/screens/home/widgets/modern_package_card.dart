@@ -3,7 +3,8 @@
 /// 改版要点：
 /// - 状态配色不再由本文件私有维护，统一取自 `theme/status_extension.dart`（唯一真源）；
 /// - 状态文案取自 core 的 `PackageStatusSemantics.label`，不再在 UI 里另写一份；
-/// - 圆角收敛到令牌（卡片 16 / 内嵌条 12 / 标签 8）；
+/// - 圆角收敛到令牌（玻璃卡 24 / 内嵌条 12 / 标签 8）；
+/// - P31：半透明列表卡（无逐行 BackdropFilter）；到站描边用主色玻璃边；取件码 ≥32sp；
 /// - 修掉三处正文级对比度不达标的内联灰：`Colors.grey`(2.68:1)、
 ///   `Colors.grey.shade600`、`Colors.orange.shade800`(3.08:1)。
 library;
@@ -11,6 +12,7 @@ library;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+
 import '../../../../core/models/package.dart';
 import '../../../../core/models/package_status.dart';
 import '../../../../core/engine/station_grouping.dart';
@@ -20,16 +22,14 @@ import '../../../components/hero_pickup_badge.dart';
 import '../../../components/platform_badge.dart';
 import '../../../components/status_pill.dart';
 import '../../../constants/app_constants.dart';
+import '../../../theme/glass_tokens.dart';
 import '../../../theme/motion.dart';
 import 'tracking_timeline_sheet.dart';
 
 class ModernPackageCard extends ConsumerWidget {
   final Package package;
 
-  const ModernPackageCard({
-    super.key,
-    required this.package,
-  });
+  const ModernPackageCard({super.key, required this.package});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -40,13 +40,12 @@ class ModernPackageCard extends ConsumerWidget {
     final arrivedAgo = arrivedAgoLabelOf(package, now);
 
     return SpringCard(
+      glass: true,
       padding: const EdgeInsets.all(AppSpacing.lg),
-      borderRadius: AppRadius.mdAll,
+      borderRadius: GlassTokens.radiusAll,
       border: Border.all(
-        color: isArrived
-            ? AppColors.primary.withValues(alpha: 0.22)
-            : AppColors.textPrimary.withValues(alpha: 0.06),
-        width: isArrived ? 1.2 : 0.8,
+        color: isArrived ? GlassTokens.arrivedBorder : GlassTokens.border,
+        width: isArrived ? 1.4 : 1.0,
       ),
       onTap: () => TrackingTimelineSheet.show(context, package),
       onLongPress: () {
@@ -72,7 +71,10 @@ class ModernPackageCard extends ConsumerWidget {
               const Spacer(),
               if (overdue) ...[
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 6,
+                    vertical: 2,
+                  ),
                   decoration: BoxDecoration(
                     color: const Color(0xFFE67E00).withValues(alpha: 0.12),
                     borderRadius: BorderRadius.circular(6),
@@ -185,8 +187,15 @@ class ModernPackageCard extends ConsumerWidget {
               vertical: 10,
             ),
             decoration: BoxDecoration(
-              color: isArrived ? AppColors.primaryContainer : AppColors.surfaceSunken,
+              color: isArrived
+                  ? AppColors.primaryContainer.withValues(alpha: 0.72)
+                  : GlassTokens.fillSoft,
               borderRadius: AppRadius.smAll,
+              border: Border.all(
+                color: isArrived
+                    ? AppColors.primary.withValues(alpha: 0.18)
+                    : GlassTokens.border.withValues(alpha: 0.35),
+              ),
             ),
             child: Row(
               children: [
@@ -206,7 +215,10 @@ class ModernPackageCard extends ConsumerWidget {
                                 color: AppColors.primaryStrong,
                               ),
                             ),
-                            HeroPickupBadge(pickupCode: package.pickupCode),
+                            HeroPickupBadge(
+                              pickupCode: package.pickupCode,
+                              isLarge: true,
+                            ),
                           ],
                         )
                       : isDelivering
@@ -256,9 +268,7 @@ class ModernPackageCard extends ConsumerWidget {
                       messenger.hideCurrentSnackBar();
                       messenger.showSnackBar(
                         SnackBar(
-                          content: Text(
-                            '已标记取件「${package.goodsName ?? "包裹"}」',
-                          ),
+                          content: Text('已标记取件「${package.goodsName ?? "包裹"}」'),
                           duration: const Duration(seconds: 5),
                           behavior: SnackBarBehavior.floating,
                           // Flutter 3.47：有 action 时 persist 默认 true；撤销窗应自动消失。
@@ -312,9 +322,7 @@ class ModernPackageCard extends ConsumerWidget {
                 Clipboard.setData(ClipboardData(text: package.trackingNumber));
                 Navigator.pop(ctx);
                 ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: Text('已复制运单号: ${package.trackingNumber}'),
-                  ),
+                  SnackBar(content: Text('已复制运单号: ${package.trackingNumber}')),
                 );
               },
             ),
@@ -329,7 +337,9 @@ class ModernPackageCard extends ConsumerWidget {
               ),
               onTap: () {
                 Navigator.pop(ctx);
-                ref.read(packageListProvider.notifier).removePackage(package.id);
+                ref
+                    .read(packageListProvider.notifier)
+                    .removePackage(package.id);
               },
             ),
           ],
@@ -346,7 +356,8 @@ class ModernPackageCard extends ConsumerWidget {
   static String _displayTitle(Package p) {
     final name = p.goodsName;
     if (name != null && name.isNotEmpty && name != 'OCR') return name;
-    if (p.description.isNotEmpty && p.description != 'OCR') return p.description;
+    if (p.description.isNotEmpty && p.description != 'OCR')
+      return p.description;
     return '快件包裹';
   }
 
@@ -434,13 +445,17 @@ class _PickupConfirmButtonState extends State<_PickupConfirmButton>
     _controller = AnimationController(vsync: this, duration: Motion.emphasized);
     _scale = TweenSequence<double>([
       TweenSequenceItem(
-        tween: Tween(begin: 1.0, end: 1.08)
-            .chain(CurveTween(curve: Curves.easeOut)),
+        tween: Tween(
+          begin: 1.0,
+          end: 1.08,
+        ).chain(CurveTween(curve: Curves.easeOut)),
         weight: 30,
       ),
       TweenSequenceItem(
-        tween: Tween(begin: 1.08, end: 1.0)
-            .chain(CurveTween(curve: Curves.easeInOut)),
+        tween: Tween(
+          begin: 1.08,
+          end: 1.0,
+        ).chain(CurveTween(curve: Curves.easeInOut)),
         weight: 70,
       ),
     ]).animate(_controller);
