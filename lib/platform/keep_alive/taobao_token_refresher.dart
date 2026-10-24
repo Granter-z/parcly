@@ -19,11 +19,15 @@ class MtopRefreshResult {
   final bool sessionExpired;
   final bool networkError;
 
+  /// 网络失败时的异常摘要（供保活历史诊断；鉴权失败不填）
+  final String? errorDetail;
+
   const MtopRefreshResult._({
     this.newToken,
     this.newTokenEnc,
     this.sessionExpired = false,
     this.networkError = false,
+    this.errorDetail,
   });
 
   /// 请求完成且会话仍有效（令牌可能轮换也可能未变）
@@ -39,8 +43,8 @@ class MtopRefreshResult {
       );
 
   /// 超时 / 连接失败等，不得与 sessionExpired 并存
-  factory MtopRefreshResult.network() =>
-      const MtopRefreshResult._(networkError: true);
+  factory MtopRefreshResult.network([String? detail]) =>
+      MtopRefreshResult._(networkError: true, errorDetail: detail);
 
   /// 是否发生了令牌轮换
   bool get rotated => newToken != null || newTokenEnc != null;
@@ -146,8 +150,8 @@ class TaobaoTokenRefresher {
         }
       }
       return MtopRefreshResult.ok();
-    } catch (_) {
-      return MtopRefreshResult.network();
+    } catch (e) {
+      return MtopRefreshResult.network('$e');
     } finally {
       if (owned) c.close();
     }

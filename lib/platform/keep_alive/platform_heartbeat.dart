@@ -71,25 +71,54 @@ abstract class PlatformHeartbeat {
 class TaobaoHeartbeat implements PlatformHeartbeat {
   final PlatformAuthStore _authStore;
 
-  TaobaoHeartbeat({PlatformAuthStore? authStore})
-      : _authStore = authStore ?? PlatformAuthStore();
+  /// 单测可注入，生产走 [TaobaoTokenRefresher.refresh]
+  final Future<MtopRefreshResult> Function(String cookies)? _refreshOverride;
+
+  TaobaoHeartbeat({
+    PlatformAuthStore? authStore,
+    Future<MtopRefreshResult> Function(String cookies)? refreshOverride,
+  })  : _authStore = authStore ?? PlatformAuthStore(),
+        _refreshOverride = refreshOverride;
 
   @override
   String get platformId => 'taobao';
+
+  /// 网络抖动短重试间隔（socket/超时最多再试 1 次再落盘）
+  static const _networkRetryDelay = Duration(milliseconds: 400);
+
+  /// 保活历史副文案：带异常摘要，避免光杆「网络错误」
+  static String networkErrorMessage(String? detail) {
+    if (detail == null || detail.isEmpty) return '网络错误';
+    return '网络错误: $detail';
+  }
+
+  Future<MtopRefreshResult> _doRefresh(String cookies) {
+    final override = _refreshOverride;
+    if (override != null) return override(cookies);
+    return TaobaoTokenRefresher.refresh(cookies);
+  }
 
   @override
   Future<HeartbeatResult> performHeartbeat(String cookies) async {
     try {
       debugPrint('[KeepAlive] Taobao heartbeat starting...');
-      final result = await TaobaoTokenRefresher.refresh(cookies);
+      var result = await _doRefresh(cookies);
+
+      // 鉴权失效不重试；仅对网络失败短重试 1 次
+      if (result.networkError && !result.sessionExpired) {
+        debugPrint('[KeepAlive] Taobao network blip, retry once...');
+        await Future.delayed(_networkRetryDelay);
+        result = await _doRefresh(cookies);
+      }
 
       if (result.sessionExpired) {
         debugPrint('[KeepAlive] Taobao heartbeat failed: session expired');
         return HeartbeatResult.failure('登录态已失效', isAuthFailure: true);
       }
       if (result.networkError) {
-        debugPrint('[KeepAlive] Taobao heartbeat error: network');
-        return HeartbeatResult.failure('网络错误', isAuthFailure: false);
+        final msg = networkErrorMessage(result.errorDetail);
+        debugPrint('[KeepAlive] Taobao heartbeat error: $msg');
+        return HeartbeatResult.failure(msg, isAuthFailure: false);
       }
 
       // 轮换令牌就地落盘，不刷新授权绑定时间
@@ -155,25 +184,34 @@ class JdHeartbeat implements PlatformHeartbeat {
     return HeartbeatResult.failure('HTTP $statusCode', isAuthFailure: false);
   }
 
+  /// 网络抖动短重试间隔（socket/超时最多再试 1 次再落盘）
+  static const _networkRetryDelay = Duration(milliseconds: 400);
+
+  /// 既定探活端点（与同步 WebView 的 trade.m.jd.com 分工不同，勿擅自改域名）
+  static const probeUrl = 'https://wqs.jd.com/order/orderlist_jdm.shtml';
+
+  Future<HeartbeatResult> _probeOnce(String cookies) async {
+    final response = await http.get(
+      Uri.parse(probeUrl),
+      headers: {
+        'Cookie': cookies,
+        'User-Agent': _ua,
+        'Referer': 'https://wqs.jd.com/',
+      },
+    ).timeout(const Duration(seconds: 10));
+
+    return classifyResponse(
+      statusCode: response.statusCode,
+      body: response.body,
+      location: response.headers['location'] ?? '',
+    );
+  }
+
   @override
   Future<HeartbeatResult> performHeartbeat(String cookies) async {
+    debugPrint('[KeepAlive] JD heartbeat starting...');
     try {
-      debugPrint('[KeepAlive] JD heartbeat starting...');
-
-      final response = await http.get(
-        Uri.parse('https://wqs.jd.com/order/orderlist_jdm.shtml'),
-        headers: {
-          'Cookie': cookies,
-          'User-Agent': _ua,
-          'Referer': 'https://wqs.jd.com/',
-        },
-      ).timeout(const Duration(seconds: 10));
-
-      final result = classifyResponse(
-        statusCode: response.statusCode,
-        body: response.body,
-        location: response.headers['location'] ?? '',
-      );
+      final result = await _probeOnce(cookies);
       if (result.success) {
         debugPrint('[KeepAlive] JD heartbeat success');
       } else if (result.isAuthFailure) {
@@ -183,11 +221,42 @@ class JdHeartbeat implements PlatformHeartbeat {
       }
       return result;
     } on TimeoutException {
-      debugPrint('[KeepAlive] JD heartbeat timeout');
-      return HeartbeatResult.failure('请求超时', isAuthFailure: false);
+      debugPrint('[KeepAlive] JD heartbeat timeout, retry once...');
+      await Future.delayed(_networkRetryDelay);
+      try {
+        final result = await _probeOnce(cookies);
+        if (result.success) {
+          debugPrint('[KeepAlive] JD heartbeat success (after retry)');
+        } else if (result.isAuthFailure) {
+          debugPrint('[KeepAlive] JD heartbeat failed: login required (after retry)');
+        }
+        return result;
+      } on TimeoutException {
+        debugPrint('[KeepAlive] JD heartbeat timeout');
+        return HeartbeatResult.failure('请求超时', isAuthFailure: false);
+      } catch (e) {
+        debugPrint('[KeepAlive] JD heartbeat error: $e');
+        return HeartbeatResult.failure('网络错误: $e', isAuthFailure: false);
+      }
     } catch (e) {
-      debugPrint('[KeepAlive] JD heartbeat error: $e');
-      return HeartbeatResult.failure('网络错误: $e', isAuthFailure: false);
+      // socket / ClientException 等：短重试 1 次再落盘；鉴权分类不走此路径
+      debugPrint('[KeepAlive] JD heartbeat error: $e, retry once...');
+      await Future.delayed(_networkRetryDelay);
+      try {
+        final result = await _probeOnce(cookies);
+        if (result.success) {
+          debugPrint('[KeepAlive] JD heartbeat success (after retry)');
+        } else if (result.isAuthFailure) {
+          debugPrint('[KeepAlive] JD heartbeat failed: login required (after retry)');
+        }
+        return result;
+      } on TimeoutException {
+        debugPrint('[KeepAlive] JD heartbeat timeout');
+        return HeartbeatResult.failure('请求超时', isAuthFailure: false);
+      } catch (e2) {
+        debugPrint('[KeepAlive] JD heartbeat error: $e2');
+        return HeartbeatResult.failure('网络错误: $e2', isAuthFailure: false);
+      }
     }
   }
 }

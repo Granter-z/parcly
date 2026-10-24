@@ -2,6 +2,15 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:pickup_app/platform/keep_alive/platform_heartbeat.dart';
 
 void main() {
+  group('JdHeartbeat.probeUrl', () {
+    test('既定探活仍为 wqs.jd.com orderlist（勿擅自改域名）', () {
+      expect(
+        JdHeartbeat.probeUrl,
+        'https://wqs.jd.com/order/orderlist_jdm.shtml',
+      );
+    });
+  });
+
   group('JdHeartbeat.classifyResponse', () {
     test('200 + 登录关键词 → authFailure', () {
       final r = JdHeartbeat.classifyResponse(

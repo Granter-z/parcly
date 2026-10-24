@@ -41,10 +41,15 @@ void main() {
       expect(expired.sessionExpired, isTrue);
       expect(expired.networkError, isFalse);
 
-      final net = MtopRefreshResult.network();
+      final net = MtopRefreshResult.network('ClientException: offline');
       expect(net.networkError, isTrue);
       expect(net.sessionExpired, isFalse);
       expect(net.rotated, isFalse);
+      expect(net.errorDetail, 'ClientException: offline');
+
+      final bare = MtopRefreshResult.network();
+      expect(bare.networkError, isTrue);
+      expect(bare.errorDetail, isNull);
     });
   });
 
@@ -61,13 +66,15 @@ void main() {
       expect(result.networkError, isFalse);
     });
 
-    test('网络异常只标 networkError', () async {
+    test('网络异常只标 networkError，并保留异常摘要', () async {
       final client = MockClient((request) async {
         throw http.ClientException('offline');
       });
       final result = await TaobaoTokenRefresher.refresh('k=v', client: client);
       expect(result.networkError, isTrue);
       expect(result.sessionExpired, isFalse);
+      expect(result.errorDetail, isNotNull);
+      expect(result.errorDetail, contains('offline'));
     });
 
     test('成功时可带回轮换令牌', () async {
