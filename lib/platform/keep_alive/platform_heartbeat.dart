@@ -243,17 +243,15 @@ class JdHeartbeat implements PlatformHeartbeat {
   ///
   /// - trade 成功 → 成功（即使 wqs 像登录，P36-a 已坐实误标）
   /// - trade 明确要登录 → authFailure（才可 setExpired）
-  /// - wqs 单边像登录且 trade 未确认 → 非 auth（→ networkFailure/uncertain）
-  /// - 其余网络/异常 → 非 auth
+  /// - **P36-b″**：wqs 成功且 trade 非 auth → success（含 soft / uncertain / 网络抖，
+  ///   不得再记 networkFailure 累满 expire）
+  /// - wqs 单边像登录且 trade soft/uncertain → 非 auth（uncertain，不立刻 expire）
+  /// - 两边都挂 → 非 auth（networkFailure，两边都挂才累计）
   static HeartbeatResult combineDualProbe({
     required HeartbeatResult wqs,
     required HeartbeatResult trade,
   }) {
     if (trade.success) {
-      if (wqs.isAuthFailure) {
-        // 保留 success；文案留给日志；errorMessage 在 success 时通常不用
-        return HeartbeatResult.success();
-      }
       return HeartbeatResult.success();
     }
 
@@ -264,17 +262,15 @@ class JdHeartbeat implements PlatformHeartbeat {
       );
     }
 
-    // trade 网络/不确定
+    // trade soft / uncertain / 真网络抖
+    if (wqs.success) {
+      // §P36-b″：wqs 订单阳性优先；软壳不得累失败
+      return HeartbeatResult.success();
+    }
+
     if (wqs.isAuthFailure) {
       return HeartbeatResult.failure(
         '登录态不确定（wqs 像登录但 trade 未确认）',
-        isAuthFailure: false,
-      );
-    }
-    if (wqs.success) {
-      // trade 抖但 wqs 活着：不 expire；按网络失败累计，避免误标
-      return HeartbeatResult.failure(
-        'trade 探活未确认（wqs 正常）: ${trade.errorMessage ?? "未知"}',
         isAuthFailure: false,
       );
     }
@@ -366,6 +362,11 @@ class JdHeartbeat implements PlatformHeartbeat {
       if (wqs.isAuthFailure) {
         debugPrint(
           '[KeepAlive] JD heartbeat success (trade OK; ignored wqs login-like)',
+        );
+      } else if (!trade.success) {
+        // §P36-b″：wqs OK，忽略 trade soft/uncertain/网络抖
+        debugPrint(
+          '[KeepAlive] JD heartbeat success (wqs OK; ignored trade soft/uncertain)',
         );
       } else {
         debugPrint('[KeepAlive] JD heartbeat success');
