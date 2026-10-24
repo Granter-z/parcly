@@ -20,6 +20,9 @@ final connectorManagerProvider = Provider<ConnectorManager>((ref) {
 
 final syncStateProvider = StateProvider<bool>((ref) => false);
 
+/// P42-b：每平台同步腿硬超时（≥ 京东 streamSync 8s）。
+const Duration kConnectorPerPlatformTimeout = Duration(seconds: 12);
+
 class ConnectorManager {
   final Ref _ref;
   final List<PlatformConnector> _realConnectors = [];
@@ -110,6 +113,8 @@ class ConnectorManager {
     List<PlatformConnector> connectors, {
     void Function()? onEarlyProgress,
     bool force = false,
+    /// 单测可缩短；生产默认 [kConnectorPerPlatformTimeout]
+    Duration? perPlatformTimeout,
   }) async {
     debugPrint('[ConnectorManager] syncWithConnectors invoked (${connectors.length} connectors)');
     final syncState = _ref.read(syncStateProvider.notifier);
@@ -140,24 +145,36 @@ class ConnectorManager {
         return 0;
       }
 
+      final legTimeout = perPlatformTimeout ?? kConnectorPerPlatformTimeout;
       final futures = connectors.map((connector) async {
         final cw = Stopwatch()..start();
         try {
-          await for (final package in connector.streamSync()) {
-            if (!PlatformAuthStore().isBlacklisted(package.id, trackingNumber: package.trackingNumber)) {
-              notifier.addPackage(package);
-              newCount++;
-              if (package.status == PackageStatus.delivering ||
-                  package.status == PackageStatus.arrived ||
-                  package.status == PackageStatus.transit) {
-                triggerEarly();
+          // P42-b：单腿硬超时；只结束本平台 future，不取消其它平台
+          await (() async {
+            await for (final package in connector.streamSync()) {
+              if (!PlatformAuthStore().isBlacklisted(package.id, trackingNumber: package.trackingNumber)) {
+                notifier.addPackage(package);
+                newCount++;
+                if (package.status == PackageStatus.delivering ||
+                    package.status == PackageStatus.arrived ||
+                    package.status == PackageStatus.transit) {
+                  triggerEarly();
+                }
               }
             }
-          }
+          })().timeout(legTimeout);
+        } on TimeoutException {
+          debugPrint(
+            '[ConnectorManager] ${connector.platformId} sync timed out '
+            '(${legTimeout.inMilliseconds}ms)',
+          );
+          // soft：无登录失效信号 → syncFailed，不踢号
+          final msg = '${connector.displayName}暂时不可达或同步超时，已保留旧数据';
+          _lastIssue = _lastIssue == null ? msg : '$_lastIssue;$msg';
         } catch (e, stack) {
           debugPrint('[ConnectorManager] Error syncing ${connector.platformId}: ${e.runtimeType}\n$stack');
           final msg = '${connector.displayName}同步响应异常，已保留旧数据';
-          _lastIssue = _lastIssue == null ? msg : '$_lastIssue；$msg';
+          _lastIssue = _lastIssue == null ? msg : '$_lastIssue;$msg';
         } finally {
           cw.stop();
           triggerEarly();
@@ -166,7 +183,7 @@ class ConnectorManager {
           await SyncHistoryManager().recordPlatformSync(connector.platformId);
           final issue = connector.lastIssue;
           if (issue != null && (_lastIssue == null || !_lastIssue!.contains(issue))) {
-            _lastIssue = _lastIssue == null ? issue : '$_lastIssue；$issue';
+            _lastIssue = _lastIssue == null ? issue : '$_lastIssue;$issue';
           }
         }
       });
