@@ -223,5 +223,94 @@ void main() {
       );
       expect(plan.touchExpired, isFalse);
     });
+
+    // --- P36-b″：wqs OK + trade soft 不得累失败 expire ---
+
+    test('P36-b″：wqs success + trade soft → combined.success，不得标失效', () {
+      final tradeSoft = HeartbeatResult.failure(
+        '无法确认登录态（软信号，不 expire）',
+        isAuthFailure: false,
+      );
+      final combined = JdHeartbeat.combineDualProbe(
+        wqs: HeartbeatResult.success(),
+        trade: tradeSoft,
+      );
+      expect(combined.success, isTrue);
+      expect(combined.isAuthFailure, isFalse);
+
+      final plan = planKeepAliveOutcome(
+        kind: KeepAliveOutcomeKind.success,
+        currentFailureCount: 3, // 真机残差基线已有 3 次失败
+      );
+      // success 可 touchExpired 清失效，但不得 touchExpired:true + expiredValue:true
+      expect(plan.touchExpired && plan.expiredValue, isFalse);
+      expect(plan.expiredValue, isFalse);
+      expect(plan.failureCount, 0);
+    });
+
+    test('P36-b″：wqs success + trade 网络抖 → combined.success', () {
+      final combined = JdHeartbeat.combineDualProbe(
+        wqs: HeartbeatResult.success(),
+        trade: net('请求超时'),
+      );
+      expect(combined.success, isTrue);
+      expect(combined.isAuthFailure, isFalse);
+    });
+
+    test('P36-b″：wqs auth + trade soft → 仍非 auth（uncertain），不得 expire', () {
+      final tradeSoft = HeartbeatResult.failure(
+        '无法确认登录态（软信号，不 expire）',
+        isAuthFailure: false,
+      );
+      final combined = JdHeartbeat.combineDualProbe(
+        wqs: auth(),
+        trade: tradeSoft,
+      );
+      expect(combined.success, isFalse);
+      expect(combined.isAuthFailure, isFalse);
+
+      final plan = planKeepAliveOutcome(
+        kind: KeepAliveOutcomeKind.networkFailure,
+        currentFailureCount: 0,
+      );
+      expect(plan.touchExpired, isFalse);
+    });
+
+    test('P36-b″：连续 4 次 wqs OK + trade soft → 每次 success，不得累满 expire', () {
+      final tradeSoft = HeartbeatResult.failure(
+        '无法确认登录态（软信号，不 expire）',
+        isAuthFailure: false,
+      );
+      var failureCount = 3;
+      for (var i = 0; i < 4; i++) {
+        final combined = JdHeartbeat.combineDualProbe(
+          wqs: HeartbeatResult.success(),
+          trade: tradeSoft,
+        );
+        expect(combined.success, isTrue, reason: 'round $i');
+        final plan = planKeepAliveOutcome(
+          kind: KeepAliveOutcomeKind.success,
+          currentFailureCount: failureCount,
+        );
+        expect(plan.touchExpired && plan.expiredValue, isFalse, reason: 'round $i');
+        expect(plan.expiredValue, isFalse, reason: 'round $i');
+        failureCount = plan.failureCount ?? 0;
+      }
+      expect(failureCount, 0);
+    });
+
+    test('P36-b″：trade 硬 auth 仍一次 expire（回归）', () {
+      final combined = JdHeartbeat.combineDualProbe(
+        wqs: HeartbeatResult.success(),
+        trade: auth('登录态已失效（HTTP 401）'),
+      );
+      expect(combined.isAuthFailure, isTrue);
+      final plan = planKeepAliveOutcome(
+        kind: KeepAliveOutcomeKind.authFailure,
+        currentFailureCount: 0,
+      );
+      expect(plan.touchExpired, isTrue);
+      expect(plan.expiredValue, isTrue);
+    });
   });
 }
