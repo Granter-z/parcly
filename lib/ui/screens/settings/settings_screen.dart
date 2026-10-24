@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../providers/platform_auth_status_provider.dart';
 import '../../../core/models/platform_ids.dart';
 import '../../../platform/storage/platform_auth_store.dart';
 import '../../../platform/connectors/connector_manager.dart';
@@ -252,9 +253,10 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     final icon = platformIcon(platform);
     final brandColor = platformBrandColor(platform);
     final isBound = _authStore.isBound(platform);
-    final liveIssue = ref.watch(connectorManagerProvider).lastIssue ?? '';
-    final isExpired = isBound &&
-        (_authStore.isExpired(platform) || liveIssue.contains(_issueKeyword(platform)));
+    // 主真相 isExpired；provider 用 resolvePlatformAuthStatus，不再靠裸关键词误判
+    final authStatus = ref.watch(platformAuthStatusProvider(platform));
+    final isExpired = authStatus == PlatformAuthStatus.needsRelogin;
+    final isSyncFailed = authStatus == PlatformAuthStatus.syncFailed;
     final boundTime = _authStore.getBoundTime(platform);
 
     return Container(
@@ -325,12 +327,16 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 Text(
                   isExpired
                       ? '登录已失效，请点击重新授权'
-                      : (isBound && boundTime != null
-                          ? '已于 ${boundTime.month}月${boundTime.day}日 授权绑定'
-                          : subtitle),
+                      : (isSyncFailed
+                          ? '最近同步失败，登录仍有效，可下拉重试'
+                          : (isBound && boundTime != null
+                              ? '已于 ${boundTime.month}月${boundTime.day}日 授权绑定'
+                              : subtitle)),
                   style: TextStyle(
                     fontSize: 11.5,
-                    color: isExpired ? Colors.orange.shade800 : Colors.grey.shade600,
+                    color: isExpired
+                        ? Colors.orange.shade800
+                        : (isSyncFailed ? Colors.grey.shade700 : Colors.grey.shade600),
                   ),
                 ),
               ],
@@ -449,21 +455,6 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     }
   }
 
-  /// 登录态失效提示在同步问题上对应的平台关键词
-  String _issueKeyword(String platform) {
-    switch (platform.toLowerCase()) {
-      case 'taobao':
-      case 'tmall':
-        return '淘宝';
-      case 'jd':
-        return '京东';
-      case 'pdd':
-        return '拼多多';
-      default:
-        return platform;
-    }
-  }
-
   /// 平台登录入口：拼多多内置移动网页端直接打开，其他平台使用专属登录
   Future<void> _openLogin({
     required String platform,
@@ -485,9 +476,10 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     );
     if (ok == true && mounted) {
       setState(() {});
-      // 授权成功后清理旧失效提示并立即同步：刷新状态并补齐取件码
+      // 只清本平台 issue，避免抹掉其它平台仍有效的失效提示
       final manager = ref.read(connectorManagerProvider);
-      manager.clearLastIssue();
+      manager.clearLastIssueFor(platform);
+      ref.invalidate(platformAuthStatusProvider);
       manager.syncAll();
     }
   }
