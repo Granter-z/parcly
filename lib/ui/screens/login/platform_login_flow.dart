@@ -44,6 +44,9 @@ Future<bool> openPlatformLogin(
   required Color brandColor,
 }) async {
   final manager = ref.read(connectorManagerProvider);
+  final store = PlatformAuthStore();
+  // P29-a：记录进入时是否已失效；失败/取消离开后立刻对齐，不等下次刷新
+  final wasExpiredAtOpen = store.isExpired(platform);
   final bool ok;
   if (platform.toLowerCase() == 'pdd') {
     // P27：登录意图打开时，检测到有效会话后自动 pop(true)；取消/失败不误跳。
@@ -52,12 +55,8 @@ Future<bool> openPlatformLogin(
       url: 'https://mobile.yangkeduo.com/login.html',
       popOnLoginSuccess: true,
     );
-    if (result == true) {
-      ok = true;
-    } else {
-      final store = PlatformAuthStore();
-      ok = store.isBound(platform) && !store.isExpired(platform);
-    }
+    // P29：失败/取消不得用「旧 cookie 仍在且未标失效」冒充成功
+    ok = result == true;
   } else {
     ok = await PlatformLoginScreen.show(
           context,
@@ -68,6 +67,9 @@ Future<bool> openPlatformLogin(
         true;
   }
   if (!ok) {
+    if (wasExpiredAtOpen) {
+      await store.setExpired(platform, true);
+    }
     ref.invalidate(platformAuthStatusProvider);
     return false;
   }

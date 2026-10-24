@@ -1,10 +1,13 @@
 /// 平台H5登录页面 - 在沙盒WebView中进行登录并安全提取Cookie
 library;
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_flutter/webview_flutter.dart';
+import '../../../core/engine/login_session_gate.dart';
 import '../../../platform/storage/platform_auth_store.dart';
 import '../../../platform/webview/platform_cookie.dart';
 
@@ -50,6 +53,14 @@ class _PlatformLoginScreenState extends State<PlatformLoginScreen> {
   int _loadingProgress = 0;
   bool _isSaving = false;
 
+  /// 打开页面前的 cookie 基线（注入前快照），用于识别静默假成功（P29-b）。
+  String? _baselineCookies;
+  bool _wasExpiredAtOpen = false;
+  bool _anomalyDetected = false;
+  bool _loginCommitted = false;
+  bool _showSlowHint = false;
+  Timer? _slowHintTimer;
+
   String get _initialUrl {
     if (widget.initialUrl != null && widget.initialUrl!.isNotEmpty) {
       return widget.initialUrl!;
@@ -93,9 +104,33 @@ class _PlatformLoginScreenState extends State<PlatformLoginScreen> {
           },
           onWebResourceError: (error) {
             debugPrint('[WebView Error] code: ${error.errorCode}, desc: ${error.description}');
+            if (mounted && !_loginCommitted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text('页面加载异常（${error.errorCode}），可点右上角重试'),
+                  behavior: SnackBarBehavior.floating,
+                ),
+              );
+            }
           },
           onPageFinished: (url) async {
-            _checkAutoLogin(url);
+            if (widget.platform.toLowerCase() == 'jd') {
+              final anomaly = await _detectJdAnomaly(url);
+              if (anomaly) {
+                _anomalyDetected = true;
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('检测到登录异常，未更新绑定状态，请重试或返回'),
+                      behavior: SnackBarBehavior.floating,
+                      duration: Duration(seconds: 4),
+                    ),
+                  );
+                }
+                return; // P29-b：异常页不得走静默成功
+              }
+            }
+            await _checkAutoLogin(url);
           },
         ),
       );
@@ -103,9 +138,20 @@ class _PlatformLoginScreenState extends State<PlatformLoginScreen> {
     _initAndLoad();
   }
 
-  /// 先注入已保存的登录态（若有），再加载页面，避免用户重复登录
+  /// 先注入已保存的登录态（若有），再加载页面，避免用户重复登录。
+  /// 注入前快照基线：静默采集若与基线同指纹，不得当成新登录（P29-b）。
   Future<void> _initAndLoad() async {
-    final saved = PlatformAuthStore().getCookies(widget.platform);
+    final store = PlatformAuthStore();
+    _baselineCookies = store.getCookies(widget.platform);
+    _wasExpiredAtOpen = store.isExpired(widget.platform);
+    _slowHintTimer?.cancel();
+    _slowHintTimer = Timer(const Duration(seconds: 12), () {
+      if (mounted && !_loginCommitted) {
+        setState(() => _showSlowHint = true);
+      }
+    });
+
+    final saved = _baselineCookies;
     if (saved != null && saved.trim().isNotEmpty) {
       final hosts = _cookieHosts.map((e) => Uri.parse(e).host).toSet();
       // 补充根域，确保阿里 SSO 全域有效
@@ -353,33 +399,37 @@ class _PlatformLoginScreenState extends State<PlatformLoginScreen> {
   ///   - 淘宝/天猫：`cookie2` 且（`unb` 或 `cookie1`）
   ///   - 京东：`pt_key` 且 `pt_pin`
   ///   - 拼多多：任一会话令牌
-  bool _hasLoginSession(String cookieStr) {
-    String? valueOf(String name) {
-      for (final part in cookieStr.split(';')) {
-        final idx = part.indexOf('=');
-        if (idx <= 0) continue;
-        if (part.substring(0, idx).trim() == name) {
-          final v = part.substring(idx + 1).trim();
-          if (v.isNotEmpty) return v;
-        }
-      }
-      return null;
-    }
+  bool _hasLoginSession(String cookieStr) =>
+      cookieStringHasLoginSession(widget.platform, cookieStr);
 
-    switch (widget.platform.toLowerCase()) {
-      case 'taobao':
-      case 'tmall':
-        return valueOf('cookie2') != null &&
-            (valueOf('unb') != null || valueOf('cookie1') != null);
-      case 'jd':
-        return valueOf('pt_key') != null && valueOf('pt_pin') != null;
-      case 'pdd':
-        return valueOf('PDDAccessToken') != null ||
-            valueOf('pdd_user_id') != null ||
-            valueOf('pdduid') != null ||
-            valueOf('AccessToken') != null;
-      default:
-        return false;
+  Future<bool> _detectJdAnomaly(String url) async {
+    String pageText = '';
+    try {
+      final raw = await _controller.runJavaScriptReturningResult(
+        '(document.body && (document.body.innerText || document.body.textContent) || "").slice(0, 800)',
+      );
+      pageText = raw.toString();
+      if (pageText.startsWith('"') && pageText.endsWith('"')) {
+        pageText = pageText.substring(1, pageText.length - 1);
+      }
+    } catch (_) {}
+    return looksLikeJdLoginAnomaly(url: url, pageText: pageText);
+  }
+
+  Future<void> _alignAuthOnUnsuccessfulLeave() async {
+    if (_loginCommitted) return;
+    if (!shouldMarkExpiredOnLoginLeave(
+      loginCommitted: _loginCommitted,
+      wasExpiredAtOpen: _wasExpiredAtOpen,
+      anomalyDetected: _anomalyDetected,
+    )) {
+      return;
+    }
+    try {
+      await PlatformAuthStore().setExpired(widget.platform, true);
+      debugPrint('[Login] P29-a aligned expired on leave for ${widget.platform}');
+    } catch (e) {
+      debugPrint('[Login] align expired failed: $e');
     }
   }
 
@@ -435,9 +485,39 @@ class _PlatformLoginScreenState extends State<PlatformLoginScreen> {
         return;
       }
 
+      // P29-b：禁止把「注入旧 cookie 后采到的同一会话」当成新登录
+      if (_anomalyDetected ||
+          !mayCommitNewLoginSuccess(
+            platform: widget.platform,
+            collectedCookies: cookieStr,
+            baselineCookies: _baselineCookies,
+            anomalyDetected: _anomalyDetected,
+          )) {
+        debugPrint(
+          '[Login] Reject commit: anomaly=$_anomalyDetected '
+          'sameAsBaseline=${isSameLoginSession(platform: widget.platform, baselineCookies: _baselineCookies, collectedCookies: cookieStr)}',
+        );
+        if (!silent && mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                _anomalyDetected
+                    ? '登录异常，未更新绑定状态'
+                    : '未检测到新的登录会话（可能仍是旧登录态），请重新完成登录后再绑定',
+              ),
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+        }
+        setState(() => _isSaving = false);
+        return;
+      }
+
       await store.saveCookies(widget.platform, cookieStr);
       await store.setExpired(widget.platform, false);
       await _rememberEntryUrl();
+      _loginCommitted = true;
+      _slowHintTimer?.cancel();
 
       HapticFeedback.mediumImpact();
       if (!mounted) return;
@@ -462,6 +542,12 @@ class _PlatformLoginScreenState extends State<PlatformLoginScreen> {
     }
   }
 
+  @override
+  void dispose() {
+    _slowHintTimer?.cancel();
+    super.dispose();
+  }
+
   /// 会话冲突风险提示文案（null 表示无已知风险）
   String? get _riskWarning {
     if (widget.platform.toLowerCase() == 'pdd') {
@@ -472,7 +558,15 @@ class _PlatformLoginScreenState extends State<PlatformLoginScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
+    return PopScope(
+      canPop: true,
+      onPopInvokedWithResult: (didPop, result) async {
+        // 系统返回 / 非成功 pop：立刻对齐失效态（P29-a）
+        if (!didPop) return;
+        if (result == true || _loginCommitted) return;
+        await _alignAuthOnUnsuccessfulLeave();
+      },
+      child: Scaffold(
       appBar: AppBar(
         title: Text(
           '登录 ${widget.displayName}',
@@ -528,6 +622,32 @@ class _PlatformLoginScreenState extends State<PlatformLoginScreen> {
                 ],
               ),
             ),
+          if (_showSlowHint)
+            Material(
+              color: const Color(0xFFFFF8EF),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                child: Row(
+                  children: [
+                    Icon(Icons.hourglass_top_rounded, size: 16, color: Colors.orange.shade800),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        '加载较慢？可点右上角刷新重试，或稍候再完成登录',
+                        style: TextStyle(fontSize: 12, color: Colors.orange.shade900),
+                      ),
+                    ),
+                    TextButton(
+                      onPressed: () {
+                        setState(() => _showSlowHint = false);
+                        _controller.reload();
+                      },
+                      child: const Text('重试', style: TextStyle(fontSize: 12)),
+                    ),
+                  ],
+                ),
+              ),
+            ),
           Expanded(
             child: Stack(
               children: [
@@ -572,6 +692,7 @@ class _PlatformLoginScreenState extends State<PlatformLoginScreen> {
           ),
         ),
       ),
+    ),
     );
   }
 }

@@ -18,6 +18,7 @@ import '../../../core/models/package.dart';
 import '../../../core/models/package_status.dart';
 import '../../../platform/connectors/connector_manager.dart';
 import '../../../platform/connectors/pdd_connector.dart';
+import '../../../core/engine/login_session_gate.dart';
 import '../../../platform/storage/platform_auth_store.dart';
 import '../../../platform/webview/platform_cookie.dart';
 import '../../providers/package_provider.dart';
@@ -116,6 +117,11 @@ class _PddWebScreenState extends ConsumerState<PddWebScreen>
 
   /// P27：登录成功自动 pop 只触发一次，避免重复 pop。
   bool _didAutoPopLogin = false;
+
+  /// P29：打开前 cookie 基线；登录意图下禁止旧会话清失效。
+  String? _baselineCookies;
+  bool _wasExpiredAtOpen = false;
+  bool _loginCommitted = false;
 
   static const String _defaultHomeUrl = 'https://mobile.yangkeduo.com/';
   static const String _ordersUrl = 'https://mobile.yangkeduo.com/orders.html?tab=0';
@@ -307,7 +313,10 @@ class _PddWebScreenState extends ConsumerState<PddWebScreen>
 
   /// 初始化并注入已保存的会话 Cookie
   Future<void> _initAndLoad() async {
-    final saved = PlatformAuthStore().getCookies('pdd');
+    final store = PlatformAuthStore();
+    _baselineCookies = store.getCookies('pdd');
+    _wasExpiredAtOpen = store.isExpired('pdd');
+    final saved = _baselineCookies;
     if (saved != null && saved.trim().isNotEmpty) {
       final hosts = _cookieHosts.map((e) => Uri.parse(e).host).toSet();
       // 原生注入，保留 HttpOnly/Secure，避免会话令牌被页面脚本读取
@@ -603,9 +612,31 @@ class _PddWebScreenState extends ConsumerState<PddWebScreen>
 
       if (hasToken) {
         final store = PlatformAuthStore();
+        final canCommitNew = mayCommitNewLoginSuccess(
+          platform: 'pdd',
+          collectedCookies: merged,
+          baselineCookies: _baselineCookies,
+        );
         final alreadyOk = store.isBound('pdd') && !store.isExpired('pdd');
+
+        // P29-b：登录意图或进入时已失效 → 仅当本轮是新会话才落盘并清失效
+        // 浏览态且原本健康 → 允许刷新同会话 cookie（不冒充「新登录」）
+        final allowPersist = canCommitNew ||
+            (!widget.popOnLoginSuccess && !_wasExpiredAtOpen && alreadyOk);
+
+        if (!allowPersist) {
+          debugPrint(
+            '[PddWeb] skip cookie persist: canCommitNew=$canCommitNew '
+            'popOnLogin=${widget.popOnLoginSuccess} wasExpired=$_wasExpiredAtOpen',
+          );
+          return;
+        }
+
         await store.saveCookies('pdd', merged);
-        await store.setExpired('pdd', false);
+        if (canCommitNew) {
+          await store.setExpired('pdd', false);
+          _loginCommitted = true;
+        }
         final currentHref = await _controller.runJavaScriptReturningResult('location.href');
         var hrefStr = currentHref.toString();
         if (hrefStr.startsWith('"') && hrefStr.endsWith('"')) {
@@ -614,9 +645,9 @@ class _PddWebScreenState extends ConsumerState<PddWebScreen>
         if (hrefStr.startsWith('http') && !hrefStr.contains('login')) {
           await store.saveEntryUrl('pdd', hrefStr);
         }
-        // P27：登录意图下，从非健康态首次拿到会话后立刻离开登录 WebView
+        // P27：登录意图下，本轮新会话才离开登录 WebView（P29：旧会话回声不 pop）
         if (widget.popOnLoginSuccess &&
-            !alreadyOk &&
+            canCommitNew &&
             !_didAutoPopLogin &&
             mounted) {
           _didAutoPopLogin = true;
@@ -817,17 +848,36 @@ class _PddWebScreenState extends ConsumerState<PddWebScreen>
       await _controller.goBack();
       return false;
     }
-    // 退出前最后落盘一次会话与嗅探
     await _sniffCurrentPageLogistics();
-    await _collectAndSaveCookies();
+    if (widget.popOnLoginSuccess) {
+      await _alignAuthOnUnsuccessfulLeave();
+    } else {
+      await _collectAndSaveCookies();
+    }
     return true;
+  }
+
+  Future<void> _alignAuthOnUnsuccessfulLeave() async {
+    if (!widget.popOnLoginSuccess || _loginCommitted) return;
+    if (!_wasExpiredAtOpen) return;
+    try {
+      await PlatformAuthStore().setExpired('pdd', true);
+      debugPrint('[PddWeb] P29-a aligned expired on leave');
+    } catch (e) {
+      debugPrint('[PddWeb] align expired failed: $e');
+    }
   }
 
   /// 直接关闭并返回取件助手首页
   Future<void> _closeToHome() async {
     HapticFeedback.lightImpact();
     await _sniffCurrentPageLogistics();
-    await _collectAndSaveCookies();
+    if (widget.popOnLoginSuccess) {
+      // 登录意图离开：不要再用旧会话落盘冒充成功
+      await _alignAuthOnUnsuccessfulLeave();
+    } else {
+      await _collectAndSaveCookies();
+    }
     // 若 _collectAndSaveCookies 已因登录成功 auto-pop，则不再二次 pop
     if (mounted && !_didAutoPopLogin) {
       Navigator.of(context).pop(widget.popOnLoginSuccess ? false : null);
