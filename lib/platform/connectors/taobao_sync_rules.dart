@@ -7,6 +7,7 @@ library;
 
 import '../../core/engine/logistics_status_engine.dart';
 import '../../core/engine/package_identity.dart';
+import '../../core/engine/station_grouping.dart';
 import '../../core/models/package.dart';
 import '../../core/models/package_status.dart';
 
@@ -62,4 +63,37 @@ Package applyCainiaoPriority(Package taobao, List<Package> cainiao, {Package? lo
     stationName: (cn.stationName ?? '').isNotEmpty ? cn.stationName : taobao.stationName,
     urgency: LogisticsStatusEngine.urgencyFor(status: PackageStatus.arrived, pickupCode: cn.pickupCode),
   );
+}
+
+/// 本地是否已有「待取件 + 取件码」（P23-b 跳过菜鸟 WebView 的前置条件）。
+bool hasLocalAwaitingPickupWithCode(Iterable<Package> local) {
+  for (final p in local) {
+    if (isAwaitingPickup(p) && p.pickupCode.trim().isNotEmpty) return true;
+  }
+  return false;
+}
+
+/// 跳过菜鸟 WebView 时，用本地待取件+码种子填充阶段 1 列表，供 [applyCainiaoPriority] 仍正确。
+List<Package> localCainiaoSeedForPriority(Iterable<Package> local) {
+  return [
+    for (final p in local)
+      if (isAwaitingPickup(p) && p.pickupCode.trim().isNotEmpty) p,
+  ];
+}
+
+/// P23-b：非 force，且本地已有待取件+取件码，且距上次菜鸟成功产出 < [threshold] → 跳过 WebView。
+///
+/// [force]=true（用户下拉）必须跑阶段 1。
+bool shouldSkipCainiaoWebView({
+  required bool force,
+  required bool hasLocalAwaitingWithCode,
+  required DateTime? lastCainiaoSuccess,
+  Duration threshold = const Duration(minutes: 20),
+  DateTime? now,
+}) {
+  if (force) return false;
+  if (!hasLocalAwaitingWithCode) return false;
+  if (lastCainiaoSuccess == null) return false;
+  final clock = now ?? DateTime.now();
+  return clock.difference(lastCainiaoSuccess) < threshold;
 }

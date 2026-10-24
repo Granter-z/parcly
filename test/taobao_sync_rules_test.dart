@@ -97,4 +97,135 @@ void main() {
       expect(toRequest, ['1000000000000000001', '1000000000000000002']);
     });
   });
+
+  group('P23-a：详情任务列表吃 finalNeedFetch（已签收有轨迹 → 0 次详情）', () {
+    test('智能跳过后再滤已签收 → 详情任务长度为 0', () {
+      final local = [
+        _pkg(id: 'TB_1000000000000000001', tracking: 'YT00*******0001', timeline: _timeline),
+      ];
+      // 模拟 connector：订单列表只有这一单有物流
+      final withLogistics = ['1000000000000000001'];
+      // SyncOptimizer 对已签收也会跳（completed），但即使 force 拉进 needFetch，
+      // shouldSkipSignedDetail 仍会滤掉 → finalNeedFetch 为空
+      final needFetch = withLogistics.where((o) {
+        final lp = findLocalTaobaoPackage(local, o);
+        // 与 SyncOptimizer 已完成跳过同口径：这里直接用 shouldSkipSignedDetail 覆盖「已签收有轨迹」
+        return !shouldSkipSignedDetail(lp);
+      }).toList();
+      expect(needFetch, isEmpty, reason: '已签收有轨迹不得进入详情任务列表');
+    });
+
+    test('在途本地 → 仍需进详情任务列表', () {
+      final local = [
+        _pkg(
+          id: 'TB_1000000000000000002',
+          tracking: 'YT00*******0002',
+          status: PackageStatus.transit,
+          timeline: _timeline,
+        ),
+      ];
+      final withLogistics = ['1000000000000000002'];
+      final finalNeedFetch = withLogistics
+          .where((o) => !shouldSkipSignedDetail(findLocalTaobaoPackage(local, o)))
+          .toList();
+      expect(finalNeedFetch, ['1000000000000000002']);
+    });
+  });
+
+  group('P23-b：菜鸟 WebView 可跳', () {
+    final now = DateTime(2026, 10, 24, 23, 50);
+
+    Package awaitingWithCode() => Package(
+          id: 'CN_YT0012345678901',
+          trackingNumber: 'YT0012345678901',
+          courier: CourierType.yt,
+          urgency: UrgencyLevel.urgent,
+          status: PackageStatus.arrived,
+          addedAt: now.subtract(const Duration(hours: 1)),
+          platform: 'cainiao',
+          pickupCode: '12-3-4567',
+          stationName: '测试驿站',
+        );
+
+    test('hasLocalAwaitingPickupWithCode：待取+码 → true；无码/已取 → false', () {
+      expect(hasLocalAwaitingPickupWithCode([awaitingWithCode()]), isTrue);
+      expect(
+        hasLocalAwaitingPickupWithCode([
+          awaitingWithCode().copyWith(pickupCode: ''),
+        ]),
+        isFalse,
+      );
+      expect(
+        hasLocalAwaitingPickupWithCode([
+          awaitingWithCode().copyWith(status: PackageStatus.pickedUp),
+        ]),
+        isFalse,
+      );
+      expect(hasLocalAwaitingPickupWithCode(const []), isFalse);
+    });
+
+    test('非 force + 本地有码 + 10 分钟前成功 → 跳过', () {
+      expect(
+        shouldSkipCainiaoWebView(
+          force: false,
+          hasLocalAwaitingWithCode: true,
+          lastCainiaoSuccess: now.subtract(const Duration(minutes: 10)),
+          now: now,
+        ),
+        isTrue,
+      );
+    });
+
+    test('force=true → 不跳（下拉必跑阶段 1）', () {
+      expect(
+        shouldSkipCainiaoWebView(
+          force: true,
+          hasLocalAwaitingWithCode: true,
+          lastCainiaoSuccess: now.subtract(const Duration(minutes: 1)),
+          now: now,
+        ),
+        isFalse,
+      );
+    });
+
+    test('从未成功 / 超过 20min / 本地无待取码 → 不跳', () {
+      expect(
+        shouldSkipCainiaoWebView(
+          force: false,
+          hasLocalAwaitingWithCode: true,
+          lastCainiaoSuccess: null,
+          now: now,
+        ),
+        isFalse,
+      );
+      expect(
+        shouldSkipCainiaoWebView(
+          force: false,
+          hasLocalAwaitingWithCode: true,
+          lastCainiaoSuccess: now.subtract(const Duration(minutes: 21)),
+          now: now,
+        ),
+        isFalse,
+      );
+      expect(
+        shouldSkipCainiaoWebView(
+          force: false,
+          hasLocalAwaitingWithCode: false,
+          lastCainiaoSuccess: now.subtract(const Duration(minutes: 1)),
+          now: now,
+        ),
+        isFalse,
+      );
+    });
+
+    test('跳过时 seed 保留待取件+码，供 applyCainiaoPriority', () {
+      final local = [
+        awaitingWithCode(),
+        _pkg(status: PackageStatus.transit, timeline: _timeline),
+      ];
+      final seed = localCainiaoSeedForPriority(local);
+      expect(seed, hasLength(1));
+      expect(seed.single.pickupCode, '12-3-4567');
+    });
+  });
 }

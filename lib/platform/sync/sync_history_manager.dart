@@ -99,6 +99,12 @@ class SyncHistoryManager {
     return false;
   }
 
+  /// P23-b：记录菜鸟驿站 WebView 阶段成功产出时间（子键 `cainiao`）。
+  Future<void> recordCainiaoSuccess() => recordPlatformSync('cainiao');
+
+  /// P23-b：上次菜鸟成功产出时间；从未成功则为 null。
+  DateTime? getCainiaoLastSuccess() => getPlatformLastSync('cainiao');
+
   /// 清理过期记录（7 天前的记录）
   Future<void> cleanExpiredRecords() async {
     await _ensureInit();

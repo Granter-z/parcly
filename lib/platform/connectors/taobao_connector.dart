@@ -103,29 +103,43 @@ class TaobaoH5Connector implements PlatformConnector {
 
     // ── 阶段 1：直连淘宝内嵌菜鸟驿站（Cainiao Station）抓取待取件包裹与真实货架码 ──
     // 本次同步菜鸟列表里的包裹，阶段 2 用来「以菜鸟为准」（淘宝已签收但驿站还挂着）
+    // P23-b：非 force 且本地已有待取件+码且距上次菜鸟成功 <20min → 跳过 WebView
+    final forceEarly = _shouldForceRefetch?.call() ?? false;
+    final localEarly = _getLocalPackages?.call() ?? const <Package>[];
     final cainiaoPackages = <Package>[];
     try {
-      final cainiaoItems = await _fetchCainiaoStationPackages(cookies);
-      if (_cancelled) return;
-      // 日志只记数量，不打印运单号、取件码、驿站名
-      _logTb('[Cainiao] 阶段 1 产出待取件包裹 ${cainiaoItems.length} 个');
-      for (final item in cainiaoItems) {
+      final skipCainiao = shouldSkipCainiaoWebView(
+        force: forceEarly,
+        hasLocalAwaitingWithCode: hasLocalAwaitingPickupWithCode(localEarly),
+        lastCainiaoSuccess: _syncHistory.getCainiaoLastSuccess(),
+      );
+      if (skipCainiao) {
+        _logTb('[Cainiao] Cainiao skip (recent)');
+        cainiaoPackages.addAll(localCainiaoSeedForPriority(localEarly));
+      } else {
+        final cainiaoItems = await _fetchCainiaoStationPackages(cookies);
         if (_cancelled) return;
-        final cn = Package(
-          id: 'CN_${item.trackingNumber}',
-          trackingNumber: item.trackingNumber,
-          courier: _resolveCourier(item.courier),
-          goodsName: '快递包裹',
-          stationName: item.stationName.isNotEmpty ? item.stationName : '菜鸟驿站',
-          pickupCode: item.pickupCode,
-          location: item.stationName,
-          platform: 'cainiao',
-          urgency: UrgencyLevel.urgent,
-          status: PackageStatus.arrived,
-          addedAt: DateTime.now(),
-        );
-        cainiaoPackages.add(cn);
-        yield cn;
+        // 日志只记数量，不打印运单号、取件码、驿站名
+        _logTb('[Cainiao] 阶段 1 产出待取件包裹 ${cainiaoItems.length} 个');
+        await _syncHistory.recordCainiaoSuccess();
+        for (final item in cainiaoItems) {
+          if (_cancelled) return;
+          final cn = Package(
+            id: 'CN_${item.trackingNumber}',
+            trackingNumber: item.trackingNumber,
+            courier: _resolveCourier(item.courier),
+            goodsName: '快递包裹',
+            stationName: item.stationName.isNotEmpty ? item.stationName : '菜鸟驿站',
+            pickupCode: item.pickupCode,
+            location: item.stationName,
+            platform: 'cainiao',
+            urgency: UrgencyLevel.urgent,
+            status: PackageStatus.arrived,
+            addedAt: DateTime.now(),
+          );
+          cainiaoPackages.add(cn);
+          yield cn;
+        }
       }
     } catch (e) {
       _logTb('[Cainiao] 阶段 1 异常：${e.runtimeType}');
@@ -180,7 +194,8 @@ class TaobaoH5Connector implements PlatformConnector {
         maxDelay: const Duration(milliseconds: 300),
       );
 
-      final detailTasks = needFetchOrders.map((order) {
+      // P23-a：详情任务必须吃 finalNeedFetch（已签收有轨迹已滤），与上面日志一致
+      final detailTasks = finalNeedFetch.map((order) {
         return () => _fetchSsrLogistics(client, cookies, order.orderId).then((parcel) {
           return {'order': order, 'parcel': parcel};
         });
