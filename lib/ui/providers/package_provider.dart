@@ -6,6 +6,7 @@ import '../../core/debug/debug_trace.dart';
 import '../../core/debug/metrics.dart';
 import '../../core/engine/arrived_at.dart';
 import '../../core/engine/station_grouping.dart';
+import 'pickup_point_alias_provider.dart';
 import '../../core/engine/package_identity.dart';
 import '../../core/engine/timeline_merge.dart';
 import '../../platform/storage/hive_package.dart';
@@ -95,7 +96,7 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
             if ((officialStatus == PackageStatus.arrived || pkg.description.contains('已派送至')) &&
                 pkg.status != PackageStatus.pickedUp) {
               var station = pkg.stationName;
-              if (station == null || station.isEmpty || station == '未知驿站') {
+              if (isUnknownStationLabel(station)) {
                 final m = RegExp(r'【([^】]{2,30})】').firstMatch(pkg.description);
                 if (m != null) station = m.group(1);
               }
@@ -429,8 +430,8 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
   static String preferStationName(String current, String incoming) {
     final cur = current.trim();
     final inc = incoming.trim();
-    if (inc.isEmpty || inc == '未知驿站') return cur;
-    if (cur.isEmpty || cur == '未知驿站') return inc;
+    if (isUnknownStationLabel(inc)) return cur;
+    if (isUnknownStationLabel(cur)) return inc;
 
     // 泛称的信息量排序，用于「两个泛称之间取更具体的那个」
     const genericRank = {'菜鸟驿站': 3, '驿站': 2, '自提点': 1};
@@ -771,12 +772,15 @@ final completedPackagesProvider = Provider<List<Package>>((ref) {
 /// 包裹进入终结状态的时间（取件、归档或拒收），用于已完成列表排序
 DateTime _completedAt(Package p) => p.pickedUpAt ?? p.archivedAt ?? p.addedAt;
 
-/// 待取件按驿站分组（读 [Package.arrivedAt]；见 [groupPackagesByStation]）。
+/// 待取件按取件点分组（读 [Package.arrivedAt]；经别名表后再分组，见 [groupPackagesByStation]）。
 final groupedPendingPackagesProvider = Provider<List<StationGroup>>((ref) {
-  return groupPackagesByStation(ref.watch(packageListProvider));
+  return groupPackagesByStation(
+    ref.watch(packageListProvider),
+    aliases: ref.watch(pickupPointAliasesProvider),
+  );
 });
 
-/// 在途扁平列表：pending 里不算「待取件」的（派送中 / 运送中 / 待发货），不按驿站分组。
+/// 在途扁平列表：pending 里不算「待取件」的（派送中 / 运送中 / 待发货），不按取件点分组。
 final inTransitPackagesProvider = Provider<List<Package>>((ref) {
   final all = ref.watch(packageListProvider);
   final inTransit = all.where((p) => p.status.isPending && !isAwaitingPickup(p)).toList();

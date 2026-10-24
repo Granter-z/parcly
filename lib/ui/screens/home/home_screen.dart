@@ -52,7 +52,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   bool _justSynced = false;
   Timer? _justSyncedTimer;
 
-  /// 折叠起来的驿站分组（按组名记）。
+  /// 折叠起来的取件点分组（按组名记）。
   final Set<String> _collapsedStations = {};
 
   @override
@@ -251,7 +251,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                 ),
               ),
 
-              // ② 待取件：按驿站分组（arrivedAt 排序 / 快过期由卡片读）
+              // ② 待取件：按取件点分组（arrivedAt 排序 / 快过期由卡片读）
               if (pickupCount > 0) ...[
                 SliverToBoxAdapter(
                   child: _sectionTitle('待取件', pickupCount),
@@ -259,7 +259,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                 for (final group in stationGroups) ..._stationGroupSlivers(group),
               ],
 
-              // ③ 在途：扁平列表，不按驿站分组
+              // ③ 在途：扁平列表，不按取件点分组
               if (inTransitPackages.isNotEmpty) ...[
                 SliverToBoxAdapter(
                   child: _sectionTitle('在途', inTransitPackages.length),
@@ -303,7 +303,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     );
   }
 
-  /// 一个驿站分组：可折叠标题 + 组内卡片列表。
+  /// 一个取件点分组：可折叠标题 + 组内卡片列表。
   List<Widget> _stationGroupSlivers(StationGroup group) {
     final collapsed = _collapsedStations.contains(group.name);
     return [

@@ -91,7 +91,7 @@ class HeroStatsDashboard extends ConsumerWidget {
     if (advice != null && advice.isNotEmpty) return advice;
 
     final lead = decision.lead;
-    if (decision.arrivedCount > 0) return '已送达驿站，点击卡片查看取件码';
+    if (decision.arrivedCount > 0) return '已送达取件点，点击卡片查看取件码';
     if (decision.deliveringCount > 0) return '快递员正在派送，留意来电';
     if (decision.transitCount > 0) return '包裹运送中，到站后会第一时间提醒';
     if (lead.count > 0) return '商家正在备货，发货后自动同步';

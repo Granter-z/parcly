@@ -85,10 +85,14 @@ class _TrackingTimelineSheetState extends State<TrackingTimelineSheet> {
     );
   }
 
-  /// 取件凭证栏的站点文案：优先用简洁的驿站名，避免整段收货地址把取件码挤出屏幕
+  /// 取件凭证栏的站点文案：优先用简洁的取件点名，避免整段收货地址把取件码挤出屏幕
   String _credentialLocation(Package pkg) {
     final station = pkg.stationName?.trim() ?? '';
-    if (station.isNotEmpty && station != '未知驿站') return station;
+    if (station.isNotEmpty &&
+        station != '未知取件点' &&
+        station != '未知驿站') {
+      return station;
+    }
     final original = pkg.originalStation.trim();
     if (original.isNotEmpty) return original;
     return pkg.displayLocation;
