@@ -174,15 +174,10 @@ class _PlatformLoginScreenState extends State<PlatformLoginScreen> {
     });
 
     final saved = _baselineCookies;
-    // P37-b：已失效重登不注入旧 cookie，清罐并清空门闸基线，避免同指纹拒绑
+    // P37-b：已失效重登不注入旧 cookie，清空门闸基线（不 clearCookies，避免误伤淘宝/拼多多）
     if (_wasExpiredAtOpen) {
-      try {
-        await WebViewCookieManager().clearCookies();
-      } catch (e) {
-        debugPrint('[Login] clearCookies failed: $e');
-      }
       _baselineCookies = null;
-      debugPrint('[Login] P37 skip inject: expired re-auth, jar cleared');
+      debugPrint('[Login] P37 skip inject: expired re-auth');
     } else if (saved != null && saved.trim().isNotEmpty) {
       final hosts = _cookieHosts.map((e) => Uri.parse(e).host).toSet();
       // 补充根域，确保阿里 SSO 全域有效
