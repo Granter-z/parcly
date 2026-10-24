@@ -160,39 +160,83 @@ class JdHeartbeat implements PlatformHeartbeat {
       'https://trade.m.jd.com/order/orderlist_jdm.shtml';
 
   /// 根据 HTTP 状态 / 响应体 / Location 判定单次探活结局（纯函数，可单测）
+  ///
+  /// P36-b′：硬信号才 `isAuthFailure`；SPA 壳常见 login/passport 串为软信号
+  ///（不 expire）；订单阳性优先于软信号成功。
   static HeartbeatResult classifyResponse({
     required int statusCode,
     required String body,
     String location = '',
   }) {
     if (statusCode == 200) {
-      if (body.contains('请登录') ||
-          body.contains('login.m.jd.com') ||
-          body.contains('passport.jd.com') ||
-          body.contains('"isLogin":false') ||
-          body.contains('"loginFlag":false')) {
-        return HeartbeatResult.failure('登录态已失效（响应要求登录）', isAuthFailure: true);
+      final hard = _hardAuthTag(body);
+      if (hard != null) {
+        _logClassify(statusCode, hard, body.length);
+        return HeartbeatResult.failure(
+          '登录态已失效（响应要求登录）',
+          isAuthFailure: true,
+        );
       }
-      if (body.contains('orderList') ||
-          body.contains('订单') ||
-          body.contains('我的订单')) {
+      if (_hasOrderPositive(body)) {
+        _logClassify(statusCode, 'order', body.length);
         return HeartbeatResult.success();
       }
+      final soft = _softAuthTag(body);
+      if (soft != null) {
+        _logClassify(statusCode, soft, body.length);
+        return HeartbeatResult.failure(
+          '无法确认登录态（软信号，不 expire）',
+          isAuthFailure: false,
+        );
+      }
+      _logClassify(statusCode, 'none', body.length);
       return HeartbeatResult.failure('无法确认登录态（响应异常）', isAuthFailure: false);
     }
     if (statusCode == 302 || statusCode == 301) {
-      if (location.contains('login')) {
+      // Location→login/plogin/passport 视为硬失效（含 plogin 真踢号）
+      if (location.contains('login') || location.contains('passport')) {
+        _logClassify(statusCode, 'hard:redirect', body.length);
         return HeartbeatResult.failure('登录态已失效（重定向到登录页）', isAuthFailure: true);
       }
+      _logClassify(statusCode, 'redirect-ok', body.length);
       return HeartbeatResult.success();
     }
     if (statusCode == 401 || statusCode == 403) {
+      _logClassify(statusCode, 'hard:http$statusCode', body.length);
       return HeartbeatResult.failure(
         '登录态已失效（HTTP $statusCode）',
         isAuthFailure: true,
       );
     }
+    _logClassify(statusCode, 'http-other', body.length);
     return HeartbeatResult.failure('HTTP $statusCode', isAuthFailure: false);
+  }
+
+  /// 硬失效文案/布尔（才 expire）。不含 SPA 壳 host 串。
+  static String? _hardAuthTag(String body) {
+    if (body.contains('"isLogin":false')) return 'hard:isLogin';
+    if (body.contains('"loginFlag":false')) return 'hard:loginFlag';
+    if (body.contains('请登录')) return 'hard:请登录';
+    return null;
+  }
+
+  /// SPA 壳常见软词：仅 uncertain，不 setExpired。
+  /// 故意保留裸 contains——`plogin.m.jd.com` 也会命中，但走非 auth。
+  static String? _softAuthTag(String body) {
+    if (body.contains('login.m.jd.com')) return 'soft:login.m.jd.com';
+    if (body.contains('passport.jd.com')) return 'soft:passport.jd.com';
+    return null;
+  }
+
+  static bool _hasOrderPositive(String body) =>
+      body.contains('orderList') ||
+      body.contains('订单') ||
+      body.contains('我的订单');
+
+  static void _logClassify(int statusCode, String matchedRule, int bodyLen) {
+    debugPrint(
+      '[KeepAlive] JD classify status=$statusCode matchedRule=$matchedRule bodyLen=$bodyLen',
+    );
   }
 
   /// 合并 wqs + trade 双探结果（纯函数，可单测）
