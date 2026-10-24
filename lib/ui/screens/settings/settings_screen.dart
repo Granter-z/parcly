@@ -14,6 +14,7 @@ import '../../providers/platform_auth_status_provider.dart';
 import '../login/platform_login_flow.dart';
 import 'background_sync_test_screen.dart';
 import 'keep_alive_status_screen.dart';
+import 'pickup_point_merge_screen.dart';
 
 class SettingsScreen extends ConsumerStatefulWidget {
   const SettingsScreen({super.key});
@@ -52,6 +53,31 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             if (platform != kPlatformIds.first) const SizedBox(height: 12),
             _buildPlatformCard(platform),
           ],
+
+          const SizedBox(height: 28),
+
+          // ── Section 2: 取件点（P28-d）─────────────────────
+          _buildSectionHeader('取件点', '同地点多名时可合并为一组'),
+          const SizedBox(height: 10),
+          Container(
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(16),
+            ),
+            child: ListTile(
+              leading: const Icon(Icons.merge_type_rounded, color: Color(0xFF5856D6)),
+              title: const Text('取件点合并', style: TextStyle(fontSize: 14.5, fontWeight: FontWeight.w600)),
+              subtitle: const Text('把同一地点的不同叫法合并成一组', style: TextStyle(fontSize: 12)),
+              trailing: const Icon(Icons.chevron_right_rounded, size: 20, color: Colors.grey),
+              onTap: () {
+                HapticFeedback.lightImpact();
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const PickupPointMergeScreen()),
+                );
+              },
+            ),
+          ),
 
           const SizedBox(height: 28),
 
