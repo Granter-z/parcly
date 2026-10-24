@@ -1,7 +1,7 @@
 /// 带有弹簧物理触感与按压回弹的现代卡片组件
 ///
-/// P31：`glass: true` 走半透明列表材质（**无** BackdropFilter）；
-/// 真模糊请直接用 [GlassSurface]（enableBlur: true）。
+/// P32：`glass: true` 已改为 **内容抬升面**（无 BackdropFilter）。
+/// 真 Liquid Glass 请用 [GlassChrome]（仅功能层）。
 library;
 
 import 'package:flutter/material.dart';
@@ -23,7 +23,7 @@ class SpringCard extends StatefulWidget {
   final Border? border;
   final List<BoxShadow>? boxShadow;
 
-  /// 半透明玻璃列表卡（无逐行 blur）。
+  /// 历史名：现为内容抬升面（近实心），**不是** Liquid Glass。
   final bool glass;
 
   final Color? glassFill;
@@ -107,20 +107,20 @@ class _SpringCardState extends State<SpringCard>
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final cardBorderRadius = widget.borderRadius ??
-        (widget.glass ? GlassTokens.radiusAll : AppRadius.mdAll);
+        (widget.glass ? GlassTokens.radiusContentAll : AppRadius.mdAll);
 
     final Widget body;
     if (widget.glass) {
-      body = GlassSurface(
-        enableBlur: false, // CTO：列表卡不开逐行 blur
+      // P32：内容抬升面，禁止逐行 BackdropFilter
+      body = ContentSurface(
         padding: widget.padding,
         borderRadius: cardBorderRadius,
-        fill: widget.glassFill ?? GlassTokens.fillListCard,
+        fill: widget.glassFill ?? GlassTokens.contentFill,
         borderColor: widget.border?.top.color ??
             widget.glassBorderColor ??
-            GlassTokens.border,
+            GlassTokens.contentBorder,
         borderWidth: widget.border?.top.width ?? 1,
-        boxShadow: widget.boxShadow ?? GlassTokens.listCardShadow,
+        boxShadow: widget.boxShadow ?? GlassTokens.contentShadow,
         child: widget.child,
       );
     } else {
@@ -130,14 +130,7 @@ class _SpringCardState extends State<SpringCard>
           color: widget.color ?? theme.colorScheme.surface,
           borderRadius: cardBorderRadius,
           border: widget.border,
-          boxShadow: widget.boxShadow ??
-              [
-                BoxShadow(
-                  color: const Color(0xFF2C2C2E).withValues(alpha: 0.05),
-                  blurRadius: 14,
-                  offset: const Offset(0, 4),
-                ),
-              ],
+          boxShadow: widget.boxShadow ?? GlassTokens.contentShadow,
         ),
         child: widget.child,
       );

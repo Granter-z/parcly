@@ -197,7 +197,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
             bottom: false,
             child: RefreshIndicator(
               color: AppColors.primaryStrong,
-              backgroundColor: GlassTokens.fillStrong,
+              backgroundColor: AppColors.surface,
               onRefresh: () async {
                 HapticFeedback.lightImpact();
                 await _runSync();
@@ -461,14 +461,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
             HapticFeedback.lightImpact();
             PddWebScreen.open(context);
           },
-          borderRadius: GlassTokens.radiusAll,
-          child: GlassSurface(
-            enableBlur: false,
+          borderRadius: GlassTokens.radiusContentAll,
+          child: ContentSurface(
             padding: const EdgeInsets.symmetric(
               horizontal: AppSpacing.md,
               vertical: AppSpacing.md,
             ),
-            borderRadius: GlassTokens.radiusAll,
+            borderRadius: GlassTokens.radiusContentAll,
             borderColor: const Color(0xFFE02E24).withValues(alpha: 0.22),
             child: Row(
               children: [
@@ -611,11 +610,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
         AppSpacing.xl,
         AppSpacing.lg,
       ),
-      child: GlassSurface(
-        enableBlur: false,
+      child: ContentSurface(
         padding: const EdgeInsets.all(AppSpacing.xxxl),
         borderRadius: GlassTokens.radiusAll,
-        fill: GlassTokens.fillStrong,
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
@@ -669,11 +666,11 @@ class _GlassIconButton extends StatelessWidget {
         child: InkWell(
           onTap: onPressed,
           customBorder: const CircleBorder(),
-          child: GlassSurface(
-            enableBlur: false,
+          child: GlassChrome(
             padding: const EdgeInsets.all(10),
             borderRadius: AppRadius.pillAll,
             fill: GlassTokens.fill,
+            blurSigma: GlassTokens.blurSigmaSoft,
             boxShadow: const [],
             child: SizedBox(width: 24, height: 24, child: Center(child: icon)),
           ),
@@ -696,8 +693,7 @@ class _BindBanner extends ConsumerWidget {
         AppSpacing.xl,
         AppSpacing.sm,
       ),
-      child: GlassSurface(
-        enableBlur: false,
+      child: ContentSurface(
         padding: const EdgeInsets.fromLTRB(
           AppSpacing.md,
           AppSpacing.md,

@@ -1,4 +1,4 @@
-/// 首页液态玻璃画布：柔和多段渐变 + 低透明度光斑（P31）。
+/// 首页环境画布：柔和多段渐变 + 低透明度光斑（P32；画布本身不是 Frost 玻璃）。
 library;
 
 import 'package:flutter/material.dart';

@@ -6,20 +6,21 @@ import 'package:flutter/material.dart';
 /// 1. **单一强调色**：有色元素只允许来自 [primary] 系、状态语义色、或平台品牌色（`PlatformBadge`）。
 /// 2. **正文级文本一律过 WCAG AA**：每个文本令牌后面标了实测对比度（白底 / 画布底）。
 /// 3. **画布只有一个**：[background]。页面不得再内联自己的底色。
-/// 4. **液态玻璃（P31）**：半透明填充 / 描边走 [glassFill] / [glassBorder]，文字仍用深墨令牌。
+/// 4. **液态玻璃（P32）**：仅功能层 chrome 用 [GlassTokens]；内容卡用实心 [surface] /
+///    [GlassTokens.contentFill]。旧 [glassFill]* 别名保留兼容，新代码勿再用。
 class AppColors {
   AppColors._();
 
   // ── 画布与表面 ──────────────────────────────────────────────────────────
-  /// 页面底色（无渐变时的回退；P31 首页用 [canvasGradient] 盖住）。
+  /// 页面底色（无渐变时的回退；P32 首页用 GlassTokens.canvasGradient 盖住）。
   static const background = Color(0xFFF2F2F7);
   static const surface = Color(0xFFFFFFFF);
 
   /// 卡片内部的次级容器底色（取件码条、空态内嵌块、图片占位）。
   static const surfaceSunken = Color(0xFFF7F7FA);
 
-  // P31 玻璃色见 lib/ui/theme/glass_tokens.dart（GlassTokens）。
-  // 下列别名仅兼容旧引用，新代码请直接用 GlassTokens。
+  // P32 玻璃/内容令牌见 lib/ui/theme/glass_tokens.dart。
+  // 下列别名仅兼容旧引用；新代码请用 GlassTokens.fill* / contentFill。
   static const glassFill = Color(0x8CFFFFFF);
   static const glassFillStrong = Color(0xA6FFFFFF);
   static const glassFillSoft = Color(0x73FFFFFF);
@@ -68,7 +69,7 @@ class AppColors {
   /// 拒收是终结异常态：实心红底 + 白字（5.62:1）。
   static const statusRejected = Color(0xFFC62828);
 
-  // ── 墨色表面（遗留；P31 Hero 已改玻璃，SnackBar 仍可用）────────────────
+  // ── 墨色表面（遗留；SnackBar 仍可用）──────────────────────────────────
   static const inkSurface = Color(0xFF17171A);
   static const inkSurfaceRaised = Color(0xFF232327);
   static const onInkPrimary = Color(0xFFFFFFFF); // 17.89
@@ -109,7 +110,7 @@ class AppSpacing {
 ///
 /// 改版前页面里同时散落着 6 / 8 / 10 / 12 / 16 / 18 / 20 / 22 / 24 九种圆角，
 /// 没有规则可循。现在按「元素层级」固定映射：
-/// 标签 8 → 内嵌容器 12 → 卡片 16 → 大表面 20 → 玻璃表面 24。
+/// 标签 8 → 内嵌容器 12 → 卡片 16 → 大表面 20 → 面板/玻璃 chrome 28（见 GlassTokens.radius）。
 class AppRadius {
   AppRadius._();
 
@@ -125,8 +126,8 @@ class AppRadius {
   /// Hero 表面、空态大块、底部抽屉。
   static const lg = 20.0;
 
-  /// 液态玻璃卡片 / 面板（P31）。
-  static const xl = 24.0;
+  /// 大面板（与 GlassTokens.radius=28 对齐的别名槽；玻璃 chrome 请读 GlassTokens）。
+  static const xl = 28.0;
 
   /// 胶囊形（同步按钮、状态胶囊）。
   static const pill = 999.0;

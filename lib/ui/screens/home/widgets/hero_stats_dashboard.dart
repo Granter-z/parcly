@@ -1,6 +1,7 @@
 /// 首页顶部 Hero —— 只回答一个问题：现在最该关心几件包裹。
 ///
-/// P31：墨色硬块改为液态玻璃面板；主数字用深墨字压在玻璃上，保证对比度。
+/// P32：按 HIG，Hero 是**内容层**（数字 + 文案），用 [ContentSurface] 近实心抬升面，
+/// 不再套 Liquid Glass（玻璃留给功能层 chrome）。
 library;
 
 import 'package:flutter/material.dart';
@@ -21,17 +22,15 @@ class HeroStatsDashboard extends ConsumerWidget {
     final decision = ref.watch(heroDecisionProvider);
 
     // 没有在途 / 待取件时整块收起，让位给页面下方的空态卡片。
-    // 两处都讲「现在没有包裹」是重复的。
     if (decision.isEmpty) return const SizedBox.shrink();
 
     final lead = decision.lead;
     final theme = Theme.of(context);
     final isUrgent = decision.heroEmotionState == HeroEmotionState.urgent;
 
-    return GlassSurface(
+    return ContentSurface(
       padding: const EdgeInsets.all(AppSpacing.xl),
       borderRadius: GlassTokens.radiusAll,
-      fill: GlassTokens.fillStrong,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -55,7 +54,6 @@ class HeroStatsDashboard extends ConsumerWidget {
                 ),
               ),
               const Spacer(),
-              // 全页最多一个语义标签，且只在紧急时出现。
               if (isUrgent) const _UrgentChip(),
             ],
           ),
@@ -73,10 +71,6 @@ class HeroStatsDashboard extends ConsumerWidget {
     );
   }
 
-  /// 一句话说明当前状态。
-  ///
-  /// 优先用 core 给的建议（「建议立即取件」「建议一起取，节省跑腿」），
-  /// 没有建议时退回一句朴素的状态描述。
   String _statusLine(HeroDecision decision) {
     final advice = decision.subtitle;
     if (advice != null && advice.isNotEmpty) return advice;
@@ -90,9 +84,6 @@ class HeroStatsDashboard extends ConsumerWidget {
   }
 }
 
-/// 紧急标签：仅在 `urgencyScore > 80` 时出现。
-///
-/// 用实心强调红 + 白字（5.62:1），而不是一个彩色小圆点 —— 圆点不传达任何信息。
 class _UrgentChip extends StatelessWidget {
   const _UrgentChip();
 
@@ -119,10 +110,6 @@ class _UrgentChip extends StatelessWidget {
   }
 }
 
-/// 数字滚动：数值变化时在旧值与新值之间插值，避免整块数字硬跳。
-///
-/// 动机是「状态迁移」——同步回来后数量变了，用户需要看见它变了。
-/// 系统开启「移除动画」时直接落到终值。
 class _RollingNumber extends StatelessWidget {
   final int value;
   final TextStyle style;

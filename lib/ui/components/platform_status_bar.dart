@@ -11,10 +11,13 @@ import '../theme/glass_tokens.dart';
 import '../providers/platform_auth_status_provider.dart';
 import '../screens/login/platform_login_flow.dart';
 
-/// 首页顶部的平台登录状态条（P4 / P25 / P31，见 docs/pickup_app-界面.md）。
+/// 首页顶部的平台登录状态条（P4 / P25 / P32，见 docs/pickup_app-界面.md）。
 ///
-/// - 有平台需重登：淡红玻璃底，不能关；点那个平台直接进登录页。
-/// - 全部正常：半透明玻璃芯片行，不抢待取件的位置。
+/// P32：整条是功能层 [GlassChrome]（Regular Medium Frost + specular）；
+/// 芯片文字本身用实心对比色，不嵌套玻璃（HIG：无 glass-on-glass）。
+///
+/// - 有平台需重登：淡红底，不能关；点那个平台直接进登录页。
+/// - 全部正常：透明玻璃条 + 实心字芯片，不抢待取件的位置。
 /// - 未绑定：灰色「去绑定」。
 /// - 同步失败：橙色「同步失败」，点开可单平台重试；不跟「需重登」混。
 /// - 同步中：圆点换成转圈，不响应点击。
@@ -34,43 +37,70 @@ class PlatformStatusBar extends ConsumerWidget {
 
     // 过期时外层填充仍用 urgentBg，单测 `barColor` 依赖这一语义色。
     final fill = anyExpired ? AppColors.urgentBg : GlassTokens.fillSoft;
+    final radius = GlassTokens.radiusCapsuleAll;
 
-    return ClipRRect(
-      borderRadius: GlassTokens.radiusAll,
-      child: BackdropFilter(
-        filter: ImageFilter.blur(
-          sigmaX: GlassTokens.blurSigmaSoft,
-          sigmaY: GlassTokens.blurSigmaSoft,
+    return RepaintBoundary(
+      child: Container(
+        decoration: BoxDecoration(
+          borderRadius: radius,
+          boxShadow: anyExpired ? null : GlassTokens.softShadow,
         ),
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 200),
-          padding: EdgeInsets.symmetric(
-            horizontal: 12,
-            vertical: anyExpired ? 8 : 4,
-          ),
-          decoration: BoxDecoration(
-            color: fill,
-            borderRadius: GlassTokens.radiusAll,
-            border: Border.all(
-              color: anyExpired
-                  ? AppColors.statusRejected.withValues(alpha: 0.22)
-                  : GlassTokens.border,
+        child: ClipRRect(
+          borderRadius: radius,
+          child: BackdropFilter(
+            filter: ImageFilter.blur(
+              sigmaX: GlassTokens.blurSigmaSoft,
+              sigmaY: GlassTokens.blurSigmaSoft,
             ),
-            boxShadow: anyExpired ? null : GlassTokens.softShadow,
-          ),
-          child: Wrap(
-            spacing: 12,
-            runSpacing: 4,
-            crossAxisAlignment: WrapCrossAlignment.center,
-            children: [
-              for (final p in kPlatforms)
-                _PlatformChip(
-                  info: p,
-                  status: statuses[p.id]!,
-                  syncing: syncing,
-                  emphasized: anyExpired,
+            child: Stack(
+              children: [
+                if (!anyExpired)
+                  const Positioned(
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    height: 22,
+                    child: IgnorePointer(
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          gradient: GlassTokens.specularHighlight,
+                        ),
+                      ),
+                    ),
+                  ),
+                AnimatedContainer(
+                  duration: const Duration(milliseconds: 200),
+                  padding: EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: anyExpired ? 8 : 4,
+                  ),
+                  decoration: BoxDecoration(
+                    color: fill,
+                    borderRadius: radius,
+                    border: Border.all(
+                      color: anyExpired
+                          ? AppColors.statusRejected.withValues(alpha: 0.22)
+                          : GlassTokens.border,
+                      width: 1,
+                    ),
+                  ),
+                  child: Wrap(
+                    spacing: 12,
+                    runSpacing: 4,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: [
+                      for (final p in kPlatforms)
+                        _PlatformChip(
+                          info: p,
+                          status: statuses[p.id]!,
+                          syncing: syncing,
+                          emphasized: anyExpired,
+                        ),
+                    ],
+                  ),
                 ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
@@ -218,7 +248,7 @@ class _PlatformChip extends ConsumerWidget {
     showModalBottomSheet<void>(
       context: context,
       showDragHandle: true,
-      backgroundColor: GlassTokens.fillStrong,
+      backgroundColor: AppColors.surface,
       builder: (sheetContext) => SafeArea(
         child: Padding(
           padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
