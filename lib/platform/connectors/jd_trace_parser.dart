@@ -96,14 +96,48 @@ List<Map<String, String>> parseJdDomTimeline(String rawText, {DateTime? now}) {
   return nodes;
 }
 
-/// 校验京东回写 Cookie 是否健康（防止匿名会话降级冲刷已有 pt_key 凭据）
+/// 从 cookie 串取出指定 name 的值（首个非空命中）。
+String? jdCookieValue(String cookies, String name) {
+  for (final part in cookies.split(';')) {
+    final idx = part.indexOf('=');
+    if (idx <= 0) continue;
+    if (part.substring(0, idx).trim() != name) continue;
+    final v = part.substring(idx + 1).trim();
+    if (v.isNotEmpty) return v;
+  }
+  return null;
+}
+
+/// 校验京东回写 Cookie 是否健康（防止匿名会话降级冲刷已有 pt_key 凭据）。
+///
+/// P30-b ②：原串有 `pt_key` 时，新串必须仍有 **相同值** 的 `pt_key`
+///（不能只看「有没有 + 长度」——值被换掉同样算降级）。
 bool isJdCookieHealthy(String originalCookies, String newCookies) {
   if (newCookies.trim().isEmpty) return false;
-  final hadPtKey = originalCookies.contains('pt_key=');
-  final hasPtKey = newCookies.contains('pt_key=');
-  if (hadPtKey && !hasPtKey) return false;
+  final origKey = jdCookieValue(originalCookies, 'pt_key');
+  final newKey = jdCookieValue(newCookies, 'pt_key');
+  if (origKey != null) {
+    if (newKey == null) return false;
+    if (newKey != origKey) return false;
+  }
   if (originalCookies.isNotEmpty && newCookies.length < (originalCookies.length * 0.5)) {
     return false;
   }
   return true;
 }
+
+/// P30-b ④：同步结束后采集 Cookie 的域列表（**不含** plogin）。
+const List<String> kJdPersistCookieHosts = [
+  'https://www.jd.com',
+  'https://trade.m.jd.com',
+  'https://wqs.jd.com',
+  'https://api.m.jd.com',
+  'https://home.m.jd.com',
+];
+
+/// P30-b ①：本轮 Fallback 见登录页 / 已 `setExpired(true)` → 禁止 persist。
+bool shouldSkipJdCookiePersist({
+  required bool landedLoginPage,
+  required bool markedExpiredThisRound,
+}) =>
+    landedLoginPage || markedExpiredThisRound;
