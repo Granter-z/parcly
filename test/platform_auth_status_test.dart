@@ -9,11 +9,12 @@ void main() {
     expect(r('taobao', bound: false, expired: true, issue: '淘宝需重新登录'), PlatformAuthStatus.unbound);
   });
 
-  test('有过期标记就需重登', () {
+  test('有过期标记就需重登（主真相 isExpired）', () {
     expect(r('jd', expired: true), PlatformAuthStatus.needsRelogin);
+    expect(r('jd', expired: true, issue: '京东同步响应异常，已保留旧数据'), PlatformAuthStatus.needsRelogin);
   });
 
-  test('只有明确的登录失效信号才算需重登', () {
+  test('只有明确的登录失效信号才算需重登（兜底）', () {
     expect(r('pdd', issue: '拼多多登录态已失效，请在「设置」中重新登录'), PlatformAuthStatus.needsRelogin);
     expect(r('tmall', issue: '淘宝登录态已失效，请重新登录授权'), PlatformAuthStatus.needsRelogin);
     expect(r('taobao', issue: '淘宝接口返回 FAIL_SYS_SESSION_EXPIRED'), PlatformAuthStatus.needsRelogin);
@@ -36,5 +37,26 @@ void main() {
   test('已绑定、没过期、没问题就是正常', () {
     expect(r('taobao'), PlatformAuthStatus.ok);
     expect(r('taobao', issue: ''), PlatformAuthStatus.ok);
+  });
+
+  test('isPlatformShownExpired 与 resolve 一致：同步异常不误判', () {
+    expect(
+      isPlatformShownExpired(
+        bound: true,
+        storeExpired: false,
+        liveIssue: '淘宝同步响应异常，已保留旧数据',
+        platformKeyword: '淘宝',
+      ),
+      isFalse,
+    );
+    expect(
+      isPlatformShownExpired(
+        bound: true,
+        storeExpired: true,
+        liveIssue: null,
+        platformKeyword: '淘宝',
+      ),
+      isTrue,
+    );
   });
 }

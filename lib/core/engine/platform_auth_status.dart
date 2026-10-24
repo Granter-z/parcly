@@ -1,7 +1,10 @@
-/// 平台登录状态的唯一判断规则（P4/P25）。设置页和首页状态条都走这里。
+/// 平台登录状态的唯一判断规则（P11-d / P24 / P25）。
 ///
-/// 纯 Dart，不依赖 Flutter。Riverpod 包装见
-/// lib/ui/providers/platform_auth_status_provider.dart。
+/// 纯 Dart，不依赖 Flutter。设置页与首页状态条应走这里；
+/// Riverpod 包装见 `lib/ui/providers/platform_auth_status_provider.dart`。
+///
+/// **主真相是 [isExpired]**（连接器 / 保活心跳掉线时必须 `setExpired(true)`）。
+/// `liveIssue` 仅作补充：明确登录失效信号 → needsRelogin；提到本平台但无信号 → syncFailed。
 library;
 
 enum PlatformAuthStatus {
@@ -45,11 +48,10 @@ String platformIssueKeyword(String platform) {
 /// 判断平台登录状态。
 ///
 /// [liveIssue] 是最近一次同步的问题文本，多个平台的问题用「；」连在一起。
-/// 按文本判断是临时办法：等 P11-d 完成、三个连接器掉线都确定会调用 setExpired
-/// 之后删掉这段，调用方不用改。
-/// - 提到这个平台、并且带 [kLoginExpiredSignals] 里的信号 → 需重登；
-/// - 提到这个平台、但没有登录失效信号 → 同步失败；
-/// - 没提到 → 正常。
+/// - [isExpired] 为真 → 需重登（主路径，连接器/保活必须落盘）
+/// - 提到本平台且带 [kLoginExpiredSignals] → 需重登（兜底；正常应已 setExpired）
+/// - 提到本平台、无登录信号 → 同步失败
+/// - 没提到 → 正常
 PlatformAuthStatus resolvePlatformAuthStatus({
   required String platform,
   required bool isBound,
@@ -66,4 +68,34 @@ PlatformAuthStatus resolvePlatformAuthStatus({
   if (mine.isEmpty) return PlatformAuthStatus.ok;
   final expired = mine.any((seg) => kLoginExpiredSignals.any(seg.contains));
   return expired ? PlatformAuthStatus.needsRelogin : PlatformAuthStatus.syncFailed;
+}
+
+/// 兼容旧调用：是否应展示为「已失效 / 需重登」
+bool isPlatformShownExpired({
+  required bool bound,
+  required bool storeExpired,
+  String? liveIssue,
+  required String platformKeyword,
+}) {
+  // platformKeyword 由调用方传入时，反查平台 id 不划算；直接用关键词当 platform。
+  final status = resolvePlatformAuthStatus(
+    platform: _platformFromKeyword(platformKeyword),
+    isBound: bound,
+    isExpired: storeExpired,
+    liveIssue: liveIssue,
+  );
+  return status == PlatformAuthStatus.needsRelogin;
+}
+
+String _platformFromKeyword(String keyword) {
+  switch (keyword) {
+    case '淘宝':
+      return 'taobao';
+    case '京东':
+      return 'jd';
+    case '拼多多':
+      return 'pdd';
+    default:
+      return keyword;
+  }
 }

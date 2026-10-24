@@ -251,8 +251,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     final subtitle = platformSubtitle(platform);
     final icon = platformIcon(platform);
     final brandColor = platformBrandColor(platform);
+    final isBound = _authStore.isBound(platform);
+    // 主真相 isExpired；provider 用 resolvePlatformAuthStatus
     final authStatus = ref.watch(platformAuthStatusProvider(platform));
-    final isBound = authStatus != PlatformAuthStatus.unbound;
     final isExpired = authStatus == PlatformAuthStatus.needsRelogin;
     final isSyncFailed = authStatus == PlatformAuthStatus.syncFailed;
     final boundTime = _authStore.getBoundTime(platform);
@@ -334,7 +335,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   isExpired
                       ? '登录已失效，请点击重新授权'
                       : (isSyncFailed
-                          ? '登录正常，上次同步出错，已保留旧数据'
+                          ? '最近同步失败，登录仍有效，可下拉重试'
                           : (isBound && boundTime != null
                               ? '已于 ${boundTime.month}月${boundTime.day}日 授权绑定'
                               : subtitle)),

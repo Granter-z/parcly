@@ -62,7 +62,7 @@ Future<bool> openPlatformLogin(
     ref.invalidate(platformAuthStatusProvider);
     return false;
   }
-  manager.clearLastIssue();
+  manager.clearLastIssueFor(platform);
   ref.invalidate(platformAuthStatusProvider);
   syncSinglePlatform(ref, platform);
   return true;

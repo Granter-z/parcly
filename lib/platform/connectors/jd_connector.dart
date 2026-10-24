@@ -188,6 +188,11 @@ class JdH5Connector implements PlatformConnector {
 
       _logJd('[JD] Final valid shopping orders: ${validOrders.length}');
 
+      // 能拉到有效订单说明登录仍有效；清失效标记（与淘宝/拼多多成功路径对齐）
+      if (validOrders.isNotEmpty) {
+        await _authStore.setExpired('jd', false);
+      }
+
       // ⚡ 优化：并发拉取物流详情（限制并发数为 3）
       final executor = ThrottledExecutor(
         maxConcurrent: 3,

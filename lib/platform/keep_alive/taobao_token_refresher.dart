@@ -11,23 +11,62 @@ import 'package:http/http.dart' as http;
 
 /// 一次令牌轮换请求的结局。
 ///
-/// 三种互斥结局由字段表达：成功（newToken/newTokenEnc 非空）、
-/// 会话失效（sessionExpired）、网络错误（networkError）。
+/// 三种互斥结局由工厂构造：成功（可带轮换令牌）、会话失效、网络错误。
+/// `sessionExpired` 与 `networkError` 不得同时为 true。
 class MtopRefreshResult {
   final String? newToken;
   final String? newTokenEnc;
   final bool sessionExpired;
   final bool networkError;
 
-  const MtopRefreshResult({
+  const MtopRefreshResult._({
     this.newToken,
     this.newTokenEnc,
     this.sessionExpired = false,
     this.networkError = false,
   });
 
+  /// 请求完成且会话仍有效（令牌可能轮换也可能未变）
+  factory MtopRefreshResult.ok({String? newToken, String? newTokenEnc}) =>
+      MtopRefreshResult._(newToken: newToken, newTokenEnc: newTokenEnc);
+
+  /// 服务端判定会话失效
+  factory MtopRefreshResult.expired({String? newToken, String? newTokenEnc}) =>
+      MtopRefreshResult._(
+        newToken: newToken,
+        newTokenEnc: newTokenEnc,
+        sessionExpired: true,
+      );
+
+  /// 超时 / 连接失败等，不得与 sessionExpired 并存
+  factory MtopRefreshResult.network() =>
+      const MtopRefreshResult._(networkError: true);
+
   /// 是否发生了令牌轮换
   bool get rotated => newToken != null || newTokenEnc != null;
+}
+
+/// mtop 响应体分类（便于单测，不发真实请求）
+enum MtopBodyKind {
+  /// 会话仍有效
+  ok,
+  /// 明确会话失效
+  sessionExpired,
+  /// 令牌空/过期，可重试一次
+  tokenRetryable,
+}
+
+MtopBodyKind classifyMtopBody(String body) {
+  if (body.contains('FAIL_SYS_SESSION_EXPIRED') ||
+      body.contains('FAIL_SYS_SID_INVALID') ||
+      body.contains('您需要登录才能继续访问')) {
+    return MtopBodyKind.sessionExpired;
+  }
+  if (body.contains('FAIL_SYS_TOKEN_EMPTY') ||
+      body.contains('FAIL_SYS_TOKEN_EXPIRED')) {
+    return MtopBodyKind.tokenRetryable;
+  }
+  return MtopBodyKind.ok;
 }
 
 class TaobaoTokenRefresher {
@@ -40,8 +79,14 @@ class TaobaoTokenRefresher {
   /// [cookies] 为当前存储的完整 Cookie 串。返回结果由调用方负责落盘：
   /// - `newToken`/`newTokenEnc` 非空时用 `PlatformAuthStore.updateCookieTokenFields` 更新，
   /// - `sessionExpired` 为 true 时标记登录态失效。
-  static Future<MtopRefreshResult> refresh(String cookies) async {
-    final client = http.Client();
+  ///
+  /// [client] 可注入以便单测；调用方负责 close（本方法在自建 client 时才会 close）。
+  static Future<MtopRefreshResult> refresh(
+    String cookies, {
+    http.Client? client,
+  }) async {
+    final owned = client == null;
+    final c = client ?? http.Client();
     try {
       var cookieStr = cookies;
       for (var attempt = 0; attempt < 2; attempt++) {
@@ -56,7 +101,7 @@ class TaobaoTokenRefresher {
         final url =
             'https://h5api.m.taobao.com/h5/mtop.cainiao.pickup.search.getTimeStamp/1.0/?jsv=2.3.18&appKey=$_appKey&t=$t&sign=$sign&type=jsonp&dataType=jsonp&data=${Uri.encodeComponent(dataRaw)}';
 
-        final resp = await client.get(
+        final resp = await c.get(
           Uri.parse(url),
           headers: {
             'User-Agent': _ua,
@@ -87,34 +132,24 @@ class TaobaoTokenRefresher {
           cookieStr = updated;
         }
 
-        final body = resp.body;
-        if (body.contains('FAIL_SYS_SESSION_EXPIRED') ||
-            body.contains('FAIL_SYS_SID_INVALID') ||
-            body.contains('您需要登录才能继续访问')) {
-          return MtopRefreshResult(
-            newToken: newTk,
-            newTokenEnc: newTkEnc,
-            sessionExpired: true,
-          );
+        switch (classifyMtopBody(resp.body)) {
+          case MtopBodyKind.sessionExpired:
+            return MtopRefreshResult.expired(newToken: newTk, newTokenEnc: newTkEnc);
+          case MtopBodyKind.tokenRetryable:
+            if (attempt < 1) {
+              await Future.delayed(const Duration(milliseconds: 150));
+              continue;
+            }
+            return MtopRefreshResult.expired();
+          case MtopBodyKind.ok:
+            return MtopRefreshResult.ok(newToken: newTk, newTokenEnc: newTkEnc);
         }
-
-        final isTokenErr = body.contains('FAIL_SYS_TOKEN_EMPTY') ||
-            body.contains('FAIL_SYS_TOKEN_EXPIRED');
-        if (isTokenErr) {
-          if (attempt < 1) {
-            await Future.delayed(const Duration(milliseconds: 150));
-            continue;
-          }
-          return const MtopRefreshResult(sessionExpired: true);
-        }
-
-        return MtopRefreshResult(newToken: newTk, newTokenEnc: newTkEnc);
       }
-      return const MtopRefreshResult();
+      return MtopRefreshResult.ok();
     } catch (_) {
-      return const MtopRefreshResult(networkError: true);
+      return MtopRefreshResult.network();
     } finally {
-      client.close();
+      if (owned) c.close();
     }
   }
 }
