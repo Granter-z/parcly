@@ -45,7 +45,7 @@ class AppTheme {
       colorScheme: scheme,
       scaffoldBackgroundColor: AppColors.background,
       appBarTheme: AppBarTheme(
-        backgroundColor: GlassTokens.fillStrong,
+        backgroundColor: AppColors.surface,
         surfaceTintColor: Colors.transparent,
         elevation: 0,
         scrolledUnderElevation: 0,
@@ -75,7 +75,7 @@ class AppTheme {
         shape: RoundedRectangleBorder(borderRadius: AppRadius.smAll),
       ),
       bottomSheetTheme: const BottomSheetThemeData(
-        backgroundColor: GlassTokens.fillStrong,
+        backgroundColor: AppColors.surface,
         surfaceTintColor: Colors.transparent,
         dragHandleColor: AppColors.textTertiary,
         shape: RoundedRectangleBorder(

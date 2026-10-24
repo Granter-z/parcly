@@ -3,8 +3,8 @@
 /// 改版要点：
 /// - 状态配色不再由本文件私有维护，统一取自 `theme/status_extension.dart`（唯一真源）；
 /// - 状态文案取自 core 的 `PackageStatusSemantics.label`，不再在 UI 里另写一份；
-/// - 圆角收敛到令牌（玻璃卡 24 / 内嵌条 12 / 标签 8）；
-/// - P31：半透明列表卡（无逐行 BackdropFilter）；到站描边用主色玻璃边；取件码 ≥32sp；
+/// - 圆角收敛到令牌（内容卡 22 / 内嵌条 12 / 标签 8）；
+/// - P32：内容层近实心抬升面（非 Liquid Glass）；到站描边用主色边；取件码 ≥32sp；
 /// - 修掉三处正文级对比度不达标的内联灰：`Colors.grey`(2.68:1)、
 ///   `Colors.grey.shade600`、`Colors.orange.shade800`(3.08:1)。
 library;
@@ -40,11 +40,11 @@ class ModernPackageCard extends ConsumerWidget {
     final arrivedAgo = arrivedAgoLabelOf(package, now);
 
     return SpringCard(
-      glass: true,
+      glass: true, // P32：语义=内容抬升面，非磨砂
       padding: const EdgeInsets.all(AppSpacing.lg),
-      borderRadius: GlassTokens.radiusAll,
+      borderRadius: GlassTokens.radiusContentAll,
       border: Border.all(
-        color: isArrived ? GlassTokens.arrivedBorder : GlassTokens.border,
+        color: isArrived ? GlassTokens.arrivedBorder : GlassTokens.contentBorder,
         width: isArrived ? 1.4 : 1.0,
       ),
       onTap: () => TrackingTimelineSheet.show(context, package),
@@ -188,13 +188,13 @@ class ModernPackageCard extends ConsumerWidget {
             ),
             decoration: BoxDecoration(
               color: isArrived
-                  ? AppColors.primaryContainer.withValues(alpha: 0.72)
-                  : GlassTokens.fillSoft,
+                  ? AppColors.primaryContainer.withValues(alpha: 0.85)
+                  : AppColors.surfaceSunken,
               borderRadius: AppRadius.smAll,
               border: Border.all(
                 color: isArrived
                     ? AppColors.primary.withValues(alpha: 0.18)
-                    : GlassTokens.border.withValues(alpha: 0.35),
+                    : GlassTokens.contentBorder,
               ),
             ),
             child: Row(

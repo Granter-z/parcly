@@ -1,7 +1,9 @@
-/// 液态玻璃表面（P31）。
+/// P32 表面组件：功能层 Liquid Glass vs 内容层标准抬升面。
 ///
-/// - [enableBlur] == true：ClipRRect + BackdropFilter（仅 Hero / 状态条等少量表面）。
-/// - [enableBlur] == false：半透明填充 + 描边，**不开** blur（滚动列表卡必须走这条）。
+/// - [GlassChrome]：真 BackdropFilter + 镜面高光 + 折射双描边（仅 chrome）。
+/// - [ContentSurface]：近实心抬升面（包裹卡 / Hero / 空态 / PDD），**无** blur。
+/// - [GlassSurface]：保留兼容；新代码 chrome 用 [GlassChrome]，内容用 [ContentSurface]。
+/// - [GlassListCard]：已改为 [ContentSurface] 语义（无 blur、近实心）。
 library;
 
 import 'dart:ui';
@@ -10,6 +12,145 @@ import 'package:flutter/material.dart';
 
 import '../theme/glass_tokens.dart';
 
+/// 功能层 Liquid Glass（Regular Medium）。
+///
+/// 叠层：ClipRRect → BackdropFilter(Frost) → 半透填充 → 顶缘 specular →
+/// 折射双描边（顶亮底软）。禁止在内容列表里逐行使用。
+class GlassChrome extends StatelessWidget {
+  final Widget child;
+  final EdgeInsetsGeometry? padding;
+  final BorderRadius borderRadius;
+  final Color? fill;
+  final double? blurSigma;
+  final List<BoxShadow>? boxShadow;
+  final bool showSpecular;
+  final Clip clipBehavior;
+
+  const GlassChrome({
+    super.key,
+    required this.child,
+    this.padding,
+    this.borderRadius =
+        const BorderRadius.all(Radius.circular(GlassTokens.radius)),
+    this.fill,
+    this.blurSigma,
+    this.boxShadow,
+    this.showSpecular = true,
+    this.clipBehavior = Clip.antiAlias,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final resolvedFill = fill ?? GlassTokens.fill;
+    final sigma = blurSigma ?? GlassTokens.blurSigma;
+    final shadows = boxShadow ?? GlassTokens.softShadow;
+
+    return RepaintBoundary(
+      child: Container(
+        decoration: BoxDecoration(
+          borderRadius: borderRadius,
+          boxShadow: shadows,
+        ),
+        child: ClipRRect(
+          borderRadius: borderRadius,
+          clipBehavior: clipBehavior,
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: sigma, sigmaY: sigma),
+            child: Stack(
+              children: [
+                // 半透填充（Opacity）
+                Positioned.fill(
+                  child: ColoredBox(color: resolvedFill),
+                ),
+                // Specular / Light Angle：顶缘白→透明
+                if (showSpecular)
+                  Positioned(
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    height: 28,
+                    child: IgnorePointer(
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.only(
+                            topLeft: borderRadius.topLeft,
+                            topRight: borderRadius.topRight,
+                          ),
+                          gradient: GlassTokens.specularHighlight,
+                        ),
+                      ),
+                    ),
+                  ),
+                // 折射边：均匀描边（Flutter 圆角不支持非均匀 Border）+ 顶缘 specular 已近似 Light Angle
+                Positioned.fill(
+                  child: IgnorePointer(
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        borderRadius: borderRadius,
+                        border: Border.all(
+                          color: GlassTokens.border,
+                          width: 1,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                Padding(
+                  padding: padding ?? EdgeInsets.zero,
+                  child: child,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 内容层标准抬升面（**不是** Liquid Glass）。
+class ContentSurface extends StatelessWidget {
+  final Widget child;
+  final EdgeInsetsGeometry? padding;
+  final BorderRadius borderRadius;
+  final Color? fill;
+  final Color? borderColor;
+  final double borderWidth;
+  final List<BoxShadow>? boxShadow;
+
+  const ContentSurface({
+    super.key,
+    required this.child,
+    this.padding,
+    this.borderRadius =
+        const BorderRadius.all(Radius.circular(GlassTokens.radiusContent)),
+    this.fill,
+    this.borderColor,
+    this.borderWidth = 1,
+    this.boxShadow,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return RepaintBoundary(
+      child: Container(
+        padding: padding,
+        decoration: BoxDecoration(
+          color: fill ?? GlassTokens.contentFill,
+          borderRadius: borderRadius,
+          border: Border.all(
+            color: borderColor ?? GlassTokens.contentBorder,
+            width: borderWidth,
+          ),
+          boxShadow: boxShadow ?? GlassTokens.contentShadow,
+        ),
+        child: child,
+      ),
+    );
+  }
+}
+
+/// 兼容旧调用：默认走 chrome 真 blur。新代码请显式用 [GlassChrome] / [ContentSurface]。
 class GlassSurface extends StatelessWidget {
   final Widget child;
   final EdgeInsetsGeometry? padding;
@@ -21,7 +162,7 @@ class GlassSurface extends StatelessWidget {
   final List<BoxShadow>? boxShadow;
   final Clip clipBehavior;
 
-  /// 为 false 时只做半透明材质，避免列表逐行 BackdropFilter。
+  /// false → 内容抬升面（无 blur）；true → [GlassChrome]。
   final bool enableBlur;
 
   const GlassSurface({
@@ -41,52 +182,30 @@ class GlassSurface extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final resolvedFill = fill ?? GlassTokens.fill;
-    final resolvedBorder = borderColor ?? GlassTokens.border;
-    final shadows = boxShadow ?? GlassTokens.softShadow;
-    final sigma = blurSigma ?? GlassTokens.blurSigma;
-
-    final painted = Container(
-      padding: padding,
-      decoration: BoxDecoration(
-        color: resolvedFill,
-        borderRadius: borderRadius,
-        border: Border.all(color: resolvedBorder, width: borderWidth),
-      ),
-      child: child,
-    );
-
-    final Widget clipped;
     if (enableBlur) {
-      clipped = ClipRRect(
+      return GlassChrome(
+        padding: padding,
         borderRadius: borderRadius,
+        fill: fill,
+        blurSigma: blurSigma,
+        boxShadow: boxShadow,
         clipBehavior: clipBehavior,
-        child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: sigma, sigmaY: sigma),
-          child: painted,
-        ),
-      );
-    } else {
-      clipped = ClipRRect(
-        borderRadius: borderRadius,
-        clipBehavior: clipBehavior,
-        child: painted,
+        child: child,
       );
     }
-
-    return RepaintBoundary(
-      child: Container(
-        decoration: BoxDecoration(
-          borderRadius: borderRadius,
-          boxShadow: shadows,
-        ),
-        child: clipped,
-      ),
+    return ContentSurface(
+      padding: padding,
+      borderRadius: borderRadius,
+      fill: fill ?? GlassTokens.contentFill,
+      borderColor: borderColor ?? GlassTokens.contentBorder,
+      borderWidth: borderWidth,
+      boxShadow: boxShadow ?? GlassTokens.contentShadow,
+      child: child,
     );
   }
 }
 
-/// 半透明列表卡快捷构造（强制无 blur）。
+/// 列表卡快捷构造 → 内容抬升面（强制无 blur）。
 class GlassListCard extends StatelessWidget {
   final Widget child;
   final EdgeInsetsGeometry padding;
@@ -100,7 +219,7 @@ class GlassListCard extends StatelessWidget {
     required this.child,
     this.padding = const EdgeInsets.all(16),
     this.borderRadius =
-        const BorderRadius.all(Radius.circular(GlassTokens.radius)),
+        const BorderRadius.all(Radius.circular(GlassTokens.radiusContent)),
     this.fill,
     this.borderColor,
     this.borderWidth = 1,
@@ -108,14 +227,12 @@ class GlassListCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return GlassSurface(
-      enableBlur: false,
+    return ContentSurface(
       padding: padding,
       borderRadius: borderRadius,
-      fill: fill ?? GlassTokens.fillListCard,
-      borderColor: borderColor ?? GlassTokens.border,
+      fill: fill ?? GlassTokens.contentFill,
+      borderColor: borderColor ?? GlassTokens.contentBorder,
       borderWidth: borderWidth,
-      boxShadow: GlassTokens.listCardShadow,
       child: child,
     );
   }
