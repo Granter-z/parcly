@@ -1,10 +1,9 @@
-/// P33 表面组件：强 Frost chrome / 轻玻璃大块 / 实心内容卡。
+/// P34 表面组件：更透 chrome + 突起折射边 / 轻玻璃 / 实心内容卡。
 ///
-/// P32 失败：弱 blur + 偏高白填充 → 真机「乳白膜」。本文件 chrome 改为
-/// 强 BackdropFilter + 低面洗 + 双层折射边 + 厚 specular。
+/// P34：面洗再降；外暗内亮双描边加粗；顶缘 specular 更高，读成玻璃药片突起。
 ///
-/// - [GlassChrome]：功能层（状态条、顶栏圆钮）— 强 Frost。
-/// - [LightGlassSurface]：空态 / PDD 等大块 — 一次可读轻玻璃。
+/// - [GlassChrome]：功能层（状态条、顶栏圆钮）— 强 Frost + 厚 bevel。
+/// - [LightGlassSurface]：空态 / PDD / 已完成胶囊 — 一次可读轻玻璃。
 /// - [ContentSurface]：列表包裹卡 / Hero — 近实心，无 blur。
 /// - [GlassSurface] / [GlassListCard]：兼容转发。
 library;
@@ -65,13 +64,13 @@ class GlassChrome extends StatelessWidget {
                 Positioned.fill(
                   child: ColoredBox(color: resolvedFill),
                 ),
-                // Specular / Light Angle：顶缘更亮更厚
+                // Specular / Light Angle：顶缘更亮更厚（P34 突起顶面）
                 if (showSpecular)
                   Positioned(
                     top: 0,
                     left: 0,
                     right: 0,
-                    height: 36,
+                    height: 44,
                     child: IgnorePointer(
                       child: DecoratedBox(
                         decoration: BoxDecoration(
@@ -113,7 +112,7 @@ class GlassChrome extends StatelessWidget {
                     ),
                   ),
                 ),
-                // 折射边：外暗轮廓
+                // 折射边：外暗轮廓（P34 加粗 → 突起侧面）
                 Positioned.fill(
                   child: IgnorePointer(
                     child: DecoratedBox(
@@ -121,23 +120,23 @@ class GlassChrome extends StatelessWidget {
                         borderRadius: borderRadius,
                         border: Border.all(
                           color: GlassTokens.borderOuter,
-                          width: 1.0,
+                          width: 1.4,
                         ),
                       ),
                     ),
                   ),
                 ),
-                // 折射边：内高光
+                // 折射边：内高光（P34 加亮加宽 → 顶面亮沿）
                 Positioned.fill(
                   child: IgnorePointer(
                     child: Padding(
-                      padding: const EdgeInsets.all(1),
+                      padding: const EdgeInsets.all(1.4),
                       child: DecoratedBox(
                         decoration: BoxDecoration(
                           borderRadius: borderRadius,
                           border: Border.all(
                             color: GlassTokens.borderInner,
-                            width: 0.8,
+                            width: 1.15,
                           ),
                         ),
                       ),
@@ -221,14 +220,32 @@ class LightGlassSurface extends StatelessWidget {
                     ),
                   ),
                 ),
+                // 外暗
                 Positioned.fill(
                   child: IgnorePointer(
                     child: DecoratedBox(
                       decoration: BoxDecoration(
                         borderRadius: borderRadius,
                         border: Border.all(
-                          color: borderColor ?? GlassTokens.lightGlassBorder,
-                          width: 1,
+                          color: GlassTokens.borderOuter,
+                          width: 1.2,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                // 内亮 / 自定义边
+                Positioned.fill(
+                  child: IgnorePointer(
+                    child: Padding(
+                      padding: const EdgeInsets.all(1.2),
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          borderRadius: borderRadius,
+                          border: Border.all(
+                            color: borderColor ?? GlassTokens.lightGlassBorder,
+                            width: 1.0,
+                          ),
                         ),
                       ),
                     ),

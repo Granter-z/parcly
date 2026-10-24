@@ -11,10 +11,10 @@ import '../theme/glass_tokens.dart';
 import '../providers/platform_auth_status_provider.dart';
 import '../screens/login/platform_login_flow.dart';
 
-/// 首页顶部的平台登录状态条（P4 / P25 / P33，见 docs/pickup_app-界面.md）。
+/// 首页顶部的平台登录状态条（P4 / P25 / P34，见 docs/pickup_app-界面.md）。
 ///
-/// P33：整条功能层强 Frost（sigma=[GlassTokens.blurSigma]）+ 低面洗 + 厚 specular；
-/// P32 弱 blur+偏高白填充被 CEO 拒为「乳白膜」。芯片文字实心对比色，不嵌套玻璃。
+/// P34：整条 **铺满**（无右侧空白）；更透面洗 + 外暗内亮双折射边读成突起玻璃。
+/// 芯片在条内均分横向空间（space-between / Expanded），不嵌套玻璃。
 ///
 /// - 有平台需重登：淡红底，不能关；点那个平台直接进登录页。
 /// - 全部正常：透明玻璃条 + 实心字芯片，不抢待取件的位置。
@@ -40,66 +40,84 @@ class PlatformStatusBar extends ConsumerWidget {
     final radius = GlassTokens.radiusCapsuleAll;
 
     return RepaintBoundary(
-      child: Container(
-        decoration: BoxDecoration(
-          borderRadius: radius,
-          boxShadow: anyExpired ? null : GlassTokens.softShadow,
-        ),
-        child: ClipRRect(
-          borderRadius: radius,
-          child: BackdropFilter(
-            filter: ImageFilter.blur(
-              sigmaX: GlassTokens.blurSigma,
-              sigmaY: GlassTokens.blurSigma,
-            ),
-            child: Stack(
-              children: [
-                if (!anyExpired)
-                  const Positioned(
-                    top: 0,
-                    left: 0,
-                    right: 0,
-                    height: 32,
-                    child: IgnorePointer(
-                      child: DecoratedBox(
-                        decoration: BoxDecoration(
-                          gradient: GlassTokens.specularHighlight,
+      child: SizedBox(
+        width: double.infinity,
+        child: Container(
+          decoration: BoxDecoration(
+            borderRadius: radius,
+            boxShadow: anyExpired ? null : GlassTokens.softShadow,
+          ),
+          child: ClipRRect(
+            borderRadius: radius,
+            child: BackdropFilter(
+              filter: ImageFilter.blur(
+                sigmaX: GlassTokens.blurSigma,
+                sigmaY: GlassTokens.blurSigma,
+              ),
+              child: Stack(
+                children: [
+                  if (!anyExpired)
+                    const Positioned(
+                      top: 0,
+                      left: 0,
+                      right: 0,
+                      height: 36,
+                      child: IgnorePointer(
+                        child: DecoratedBox(
+                          decoration: BoxDecoration(
+                            gradient: GlassTokens.specularHighlight,
+                          ),
                         ),
                       ),
                     ),
-                  ),
-                AnimatedContainer(
-                  duration: const Duration(milliseconds: 200),
-                  padding: EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: anyExpired ? 8 : 4,
-                  ),
-                  decoration: BoxDecoration(
-                    color: fill,
-                    borderRadius: radius,
-                    border: Border.all(
-                      color: anyExpired
-                          ? AppColors.statusRejected.withValues(alpha: 0.22)
-                          : GlassTokens.borderInner,
-                      width: anyExpired ? 1 : 1.2,
+                  // 外暗折射边
+                  if (!anyExpired)
+                    Positioned.fill(
+                      child: IgnorePointer(
+                        child: DecoratedBox(
+                          decoration: BoxDecoration(
+                            borderRadius: radius,
+                            border: Border.all(
+                              color: GlassTokens.borderOuter,
+                              width: 1.4,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  AnimatedContainer(
+                    duration: const Duration(milliseconds: 200),
+                    width: double.infinity,
+                    padding: EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: anyExpired ? 8 : 4,
+                    ),
+                    decoration: BoxDecoration(
+                      color: fill,
+                      borderRadius: radius,
+                      border: Border.all(
+                        color: anyExpired
+                            ? AppColors.statusRejected.withValues(alpha: 0.22)
+                            : GlassTokens.borderInner,
+                        width: anyExpired ? 1 : 1.15,
+                      ),
+                    ),
+                    child: Row(
+                      children: [
+                        for (final p in kPlatforms)
+                          Expanded(
+                            child: _PlatformChip(
+                              info: p,
+                              status: statuses[p.id]!,
+                              syncing: syncing,
+                              emphasized: anyExpired,
+                            ),
+                          ),
+                      ],
                     ),
                   ),
-                  child: Wrap(
-                    spacing: 12,
-                    runSpacing: 4,
-                    crossAxisAlignment: WrapCrossAlignment.center,
-                    children: [
-                      for (final p in kPlatforms)
-                        _PlatformChip(
-                          info: p,
-                          status: statuses[p.id]!,
-                          syncing: syncing,
-                          emphasized: anyExpired,
-                        ),
-                    ],
-                  ),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
         ),
@@ -187,20 +205,25 @@ class _PlatformChip extends ConsumerWidget {
         child: ConstrainedBox(
           constraints: const BoxConstraints(minHeight: 44),
           child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 6),
+            padding: const EdgeInsets.symmetric(horizontal: 4),
             child: Row(
-              mainAxisSize: MainAxisSize.min,
+              mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 dot,
                 const SizedBox(width: 5),
-                Text(
-                  label,
-                  style: TextStyle(
-                    fontSize: fontSize,
-                    color: textColor,
-                    fontWeight: status == PlatformAuthStatus.needsRelogin
-                        ? FontWeight.w600
-                        : FontWeight.w500,
+                Flexible(
+                  child: Text(
+                    label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontSize: fontSize,
+                      color: textColor,
+                      fontWeight: status == PlatformAuthStatus.needsRelogin
+                          ? FontWeight.w600
+                          : FontWeight.w500,
+                    ),
                   ),
                 ),
               ],
