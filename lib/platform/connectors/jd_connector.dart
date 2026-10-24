@@ -17,6 +17,7 @@ import 'jd_delivery_filter.dart';
 import 'jd_trace_parser.dart';
 import 'platform_connector.dart';
 import 'concurrent_limiter.dart';
+import 'package:pickup_app/core/parser/pickup_point_name.dart';
 
 void _logJd(String msg) {
   debugPrint(msg);
@@ -865,10 +866,7 @@ class JdH5Connector implements PlatformConnector {
     return m?.group(1) ?? '';
   }
 
-  String _stationFromText(String block) {
-    final m = RegExp(r'([\u4e00-\u9fa5A-Za-z0-9（）()]{2,24}(?:驿站|快递柜|自提柜|自提点|代收点|服务点|超市))').firstMatch(block);
-    return m?.group(1) ?? '';
-  }
+  String _stationFromText(String block) => extractPickupPointName(block);
 
   String _goodsFromText(String block) {
     for (final raw in block.split('\n')) {

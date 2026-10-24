@@ -24,6 +24,7 @@ import '../webview/platform_cookie.dart';
 import 'pdd_trace_parser.dart';
 import 'platform_connector.dart';
 import 'concurrent_limiter.dart';
+import 'package:pickup_app/core/parser/pickup_point_name.dart';
 
 /// 保活探活结果
 ///
@@ -1266,17 +1267,8 @@ class PddH5Connector implements PlatformConnector {
       }
     }
 
-    if (stationName.isEmpty &&
-        (logisticsText.contains('驿站') ||
-            logisticsText.contains('快递柜') ||
-            logisticsText.contains('自提') ||
-            logisticsText.contains('代收') ||
-            logisticsText.contains('服务点') ||
-            logisticsText.contains('门店'))) {
-      final stationMatch = RegExp(
-        r'([\u4e00-\u9fa5A-Za-z0-9（）()]{2,24}(?:驿站|快递柜|自提柜|自提点|代收点|服务点|超市|门店|便利店|服务站))',
-      ).firstMatch(logisticsText);
-      if (stationMatch != null) stationName = stationMatch.group(1) ?? '';
+    if (stationName.isEmpty) {
+      stationName = extractPickupPointName(logisticsText);
     }
 
     if (stationName.isNotEmpty && logisticsText.contains('菜鸟驿站') && !stationName.contains('菜鸟')) {
@@ -1603,8 +1595,7 @@ class PddH5Connector implements PlatformConnector {
     if (bracketMatch != null) {
       stationName = bracketMatch.group(1)!.trim();
     } else {
-      final stationMatch = RegExp(r'([\u4e00-\u9fa5A-Za-z0-9（）()]{2,24}(?:驿站|快递柜|自提柜|自提点|代收点|服务点|超市|门店|便利店))').firstMatch(allText);
-      if (stationMatch != null) stationName = stationMatch.group(1) ?? '';
+      stationName = extractPickupPointName(allText);
     }
     if (stationName.isNotEmpty && allText.contains('菜鸟驿站') && !stationName.contains('菜鸟')) {
       stationName = '菜鸟驿站 · $stationName';
