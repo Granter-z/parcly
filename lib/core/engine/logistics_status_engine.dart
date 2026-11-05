@@ -8,6 +8,7 @@ library;
 
 import '../models/package.dart';
 import '../models/package_status.dart';
+import 'timeline_view.dart';
 
 /// 内部事件动作分类
 enum LogisticsNodeAction {
@@ -282,6 +283,31 @@ class LogisticsStatusEngine {
   /// 文本是否表明最新节点仍在途/派送/待取（P44 否决宽 isOrderSigned）。
   static bool isActiveLogisticsText(String text) =>
       isActiveLogisticsAction(classifyNode(text));
+
+  /// 与详情 UI 一致：容错解析 + 最新节点在前，供 derive / 假完成自愈使用。
+  ///
+  /// [Package.parsedTimeline] 不做排序且 `Map<String,String>.from` 遇非 String 会整表失败；
+  /// tip8 JT554 详情能显示「运输中」而启动自愈吃不到，就是这条口径差。
+  static List<Map<String, String>> eventsNewestFirst(String? rawTimelineJson) {
+    return [
+      for (final n in timelineForDisplay(rawTimelineJson))
+        {'tag': n.tag, 'time': n.time, 'text': n.text},
+    ];
+  }
+
+  /// 本地时间轴或描述是否仍呈活跃投递（在途/派送/待取）。
+  static bool hasActiveLocalEvidence({
+    String? rawTimelineJson,
+    String description = '',
+  }) {
+    final events = eventsNewestFirst(rawTimelineJson);
+    if (events.isNotEmpty) {
+      final newest = '${events.first['tag'] ?? ''} ${events.first['text'] ?? ''}'.trim();
+      if (isActiveLogisticsText(newest)) return true;
+    }
+    return isActiveLogisticsText(description);
+  }
+
 
   /// 单节点文本分类
   static LogisticsNodeAction classifyNode(String text) {

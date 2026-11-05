@@ -295,6 +295,7 @@ class PddH5Connector implements PlatformConnector {
         await _authStore.setExpired('pdd', false);
 
         final pendingCodes = <String, _PddOrder>{}; // orderSn -> order（优先深挖时间轴）
+        final handledOrderSns = <String>{};
         _cacheHits = 0;
 
         for (final o in orders) {
@@ -303,47 +304,97 @@ class PddH5Connector implements PlatformConnector {
           if (parsed.isFiltered) continue;
 
           // 【新模式核心约束】：真正已完成的跳过同步。
-          // P44 CTO：假完成（Hive pickedUp 且无用户 pickedUpAt）不得 skip enrich，
-          // 否则 _resolveStatus 自愈进不去，详情只剩本地旧时间轴的「运输中」。
+          // P44 CTO：假完成（Hive pickedUp 且无用户 pickedUpAt）不得 skip enrich；
+          // 本地时间轴仍活跃时同样不得 skip（tip8 / 技术方案 P44-e）。
           final local = _localPackageById(parsed.package.id);
+          final localActive = local != null && PddFalsePickupHeal.hasActiveEvidence(local);
           if (PddCompletedSyncGate.shouldSkip(
             status: parsed.package.status,
             userPickedUpAt: local?.pickedUpAt,
+            localActiveEvidence: localActive,
           )) {
             debugPrint('[PDD NewMode] 已经完成，跳过同步: ${parsed.package.id} (${parsed.package.status.label})');
             continue;
           }
           if (parsed.package.status == PackageStatus.pickedUp && local?.pickedUpAt == null) {
             debugPrint('[PDD NewMode] P44 假完成无 pickedUpAt，继续 enrich 以回滚: ${parsed.package.id}');
+          } else if (localActive && local.pickedUpAt == null) {
+            debugPrint('[PDD NewMode] P44 本地活跃证据，继续 enrich: ${parsed.package.id}');
           }
 
           final orderSn = parsed.package.id.replaceFirst('PDD_', '');
           final listTrace = parsed.package.description;
 
-          // 仅在动态 TTL 保护期内且时间轴节点完整、轨迹未变时复用缓存
+          // 仅在动态 TTL 保护期内且时间轴节点完整、轨迹未变时复用缓存。
+          // tip9：假完成不得吃「缓存里的 stale pickedUp」——会把启动自愈后的 transit 再抬回去。
           final cached = _timelineCache[orderSn];
-          if (cached != null &&
+          final cacheUsable = cached != null &&
               cached.timelineJson != null &&
               cached.isFresh() &&
               cached.nodeCount >= 3 &&
               listTrace.isNotEmpty &&
-              cached.latestTrace == listTrace) {
+              cached.latestTrace == listTrace;
+          final cacheIsStaleFakeComplete = cacheUsable &&
+              cached.status == PackageStatus.pickedUp &&
+              local?.pickedUpAt == null &&
+              (localActive || parsed.package.status == PackageStatus.pickedUp);
+          if (cacheUsable && !cacheIsStaleFakeComplete) {
             _cacheHits++;
+            handledOrderSns.add(orderSn);
+            final yieldedStatus = PddFalsePickupHeal.coerceYieldStatus(
+              derived: cached.status,
+              local: local,
+              evidenceFallback: parsed.package.copyWith(
+                rawTimelineJson: cached.timelineJson,
+                description: cached.latestText.isNotEmpty ? cached.latestText : parsed.package.description,
+              ),
+            );
             yield parsed.package.copyWith(
               description: cached.latestText.isNotEmpty ? cached.latestText : parsed.package.description,
               rawTimelineJson: cached.timelineJson,
-              status: cached.status,
+              status: yieldedStatus,
             );
             continue;
+          }
+          if (cacheIsStaleFakeComplete) {
+            debugPrint('[PDD NewMode] P44 丢弃 stale pickedUp 缓存，强制 enrich: $orderSn');
           }
 
           // 优先同步时间轴：在运（在途/派件）、已购买（待发货）、到货（待取件）
           pendingCodes[orderSn] = parsed.orderMeta;
+          handledOrderSns.add(orderSn);
         }
 
         debugPrint('[PDD NewMode] 活跃在运/已购/到货包裹: ${pendingCodes.length}单需深挖时间轴, 缓存复用: $_cacheHits单');
 
         yield* _enrichPending(pendingCodes);
+
+        // P44-e / tip9：列表 page1+2 未吐出的假完成（如 JT554）——同步末扫尾。
+        // 真用户已取（pickedUpAt!=null）不扫。有本地活跃证据则先 yield 自愈，再尽量 enrich。
+        final locals = _getLocalPackages?.call() ?? const <Package>[];
+        final orphanPending = <String, _PddOrder>{};
+        for (final local in locals) {
+          if (local.platform != 'pdd') continue;
+          if (local.status != PackageStatus.pickedUp || local.pickedUpAt != null) continue;
+          final orderSn = local.id.startsWith('PDD_') ? local.id.substring(4) : '';
+          if (orderSn.isEmpty) continue;
+
+          final healed = PddFalsePickupHeal.healMisfiledPickedUp(local);
+          if (healed != null) {
+            debugPrint('[PDD NewMode] P44 扫尾本地自愈 ${local.id} → ${healed.status.label}');
+            yield healed;
+          }
+
+          if (handledOrderSns.contains(orderSn)) continue;
+          if (healed == null && !PddFalsePickupHeal.hasActiveEvidence(local)) continue;
+
+          orphanPending[orderSn] = _PddOrder(pkg: local);
+          handledOrderSns.add(orderSn);
+          debugPrint('[PDD NewMode] P44 扫尾强制 enrich: $orderSn');
+        }
+        if (orphanPending.isNotEmpty) {
+          yield* _enrichPending(orphanPending);
+        }
       } finally {
         // 无论本次同步成功、失败还是中断，都尝试把刷新后的 Cookie 回写（仅当登录态健康）
         await _persistCookiesIfHealthy(cookies);
@@ -449,11 +500,26 @@ class PddH5Connector implements PlatformConnector {
       final effectiveDescription = detail.latestText.isNotEmpty ? detail.latestText : base.description;
       final cachedTimeline = _richerTimeline(detail.rawTimelineJson, base.rawTimelineJson);
 
+      final local = _localPackageById(base.id);
+      final yieldStatus = PddFalsePickupHeal.coerceYieldStatus(
+        derived: derivedStatus,
+        local: local,
+        evidenceFallback: base.copyWith(
+          description: effectiveDescription,
+          rawTimelineJson: cachedTimeline,
+          pickupCode: detail.pickupCode.isNotEmpty ? detail.pickupCode : base.pickupCode,
+          stationName: detail.stationName.isNotEmpty ? detail.stationName : base.stationName,
+        ),
+      );
+      if (yieldStatus != derivedStatus) {
+        debugPrint('[PDD NewMode] P44 coerce yield $orderSn ${derivedStatus.label} → ${yieldStatus.label}');
+      }
+
       _timelineCache[orderSn] = _TimelineCache(
         base.description,
         cachedTimeline,
         effectiveDescription,
-        status: derivedStatus,
+        status: yieldStatus,
         nodeCount: _timelineNodeCount(cachedTimeline),
         recommendedSyncInterval: syncInterval,
       );
@@ -465,7 +531,7 @@ class PddH5Connector implements PlatformConnector {
         stationName: detail.stationName.isNotEmpty ? detail.stationName : base.stationName,
         location: detail.address.isNotEmpty ? detail.address : base.location,
         description: effectiveDescription,
-        status: derivedStatus, // 严格以软件根据时间轴推导出的货物状态为准
+        status: yieldStatus, // derive 为准；假完成 + 本地活跃证据时 coerce 回滚
         rawTimelineJson: cachedTimeline,
       );
     }
@@ -924,12 +990,18 @@ class PddH5Connector implements PlatformConnector {
 
       final orderText = await _domText();
 
-      // 判断该包裹是否已签收/已完成
-      final isCompleted = base?.status == PackageStatus.pickedUp ||
-          base?.status == PackageStatus.archived ||
-          base?.status == PackageStatus.rejected ||
-          rawData?['pddStatus'] == 'SIGNED' ||
-          rawData?['pddStatusDesc'] == '已签收';
+      // 判断该包裹是否已签收/已完成。
+      // tip9：列表/Hive 假 pickedUp（无用户 pickedUpAt）不得当完成短路——必须深挖轨迹页，
+      // 否则 order.html 轨迹残缺时 enrich 仍吐 pickedUp，JT554 回滚失败。
+      final localForDig = base == null ? null : _localPackageById(base.id);
+      final fakePickedUp = base?.status == PackageStatus.pickedUp &&
+          localForDig?.pickedUpAt == null;
+      final isCompleted = !fakePickedUp &&
+          (base?.status == PackageStatus.pickedUp ||
+              base?.status == PackageStatus.archived ||
+              base?.status == PackageStatus.rejected ||
+              rawData?['pddStatus'] == 'SIGNED' ||
+              rawData?['pddStatusDesc'] == '已签收');
 
       String deep = '';
       bool navigated = false;
@@ -1895,25 +1967,113 @@ class PddDetailResult {
 /// 假 `pickedUp`（无用户 [Package.pickedUpAt]），列表仍判完成 → 继续 skip enrich，
 /// `_resolveStatus` 自愈进不去，详情运输中来自本地旧时间轴。
 ///
+/// tip8 / `d64e12b` / #40 后仍 FAIL：闸门只挂在「本轮列表循环」内；JT554 若不在
+/// page1+2、或 enrich/缓存又吐回 pickedUp，仍锁死。+9 补：本地活跃证据禁止 skip、
+/// 同步末扫尾假完成、深挖不得因列表假 pickedUp 短路。
+///
 /// 规则：
 /// - archived / rejected → 跳过
 /// - 假完成：`pickedUp` 但无用户确认 `pickedUpAt` → **不得**跳过，必须 enrich + derive
-/// - 真用户取件：有 `pickedUpAt` → 可跳过
+/// - 本地时间轴/描述仍在途/派送/待取 → **不得**跳过（即便列表未标 pickedUp）
+/// - 真用户取件：有 `pickedUpAt` → 可跳过（真已取不回滚）
 class PddCompletedSyncGate {
   /// 是否应跳过详情同步。
   ///
   /// [userPickedUpAt] 必须来自本地 Hive/状态里的用户确认时间；列表解析包没有此字段。
+  /// [localActiveEvidence] 为 true 时（本地最新轨迹仍活跃）禁止跳过。
   static bool shouldSkip({
     required PackageStatus status,
     DateTime? userPickedUpAt,
+    bool localActiveEvidence = false,
   }) {
     if (status == PackageStatus.archived || status == PackageStatus.rejected) {
       return true;
     }
+    // 真用户已取：信任，可跳过（即使本地还留着旧在途轨迹）
+    if (userPickedUpAt != null && status == PackageStatus.pickedUp) {
+      return true;
+    }
+    // 本地仍活跃 → 必须 enrich / 扫尾回滚，不能 skip
+    if (localActiveEvidence && userPickedUpAt == null) {
+      return false;
+    }
     if (status != PackageStatus.pickedUp) return false;
-    // 假完成（无用户点「已取」）→ 强制 enrich，交给 derive / _resolveStatus 回滚
+    // 假完成（无用户点「已取」）→ 强制 enrich
     if (userPickedUpAt == null) return false;
     return true;
+  }
+}
+
+/// P44 +9：用本地时间轴/描述把误标 pickedUp 回滚到活跃态（仅无用户 pickedUpAt）。
+///
+/// 与详情 UI 共用 [LogisticsStatusEngine.eventsNewestFirst]，避免「详情显示运输中、
+/// 自愈却吃不到」的口径差（tip8 根因之一）。
+class PddFalsePickupHeal {
+  /// 本地是否仍有在途/派送/待取证据。
+  static bool hasActiveEvidence(Package pkg) {
+    return LogisticsStatusEngine.hasActiveLocalEvidence(
+      rawTimelineJson: pkg.rawTimelineJson,
+      description: pkg.description,
+    );
+  }
+
+  /// 若应回滚，返回活跃态副本；否则 null（保持 completed / 无证据）。
+  static Package? healMisfiledPickedUp(Package pkg) {
+    if (pkg.status != PackageStatus.pickedUp || pkg.pickedUpAt != null) {
+      return null;
+    }
+    final events = LogisticsStatusEngine.eventsNewestFirst(pkg.rawTimelineJson);
+    if (events.isNotEmpty) {
+      final derived = LogisticsStatusEngine.derive(
+        events: events,
+        isOrderSigned: true,
+        pickupCode: pkg.pickupCode,
+        stationName: pkg.stationName ?? '',
+      );
+      if (!derived.status.isCompleted) {
+        return pkg.copyWith(status: derived.status);
+      }
+      return null;
+    }
+    if (!LogisticsStatusEngine.isActiveLogisticsText(pkg.description)) {
+      return null;
+    }
+    if (pkg.platform == 'pdd') {
+      final status = PddStatusClassifier.resolve(
+        statusPrompt: '',
+        logisticsDesc: pkg.description,
+        fullText: pkg.description,
+        pickupCode: pkg.pickupCode,
+      );
+      if (!status.isCompleted) return pkg.copyWith(status: status);
+    }
+    final action = LogisticsStatusEngine.classifyNode(pkg.description);
+    if (action == LogisticsNodeAction.inTransit) {
+      return pkg.copyWith(status: PackageStatus.transit);
+    }
+    if (action == LogisticsNodeAction.outForDelivery) {
+      return pkg.copyWith(status: PackageStatus.delivering);
+    }
+    if (action == LogisticsNodeAction.waitingPickup) {
+      return pkg.copyWith(status: PackageStatus.arrived);
+    }
+    return null;
+  }
+
+  /// enrich 得出 completed 时，若本地无 pickedUpAt 且证据活跃，改吐活跃态。
+  static PackageStatus coerceYieldStatus({
+    required PackageStatus derived,
+    required Package? local,
+    Package? evidenceFallback,
+  }) {
+    if (!derived.isCompleted) return derived;
+    if (local?.pickedUpAt != null) return derived;
+    final evidence = local ?? evidenceFallback;
+    if (evidence == null) return derived;
+    final healed = healMisfiledPickedUp(
+      evidence.copyWith(status: PackageStatus.pickedUp),
+    );
+    return healed?.status ?? derived;
   }
 }
 
