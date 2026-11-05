@@ -41,11 +41,16 @@ class PddKeepAliveProbe {
 
 class PddH5Connector implements PlatformConnector {
   final PlatformAuthStore _authStore;
+  /// 本地已落库包裹（用于读用户 [Package.pickedUpAt]，判定假完成不得 skip enrich）
+  final List<Package> Function()? _getLocalPackages;
   static const _ua =
       'Mozilla/5.0 (Linux; Android 14; 25102RKBEC Build/UP1A.231005.007) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36';
 
-  PddH5Connector({PlatformAuthStore? authStore})
-      : _authStore = authStore ?? PlatformAuthStore();
+  PddH5Connector({
+    PlatformAuthStore? authStore,
+    List<Package> Function()? getLocalPackages,
+  })  : _authStore = authStore ?? PlatformAuthStore(),
+        _getLocalPackages = getLocalPackages;
 
   @override
   String get platformId => 'pdd';
@@ -82,6 +87,16 @@ class PddH5Connector implements PlatformConnector {
 
   @override
   String? get lastIssue => _lastIssue;
+
+
+  Package? _localPackageById(String id) {
+    final list = _getLocalPackages?.call();
+    if (list == null || list.isEmpty) return null;
+    for (final p in list) {
+      if (p.id == id) return p;
+    }
+    return null;
+  }
 
   /// 用户重新授权后清理上一次的失效提示
   void clearLastIssue() {
@@ -287,22 +302,19 @@ class PddH5Connector implements PlatformConnector {
           if (parsed == null) continue;
           if (parsed.isFiltered) continue;
 
-          final isCompleted = parsed.package.status == PackageStatus.pickedUp ||
-              parsed.package.status == PackageStatus.archived ||
-              parsed.package.status == PackageStatus.rejected;
-
           // 【新模式核心约束】：真正已完成的跳过同步。
-          // P44：列表/描述仍呈运输中/派送中/待取时不得跳过，允许误标回滚。
-          final listEvidence = '${parsed.package.description} ${parsed.package.status.label}'.trim();
-          final mayBeMisfiledCompleted = isCompleted &&
-              parsed.package.status == PackageStatus.pickedUp &&
-              LogisticsStatusEngine.isActiveLogisticsText(listEvidence);
-          if (isCompleted && !mayBeMisfiledCompleted) {
+          // P44 CTO：假完成（Hive pickedUp 且无用户 pickedUpAt）不得 skip enrich，
+          // 否则 _resolveStatus 自愈进不去，详情只剩本地旧时间轴的「运输中」。
+          final local = _localPackageById(parsed.package.id);
+          if (PddCompletedSyncGate.shouldSkip(
+            status: parsed.package.status,
+            userPickedUpAt: local?.pickedUpAt,
+          )) {
             debugPrint('[PDD NewMode] 已经完成，跳过同步: ${parsed.package.id} (${parsed.package.status.label})');
             continue;
           }
-          if (mayBeMisfiledCompleted) {
-            debugPrint('[PDD NewMode] P44 疑似误标已完成，继续同步以回滚: ${parsed.package.id}');
+          if (parsed.package.status == PackageStatus.pickedUp && local?.pickedUpAt == null) {
+            debugPrint('[PDD NewMode] P44 假完成无 pickedUpAt，继续 enrich 以回滚: ${parsed.package.id}');
           }
 
           final orderSn = parsed.package.id.replaceFirst('PDD_', '');
@@ -1874,6 +1886,34 @@ class PddDetailResult {
       latestText: latestText ?? this.latestText,
       rawTimelineJson: rawTimelineJson ?? this.rawTimelineJson,
     );
+  }
+}
+
+/// P44：拼多多「已完成跳过同步」闸门（CTO 定案）。
+///
+/// tip `aef1bca` / #38 后仍 FAIL：#38 只挡了「列表当下」仍呈在途的跳过；本票 Hive 已是
+/// 假 `pickedUp`（无用户 [Package.pickedUpAt]），列表仍判完成 → 继续 skip enrich，
+/// `_resolveStatus` 自愈进不去，详情运输中来自本地旧时间轴。
+///
+/// 规则：
+/// - archived / rejected → 跳过
+/// - 假完成：`pickedUp` 但无用户确认 `pickedUpAt` → **不得**跳过，必须 enrich + derive
+/// - 真用户取件：有 `pickedUpAt` → 可跳过
+class PddCompletedSyncGate {
+  /// 是否应跳过详情同步。
+  ///
+  /// [userPickedUpAt] 必须来自本地 Hive/状态里的用户确认时间；列表解析包没有此字段。
+  static bool shouldSkip({
+    required PackageStatus status,
+    DateTime? userPickedUpAt,
+  }) {
+    if (status == PackageStatus.archived || status == PackageStatus.rejected) {
+      return true;
+    }
+    if (status != PackageStatus.pickedUp) return false;
+    // 假完成（无用户点「已取」）→ 强制 enrich，交给 derive / _resolveStatus 回滚
+    if (userPickedUpAt == null) return false;
+    return true;
   }
 }
 

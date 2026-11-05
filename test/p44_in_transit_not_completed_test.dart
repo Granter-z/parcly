@@ -171,4 +171,87 @@ void main() {
       expect(status, isNot(PackageStatus.pickedUp));
     });
   });
+
+  group('P44 tip：假完成不得 skip enrich（CTO：无 pickedUpAt）', () {
+    test('Hive 假 pickedUp（无 pickedUpAt）→ 不得跳过', () {
+      expect(
+        PddCompletedSyncGate.shouldSkip(
+          status: PackageStatus.pickedUp,
+          userPickedUpAt: null,
+        ),
+        isFalse,
+      );
+    });
+
+    test('真用户取件（有 pickedUpAt）→ 可跳过', () {
+      expect(
+        PddCompletedSyncGate.shouldSkip(
+          status: PackageStatus.pickedUp,
+          userPickedUpAt: DateTime(2026, 11, 5),
+        ),
+        isTrue,
+      );
+    });
+
+    test('archived / rejected 仍跳过', () {
+      expect(
+        PddCompletedSyncGate.shouldSkip(
+          status: PackageStatus.archived,
+          userPickedUpAt: null,
+        ),
+        isTrue,
+      );
+      expect(
+        PddCompletedSyncGate.shouldSkip(
+          status: PackageStatus.rejected,
+        ),
+        isTrue,
+      );
+    });
+
+    test('活跃态不跳过', () {
+      expect(
+        PddCompletedSyncGate.shouldSkip(
+          status: PackageStatus.transit,
+          userPickedUpAt: null,
+        ),
+        isFalse,
+      );
+    });
+  });
+
+  group('P44 tip：Hive 假 pickedUp + 最新运输中 → sync 后 transit', () {
+    test('enrich/derive：假完成订单侧 isOrderSigned + 运输中节点 → transit（供 _resolveStatus 回滚）', () {
+      // 同步链路：gate 不 skip → enrich 拉时间轴 → derive → addPackage/_resolveStatus
+      expect(
+        PddCompletedSyncGate.shouldSkip(
+          status: PackageStatus.pickedUp,
+          userPickedUpAt: null,
+        ),
+        isFalse,
+        reason: '假完成必须进 enrich',
+      );
+      final derived = LogisticsStatusEngine.derive(
+        events: [
+          {'tag': pddTicketTag, 'time': '2026-11-05 02:02:00', 'text': pddTicketLatest},
+        ],
+        isOrderSigned: true, // 列表仍判完成 / Hive 误标
+      );
+      expect(derived.status, PackageStatus.transit);
+      expect(derived.status.isCompleted, isFalse);
+    });
+
+    test('回归：拼「已取件」label 不得再让假完成 skip（旧 #38 闸门死穴）', () {
+      final poisoned = '运输中 $pddTicketLatest 已取件';
+      expect(LogisticsStatusEngine.classifyNode(poisoned), LogisticsNodeAction.signed);
+      // 新闸门只认用户 pickedUpAt，与 label 拼接无关
+      expect(
+        PddCompletedSyncGate.shouldSkip(
+          status: PackageStatus.pickedUp,
+          userPickedUpAt: null,
+        ),
+        isFalse,
+      );
+    });
+  });
 }
