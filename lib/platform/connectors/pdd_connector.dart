@@ -291,10 +291,18 @@ class PddH5Connector implements PlatformConnector {
               parsed.package.status == PackageStatus.archived ||
               parsed.package.status == PackageStatus.rejected;
 
-          // 【新模式核心约束】：所有已经完成的都不同步！
-          if (isCompleted) {
+          // 【新模式核心约束】：真正已完成的跳过同步。
+          // P44：列表/描述仍呈运输中/派送中/待取时不得跳过，允许误标回滚。
+          final listEvidence = '${parsed.package.description} ${parsed.package.status.label}'.trim();
+          final mayBeMisfiledCompleted = isCompleted &&
+              parsed.package.status == PackageStatus.pickedUp &&
+              LogisticsStatusEngine.isActiveLogisticsText(listEvidence);
+          if (isCompleted && !mayBeMisfiledCompleted) {
             debugPrint('[PDD NewMode] 已经完成，跳过同步: ${parsed.package.id} (${parsed.package.status.label})');
             continue;
+          }
+          if (mayBeMisfiledCompleted) {
+            debugPrint('[PDD NewMode] P44 疑似误标已完成，继续同步以回滚: ${parsed.package.id}');
           }
 
           final orderSn = parsed.package.id.replaceFirst('PDD_', '');
@@ -1410,11 +1418,13 @@ class PddH5Connector implements PlatformConnector {
       final derived = LogisticsStatusEngine.derive(
         events: timelineNodes,
         isPendingShipment: status == PackageStatus.pendingShipment,
+        // P44：订单侧宽签收交由 derive 结合最新节点否决；不再在此处锁死 pickedUp
         isOrderSigned: status == PackageStatus.pickedUp,
         pickupCode: pickupCode,
         stationName: stationName,
       );
-      if (status != PackageStatus.pickedUp && status != PackageStatus.pendingShipment) {
+      // 有官方时间轴时以 derive 为准（含误标 pickedUp → 在途回滚）
+      if (status != PackageStatus.pendingShipment || derived.status != PackageStatus.pendingShipment) {
         status = derived.status;
       }
     }
@@ -1937,17 +1947,19 @@ class PddStatusClassifier {
       return PackageStatus.rejected;
     }
 
-    // 1. 已签收 / 交易成功 (拼多多官方【已签收】标签 / 交易成功 / 待确认收货)
-    if (prompt.contains('已签收') ||
-        prompt.contains('交易成功') ||
-        prompt.contains('待评价') ||
-        prompt.contains('已完成') ||
-        prompt.contains('已收货') ||
+    // 1. 已签收（P44：收紧白名单；裸「已完成/待评价」不再直接签收）
+    // 若物流描述/全文最新信号仍是在途/派送/待取，订单侧「交易成功」等也不得签收。
+    final newestLogisticsText = desc.isNotEmpty ? desc : all;
+    final hasActiveLogistics = LogisticsStatusEngine.isActiveLogisticsText(newestLogisticsText) ||
+        LogisticsStatusEngine.isActiveLogisticsText(prompt);
+    final orderLooksSigned = LogisticsStatusEngine.isStrictOrderSignedLabel(prompt) ||
+        LogisticsStatusEngine.isStrictOrderSignedLabel(desc) ||
         desc.startsWith('已签收') ||
         desc.startsWith('已妥投') ||
         desc.contains('妥投签收') ||
         all.contains('已签收') ||
-        all.contains('已妥投')) {
+        all.contains('已妥投');
+    if (orderLooksSigned && !hasActiveLogistics) {
       return PackageStatus.pickedUp;
     }
 

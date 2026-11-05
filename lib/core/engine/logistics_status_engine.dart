@@ -88,13 +88,21 @@ class LogisticsStatusEngine {
     }
 
     // 1. 订单生命周期明确为已签收/交易成功
+    // P44：若最新物流节点仍是在途/派送/待取，禁止仅凭订单侧宽签收短路进 pickedUp。
     if (isOrderSigned) {
-      return const DerivedDeliveryStatus(
-        status: PackageStatus.pickedUp,
-        confidence: 1.0,
-        stability: LogisticsStability.settled,
-        recommendedSyncInterval: Duration(days: 365),
-      );
+      final newestActive = events.isNotEmpty &&
+          isActiveLogisticsAction(classifyNode(
+            '${events.first['tag'] ?? ''} ${events.first['text'] ?? ''}'.trim(),
+          ));
+      if (!newestActive) {
+        return const DerivedDeliveryStatus(
+          status: PackageStatus.pickedUp,
+          confidence: 1.0,
+          stability: LogisticsStability.settled,
+          recommendedSyncInterval: Duration(days: 365),
+        );
+      }
+      // 有活跃最新节点：落入下方轨迹推导（取件码优先仍走 §3）
     }
 
     // 2. 订单生命周期明确为待发货（成团未出库）
@@ -245,6 +253,35 @@ class LogisticsStatusEngine {
       '拒收', '已退回', '退回发件人', '退件', '已退件',
     ]);
   }
+
+  /// 订单侧严格签收白名单（P44）：禁止裸词「完成/已完成/待评价」。
+  ///
+  /// 允许：已签收 / 签收成功 / 本人签收 / 代收人已签收 / 已妥投 / 妥投签收 / 已收货 / 交易成功。
+  /// 「交易成功」等订单侧标签若同时存在在途/派送/待取最新节点，由 [derive] / 连接器另行否决。
+  static bool isStrictOrderSignedLabel(String label) {
+    final t = label.trim();
+    if (t.isEmpty) return false;
+    return _containsAny(t, const [
+      '已签收',
+      '签收成功',
+      '本人签收',
+      '代收人已签收',
+      '已妥投',
+      '妥投签收',
+      '已收货',
+      '交易成功',
+    ]);
+  }
+
+  /// 最新物流节点是否仍处于活跃投递阶段（在途 / 派送 / 待取）。
+  static bool isActiveLogisticsAction(LogisticsNodeAction action) =>
+      action == LogisticsNodeAction.inTransit ||
+      action == LogisticsNodeAction.outForDelivery ||
+      action == LogisticsNodeAction.waitingPickup;
+
+  /// 文本是否表明最新节点仍在途/派送/待取（P44 否决宽 isOrderSigned）。
+  static bool isActiveLogisticsText(String text) =>
+      isActiveLogisticsAction(classifyNode(text));
 
   /// 单节点文本分类
   static LogisticsNodeAction classifyNode(String text) {
