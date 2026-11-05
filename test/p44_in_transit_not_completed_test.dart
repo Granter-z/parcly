@@ -1,5 +1,6 @@
 // P44：在途/派送不得因订单侧宽「完成」进入「已完成」(pickedUp)。
 // 本票：拼多多 / 极兔 JT5542922044377，最新「运输中 …离开【东莞虎门转运中心】…发往【邢台转运中心】」。
+import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pickup_app/core/engine/logistics_status_engine.dart';
 import 'package:pickup_app/core/models/package.dart';
@@ -351,6 +352,119 @@ void main() {
       expect(pkg.parsedTimeline.first['tag'], '已下单');
       final healed = PddFalsePickupHeal.healMisfiledPickedUp(pkg);
       expect(healed!.status, PackageStatus.transit);
+    });
+  });
+
+
+  group('P44 tip10 / P44-g：mismatch 保 traces + enrich 失败本地 heal', () {
+    const jtTracking = 'JT5542922044377';
+    const orderSn = '261103-181959473543156';
+    const dirtyOrderSn = '261002-207827822983156';
+    const oldestFirstJson = '['
+        '{"tag":"已下单","time":"2026-11-03 10:00:00","text":"您已提交订单，等待系统确认"},'
+        '{"tag":"运输中","time":"2026-11-05 02:00:00","text":"您的快件已到达【东莞虎门转运中心】"},'
+        '{"tag":"运输中","time":"2026-11-05 02:02:00","text":"您的快件离开【东莞虎门转运中心】，已发往【邢台转运中心】客服电话：956025"}'
+        ']';
+    final now = DateTime(2026, 11, 5, 22, 30);
+
+    Package fakeJt({DateTime? pickedUpAt}) {
+      return Package(
+        id: 'PDD_$orderSn',
+        trackingNumber: jtTracking,
+        courier: CourierType.jt,
+        platform: 'pdd',
+        description: pddTicketLatest,
+        urgency: UrgencyLevel.normal,
+        status: PackageStatus.pickedUp,
+        addedAt: DateTime(2026, 11, 3),
+        pickedUpAt: pickedUpAt,
+        rawTimelineJson: oldestFirstJson,
+      );
+    }
+
+    test('① mismatch + rawTraces → 仍建时间轴并 derive transit（不得 return null）', () {
+      final dirtyDom = '极兔速递: JT0000000000000\n'
+          '订单编号: $dirtyOrderSn\n'
+          '已签收 2026-10-02 12:00:00\n'
+          '快件已签收，签收人：代收\n';
+      final rawTraces = [
+        {
+          'time': '2026-11-05 02:02:00',
+          'info': pddTicketLatest,
+          'status': 'TRANSPORT',
+        },
+        {
+          'time': '2026-11-05 02:00:00',
+          'info': '您的快件已到达【东莞虎门转运中心】',
+          'status': 'TRANSPORT',
+        },
+      ];
+      final r = PddH5Connector.parseLogisticsText(
+        dirtyDom,
+        orderSn: orderSn,
+        rawTraces: rawTraces,
+        fallbackTrackingNo: jtTracking,
+        now: now,
+      );
+      expect(r, isNotNull, reason: 'mismatch 不得整包丢掉 rawTraces');
+      expect(r!.status.isCompleted, isFalse);
+      expect(r.status, PackageStatus.transit);
+      final list = jsonDecode(r.rawTimelineJson!) as List;
+      expect(list, isNotEmpty);
+      expect(list.first['text'], contains('离开【东莞虎门转运中心】'));
+    });
+
+    test('①b mismatch 且无 rawTraces → null（失败，走 enrich 兜底）', () {
+      final dirtyDom = '订单编号: $dirtyOrderSn\n已签收 2026-10-02 12:00:00\n快件已签收\n';
+      final r = PddH5Connector.parseLogisticsText(
+        dirtyDom,
+        orderSn: orderSn,
+        now: now,
+      );
+      expect(r, isNull);
+    });
+
+    test('② detail null 兜底：本地旧序时间轴假 pickedUp → yield transit', () {
+      final local = fakeJt();
+      final recovered = PddFalsePickupHeal.recoverAfterEnrichFailure(
+        local: local,
+        listBase: local.copyWith(status: PackageStatus.transit),
+      );
+      expect(recovered, isNotNull);
+      expect(recovered!.status, PackageStatus.transit);
+      expect(recovered.status.isCompleted, isFalse);
+    });
+
+    test('②b detail null 兜底：heal 吃不到轴时采信列表运送中', () {
+      final local = Package(
+        id: 'PDD_$orderSn',
+        trackingNumber: jtTracking,
+        courier: CourierType.jt,
+        platform: 'pdd',
+        description: '已取件',
+        urgency: UrgencyLevel.normal,
+        status: PackageStatus.pickedUp,
+        addedAt: DateTime(2026, 11, 3),
+        rawTimelineJson: null,
+      );
+      final listBase = local.copyWith(
+        status: PackageStatus.transit,
+        description: pddTicketLatest,
+      );
+      final recovered = PddFalsePickupHeal.recoverAfterEnrichFailure(
+        local: local,
+        listBase: listBase,
+      );
+      expect(recovered, isNotNull);
+      expect(recovered!.status, PackageStatus.transit);
+    });
+
+    test('③ 真 pickedUpAt → recover 不回滚', () {
+      final recovered = PddFalsePickupHeal.recoverAfterEnrichFailure(
+        local: fakeJt(pickedUpAt: DateTime(2026, 11, 5, 12)),
+        listBase: fakeJt().copyWith(status: PackageStatus.transit),
+      );
+      expect(recovered, isNull);
     });
   });
 
