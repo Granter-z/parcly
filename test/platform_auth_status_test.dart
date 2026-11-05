@@ -59,4 +59,24 @@ void main() {
       isTrue,
     );
   });
+
+  test('P43 B′：UI 需重登应对齐 isExpired 再开登录流', () {
+    expect(
+      shouldAlignExpiredBeforeLoginOpen(PlatformAuthStatus.needsRelogin),
+      isTrue,
+    );
+    expect(shouldAlignExpiredBeforeLoginOpen(PlatformAuthStatus.ok), isFalse);
+    expect(shouldAlignExpiredBeforeLoginOpen(PlatformAuthStatus.syncFailed), isFalse);
+    expect(shouldAlignExpiredBeforeLoginOpen(PlatformAuthStatus.unbound), isFalse);
+  });
+
+  test('P43 B′：liveIssue 兜底需重登（未 setExpired）仍应对齐', () {
+    final status = r(
+      'taobao',
+      expired: false,
+      issue: '淘宝接口返回 FAIL_SYS_SESSION_EXPIRED',
+    );
+    expect(status, PlatformAuthStatus.needsRelogin);
+    expect(shouldAlignExpiredBeforeLoginOpen(status), isTrue);
+  });
 }

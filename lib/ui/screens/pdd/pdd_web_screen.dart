@@ -317,7 +317,11 @@ class _PddWebScreenState extends ConsumerState<PddWebScreen>
     _baselineCookies = store.getCookies('pdd');
     _wasExpiredAtOpen = store.isExpired('pdd');
     final saved = _baselineCookies;
-    if (saved != null && saved.trim().isNotEmpty) {
+    // P37-b / P43 B′：已失效重登不注入旧 cookie，清空门闸基线（不 clearCookies）
+    if (_wasExpiredAtOpen) {
+      _baselineCookies = null;
+      debugPrint('[PddWeb] P37 skip inject: expired re-auth');
+    } else if (saved != null && saved.trim().isNotEmpty) {
       final hosts = _cookieHosts.map((e) => Uri.parse(e).host).toSet();
       // 原生注入，保留 HttpOnly/Secure，避免会话令牌被页面脚本读取
       await injectCookieString(cookies: saved, domains: hosts.toList());

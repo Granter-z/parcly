@@ -175,4 +175,64 @@ void main() {
       );
     });
   });
+
+  group('P43 B′ 淘宝重登门闸', () {
+    const baseline = 'cookie2=OLD; unb=123; other=1';
+    const sameEcho = 'cookie2=OLD; unb=123; other=2';
+    const fresh = 'cookie2=NEW; unb=123; other=3';
+    const cookie1Pair = 'cookie2=NEW; cookie1=abc';
+
+    test('合法 cookie2+unb / cookie2+cookie1 算会话', () {
+      expect(cookieStringHasLoginSession('taobao', baseline), isTrue);
+      expect(cookieStringHasLoginSession('taobao', cookie1Pair), isTrue);
+      expect(cookieStringHasLoginSession('taobao', 'cookie2=only'), isFalse);
+    });
+
+    test('未失效同指纹拒提交（防假绑定）', () {
+      expect(
+        mayCommitNewLoginSuccess(
+          platform: 'taobao',
+          collectedCookies: sameEcho,
+          baselineCookies: baseline,
+          wasExpiredAtOpen: false,
+        ),
+        isFalse,
+      );
+    });
+
+    test('已失效重登同指纹可提交', () {
+      expect(
+        mayCommitNewLoginSuccess(
+          platform: 'taobao',
+          collectedCookies: sameEcho,
+          baselineCookies: baseline,
+          wasExpiredAtOpen: true,
+        ),
+        isTrue,
+      );
+    });
+
+    test('已失效重登新会话可提交', () {
+      expect(
+        mayCommitNewLoginSuccess(
+          platform: 'taobao',
+          collectedCookies: fresh,
+          baselineCookies: baseline,
+          wasExpiredAtOpen: true,
+        ),
+        isTrue,
+      );
+    });
+
+    test('失败离开仍标失效', () {
+      expect(
+        shouldMarkExpiredOnLoginLeave(
+          loginCommitted: false,
+          wasExpiredAtOpen: true,
+          anomalyDetected: false,
+        ),
+        isTrue,
+      );
+    });
+  });
 }

@@ -87,6 +87,14 @@ bool isPlatformShownExpired({
   return status == PlatformAuthStatus.needsRelogin;
 }
 
+/// P43 B′：首页/设置已展示「需重登」时，打开登录流前应对齐 store.isExpired。
+///
+/// 使 [PlatformLoginScreen] / PDD 登录页走 P37-b：不注入旧 cookie，
+/// 且 [mayCommitNewLoginSuccess] 允许同指纹提交；失败离开仍保持失效。
+/// liveIssue 兜底出 needsRelogin 但尚未 setExpired 时尤其需要。
+bool shouldAlignExpiredBeforeLoginOpen(PlatformAuthStatus uiStatus) =>
+    uiStatus == PlatformAuthStatus.needsRelogin;
+
 String _platformFromKeyword(String keyword) {
   switch (keyword) {
     case '淘宝':

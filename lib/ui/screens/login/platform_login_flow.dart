@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../platform/connectors/connector_manager.dart';
 import '../../../platform/storage/platform_auth_store.dart';
+import '../../../core/engine/platform_auth_status.dart';
 import '../../providers/platform_auth_status_provider.dart';
 import '../pdd/pdd_web_screen.dart';
 import 'platform_login_screen.dart';
@@ -45,6 +46,18 @@ Future<bool> openPlatformLogin(
 }) async {
   final manager = ref.read(connectorManagerProvider);
   final store = PlatformAuthStore();
+  // P43 B′：UI「需重登」（含 liveIssue 兜底）时先对齐 isExpired，再开登录流
+  // → P37-b 不注入旧 cookie + 允许同指纹提交；失败离开仍保持失效（P29-a）
+  final uiStatus = resolvePlatformAuthStatus(
+    platform: platform,
+    isBound: store.isBound(platform),
+    isExpired: store.isExpired(platform),
+    liveIssue: manager.lastIssue,
+  );
+  if (shouldAlignExpiredBeforeLoginOpen(uiStatus) && !store.isExpired(platform)) {
+    await store.setExpired(platform, true);
+  }
+  if (!context.mounted) return false;
   // P29-a：记录进入时是否已失效；失败/取消离开后立刻对齐，不等下次刷新
   final wasExpiredAtOpen = store.isExpired(platform);
   final bool ok;
