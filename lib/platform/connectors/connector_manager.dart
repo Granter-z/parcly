@@ -49,7 +49,9 @@ class ConnectorManager {
         shouldForceRefetch: () => _forceRefetch,
       ),
       JdH5Connector(),
-      PddH5Connector(),
+      PddH5Connector(
+        getLocalPackages: () => _ref.read(packageListProvider),
+      ),
     ]);
   }
 

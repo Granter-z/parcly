@@ -41,11 +41,16 @@ class PddKeepAliveProbe {
 
 class PddH5Connector implements PlatformConnector {
   final PlatformAuthStore _authStore;
+  /// 本地已落库包裹（用于读用户 [Package.pickedUpAt]，判定假完成不得 skip enrich）
+  final List<Package> Function()? _getLocalPackages;
   static const _ua =
       'Mozilla/5.0 (Linux; Android 14; 25102RKBEC Build/UP1A.231005.007) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36';
 
-  PddH5Connector({PlatformAuthStore? authStore})
-      : _authStore = authStore ?? PlatformAuthStore();
+  PddH5Connector({
+    PlatformAuthStore? authStore,
+    List<Package> Function()? getLocalPackages,
+  })  : _authStore = authStore ?? PlatformAuthStore(),
+        _getLocalPackages = getLocalPackages;
 
   @override
   String get platformId => 'pdd';
@@ -82,6 +87,16 @@ class PddH5Connector implements PlatformConnector {
 
   @override
   String? get lastIssue => _lastIssue;
+
+
+  Package? _localPackageById(String id) {
+    final list = _getLocalPackages?.call();
+    if (list == null || list.isEmpty) return null;
+    for (final p in list) {
+      if (p.id == id) return p;
+    }
+    return null;
+  }
 
   /// 用户重新授权后清理上一次的失效提示
   void clearLastIssue() {
@@ -288,18 +303,18 @@ class PddH5Connector implements PlatformConnector {
           if (parsed.isFiltered) continue;
 
           // 【新模式核心约束】：真正已完成的跳过同步。
-          // P44 tip FAIL：旧闸门把 status.label「已取件」拼进证据，classifyNode 先命中 signed，
-          // mayBeMisfiledCompleted 永假，误标单被永久跳过、Hive pickedUp 锁死。
-          // 定案：只看列表物流文案；无真签收证据的 pickedUp 必须继续同步以便回滚。
+          // P44 CTO：假完成（Hive pickedUp 且无用户 pickedUpAt）不得 skip enrich，
+          // 否则 _resolveStatus 自愈进不去，详情只剩本地旧时间轴的「运输中」。
+          final local = _localPackageById(parsed.package.id);
           if (PddCompletedSyncGate.shouldSkip(
             status: parsed.package.status,
-            listDescription: parsed.package.description,
+            userPickedUpAt: local?.pickedUpAt,
           )) {
             debugPrint('[PDD NewMode] 已经完成，跳过同步: ${parsed.package.id} (${parsed.package.status.label})');
             continue;
           }
-          if (parsed.package.status == PackageStatus.pickedUp) {
-            debugPrint('[PDD NewMode] P44 疑似误标已完成，继续同步以回滚: ${parsed.package.id}');
+          if (parsed.package.status == PackageStatus.pickedUp && local?.pickedUpAt == null) {
+            debugPrint('[PDD NewMode] P44 假完成无 pickedUpAt，继续 enrich 以回滚: ${parsed.package.id}');
           }
 
           final orderSn = parsed.package.id.replaceFirst('PDD_', '');
@@ -1874,38 +1889,31 @@ class PddDetailResult {
   }
 }
 
-/// P44：拼多多「已完成跳过同步」闸门。
+/// P44：拼多多「已完成跳过同步」闸门（CTO 定案）。
 ///
-/// tip `aef1bca` 真机 FAIL 根因：旧逻辑把 `status.label`（「已取件」）拼进活跃物流证据，
-/// [LogisticsStatusEngine.classifyNode] 优先命中 signed，导致「疑似误标可回滚」永假，
-/// 误标 pickedUp 被永久跳过，Hive 状态锁死，详情时间轴仍显示运输中。
+/// tip `aef1bca` / #38 后仍 FAIL：#38 只挡了「列表当下」仍呈在途的跳过；本票 Hive 已是
+/// 假 `pickedUp`（无用户 [Package.pickedUpAt]），列表仍判完成 → 继续 skip enrich，
+/// `_resolveStatus` 自愈进不去，详情运输中来自本地旧时间轴。
 ///
-/// 规则：只看列表物流文案；archived/rejected 仍跳过；pickedUp 仅当列表物流本身呈真签收
-/// 且无在途/派送/待取信号时才跳过；空描述或不确定 → 继续同步以便回滚。
+/// 规则：
+/// - archived / rejected → 跳过
+/// - 假完成：`pickedUp` 但无用户确认 `pickedUpAt` → **不得**跳过，必须 enrich + derive
+/// - 真用户取件：有 `pickedUpAt` → 可跳过
 class PddCompletedSyncGate {
   /// 是否应跳过详情同步。
   ///
-  /// [listDescription] 只能是列表物流文案，**禁止**拼接 [PackageStatus.label]。
+  /// [userPickedUpAt] 必须来自本地 Hive/状态里的用户确认时间；列表解析包没有此字段。
   static bool shouldSkip({
     required PackageStatus status,
-    required String listDescription,
+    DateTime? userPickedUpAt,
   }) {
     if (status == PackageStatus.archived || status == PackageStatus.rejected) {
       return true;
     }
     if (status != PackageStatus.pickedUp) return false;
-
-    final desc = listDescription.trim();
-    if (LogisticsStatusEngine.isActiveLogisticsText(desc)) {
-      return false;
-    }
-    // 空描述：无法证明真签收（本票列表常无轨迹摘要）→ 必须同步，解开 Hive 锁死。
-    if (desc.isEmpty) return false;
-
-    final action = LogisticsStatusEngine.classifyNode(desc);
-    if (action == LogisticsNodeAction.signed) return true;
-    if (LogisticsStatusEngine.isStrictOrderSignedLabel(desc)) return true;
-    return false;
+    // 假完成（无用户点「已取」）→ 强制 enrich，交给 derive / _resolveStatus 回滚
+    if (userPickedUpAt == null) return false;
+    return true;
   }
 }
 
