@@ -128,3 +128,55 @@ bool shouldMarkExpiredOnLoginLeave({
   if (loginCommitted) return false;
   return wasExpiredAtOpen || anomalyDetected;
 }
+
+
+/// P43 / P37-c：登录 WebView 内是否应拦截「打开官方 App」唤端，避免页被带走。
+///
+/// [platform] 为 taobao/tmall/jd；支付 scheme（alipay/weixin）不在此拦，
+/// 仍可由页面走 http(s) 或由调用方按白名单外链处理。
+bool shouldBlockLoginAppLaunch({
+  required String platform,
+  required String url,
+}) {
+  final p = platform.toLowerCase();
+  final lower = url.toLowerCase();
+  if (p == 'jd') {
+    if (lower.startsWith('openapp.jdmobile:') ||
+        lower.startsWith('jdmobile:') ||
+        lower.startsWith('jd:')) {
+      return true;
+    }
+    if (lower.startsWith('http://') || lower.startsWith('https://')) {
+      if (lower.contains('openapp.jdmobile') ||
+          (lower.contains('openapp') && lower.contains('jdmobile'))) {
+        return true;
+      }
+    }
+    return false;
+  }
+  if (p == 'taobao' || p == 'tmall') {
+    if (lower.startsWith('taobao:') ||
+        lower.startsWith('tmall:') ||
+        lower.startsWith('taobaowireless:') ||
+        lower.startsWith('tbopen:')) {
+      return true;
+    }
+    if (lower.startsWith('intent:')) {
+      if (lower.contains('scheme=taobao') ||
+          lower.contains('scheme=tmall') ||
+          lower.contains('scheme=taobaowireless') ||
+          lower.contains('scheme=tbopen')) {
+        return true;
+      }
+    }
+    if (lower.startsWith('http://') || lower.startsWith('https://')) {
+      if (lower.contains('open.taobao.com') ||
+          lower.contains('h5.m.taobao.com/openapp') ||
+          (lower.contains('m.taobao.com') && lower.contains('openapp'))) {
+        return true;
+      }
+    }
+    return false;
+  }
+  return false;
+}

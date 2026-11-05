@@ -175,4 +175,117 @@ void main() {
       );
     });
   });
+
+  group('P43 B′ 淘宝重登门闸', () {
+    const baseline = 'cookie2=OLD; unb=123; other=1';
+    const sameEcho = 'cookie2=OLD; unb=123; other=2';
+    const fresh = 'cookie2=NEW; unb=123; other=3';
+    const cookie1Pair = 'cookie2=NEW; cookie1=abc';
+
+    test('合法 cookie2+unb / cookie2+cookie1 算会话', () {
+      expect(cookieStringHasLoginSession('taobao', baseline), isTrue);
+      expect(cookieStringHasLoginSession('taobao', cookie1Pair), isTrue);
+      expect(cookieStringHasLoginSession('taobao', 'cookie2=only'), isFalse);
+    });
+
+    test('未失效同指纹拒提交（防假绑定）', () {
+      expect(
+        mayCommitNewLoginSuccess(
+          platform: 'taobao',
+          collectedCookies: sameEcho,
+          baselineCookies: baseline,
+          wasExpiredAtOpen: false,
+        ),
+        isFalse,
+      );
+    });
+
+    test('已失效重登同指纹可提交', () {
+      expect(
+        mayCommitNewLoginSuccess(
+          platform: 'taobao',
+          collectedCookies: sameEcho,
+          baselineCookies: baseline,
+          wasExpiredAtOpen: true,
+        ),
+        isTrue,
+      );
+    });
+
+    test('已失效重登新会话可提交', () {
+      expect(
+        mayCommitNewLoginSuccess(
+          platform: 'taobao',
+          collectedCookies: fresh,
+          baselineCookies: baseline,
+          wasExpiredAtOpen: true,
+        ),
+        isTrue,
+      );
+    });
+
+    test('失败离开仍标失效', () {
+      expect(
+        shouldMarkExpiredOnLoginLeave(
+          loginCommitted: false,
+          wasExpiredAtOpen: true,
+          anomalyDetected: false,
+        ),
+        isTrue,
+      );
+    });
+  });
+
+
+  group('P43 登录流拦唤端', () {
+    test('淘宝 taobao:// / intent / open.taobao 应拦', () {
+      expect(
+        shouldBlockLoginAppLaunch(platform: 'taobao', url: 'taobao://login'),
+        isTrue,
+      );
+      expect(
+        shouldBlockLoginAppLaunch(
+          platform: 'taobao',
+          url: 'intent://m.taobao.com#Intent;scheme=taobao;end',
+        ),
+        isTrue,
+      );
+      expect(
+        shouldBlockLoginAppLaunch(
+          platform: 'tmall',
+          url: 'https://open.taobao.com/somewhere',
+        ),
+        isTrue,
+      );
+    });
+
+    test('淘宝登录 H5 http(s) 不拦；支付 scheme 不按淘宝唤端拦', () {
+      expect(
+        shouldBlockLoginAppLaunch(
+          platform: 'taobao',
+          url: 'https://login.m.taobao.com/login.htm',
+        ),
+        isFalse,
+      );
+      expect(
+        shouldBlockLoginAppLaunch(platform: 'taobao', url: 'alipays://pay'),
+        isFalse,
+      );
+    });
+
+    test('京东唤端仍拦（P37-c 口径复用）', () {
+      expect(
+        shouldBlockLoginAppLaunch(
+          platform: 'jd',
+          url: 'openapp.jdmobile://virtual',
+        ),
+        isTrue,
+      );
+      expect(
+        shouldBlockLoginAppLaunch(platform: 'jd', url: 'https://home.m.jd.com/'),
+        isFalse,
+      );
+    });
+  });
+
 }
