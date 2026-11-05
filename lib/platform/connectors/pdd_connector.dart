@@ -287,21 +287,18 @@ class PddH5Connector implements PlatformConnector {
           if (parsed == null) continue;
           if (parsed.isFiltered) continue;
 
-          final isCompleted = parsed.package.status == PackageStatus.pickedUp ||
-              parsed.package.status == PackageStatus.archived ||
-              parsed.package.status == PackageStatus.rejected;
-
           // 【新模式核心约束】：真正已完成的跳过同步。
-          // P44：列表/描述仍呈运输中/派送中/待取时不得跳过，允许误标回滚。
-          final listEvidence = '${parsed.package.description} ${parsed.package.status.label}'.trim();
-          final mayBeMisfiledCompleted = isCompleted &&
-              parsed.package.status == PackageStatus.pickedUp &&
-              LogisticsStatusEngine.isActiveLogisticsText(listEvidence);
-          if (isCompleted && !mayBeMisfiledCompleted) {
+          // P44 tip FAIL：旧闸门把 status.label「已取件」拼进证据，classifyNode 先命中 signed，
+          // mayBeMisfiledCompleted 永假，误标单被永久跳过、Hive pickedUp 锁死。
+          // 定案：只看列表物流文案；无真签收证据的 pickedUp 必须继续同步以便回滚。
+          if (PddCompletedSyncGate.shouldSkip(
+            status: parsed.package.status,
+            listDescription: parsed.package.description,
+          )) {
             debugPrint('[PDD NewMode] 已经完成，跳过同步: ${parsed.package.id} (${parsed.package.status.label})');
             continue;
           }
-          if (mayBeMisfiledCompleted) {
+          if (parsed.package.status == PackageStatus.pickedUp) {
             debugPrint('[PDD NewMode] P44 疑似误标已完成，继续同步以回滚: ${parsed.package.id}');
           }
 
@@ -1874,6 +1871,41 @@ class PddDetailResult {
       latestText: latestText ?? this.latestText,
       rawTimelineJson: rawTimelineJson ?? this.rawTimelineJson,
     );
+  }
+}
+
+/// P44：拼多多「已完成跳过同步」闸门。
+///
+/// tip `aef1bca` 真机 FAIL 根因：旧逻辑把 `status.label`（「已取件」）拼进活跃物流证据，
+/// [LogisticsStatusEngine.classifyNode] 优先命中 signed，导致「疑似误标可回滚」永假，
+/// 误标 pickedUp 被永久跳过，Hive 状态锁死，详情时间轴仍显示运输中。
+///
+/// 规则：只看列表物流文案；archived/rejected 仍跳过；pickedUp 仅当列表物流本身呈真签收
+/// 且无在途/派送/待取信号时才跳过；空描述或不确定 → 继续同步以便回滚。
+class PddCompletedSyncGate {
+  /// 是否应跳过详情同步。
+  ///
+  /// [listDescription] 只能是列表物流文案，**禁止**拼接 [PackageStatus.label]。
+  static bool shouldSkip({
+    required PackageStatus status,
+    required String listDescription,
+  }) {
+    if (status == PackageStatus.archived || status == PackageStatus.rejected) {
+      return true;
+    }
+    if (status != PackageStatus.pickedUp) return false;
+
+    final desc = listDescription.trim();
+    if (LogisticsStatusEngine.isActiveLogisticsText(desc)) {
+      return false;
+    }
+    // 空描述：无法证明真签收（本票列表常无轨迹摘要）→ 必须同步，解开 Hive 锁死。
+    if (desc.isEmpty) return false;
+
+    final action = LogisticsStatusEngine.classifyNode(desc);
+    if (action == LogisticsNodeAction.signed) return true;
+    if (LogisticsStatusEngine.isStrictOrderSignedLabel(desc)) return true;
+    return false;
   }
 }
 

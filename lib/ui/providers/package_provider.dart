@@ -7,6 +7,7 @@ import '../../core/debug/metrics.dart';
 import '../../core/engine/arrived_at.dart';
 import '../../core/engine/station_grouping.dart';
 import 'pickup_point_alias_provider.dart';
+import '../../core/engine/logistics_status_engine.dart';
 import '../../core/engine/package_identity.dart';
 import '../../core/engine/timeline_merge.dart';
 import '../../platform/storage/hive_package.dart';
@@ -64,8 +65,19 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
             debugPrint('[PackageListNotifier] Pruning takeout/food package: ${pkg.goodsName}');
             continue;
           }
-          // 保护：已取件/已完成的包裹生命周期已完结，严禁被误判为在途
-          if (pkg.status.isCompleted) {
+          // 保护：已取件/已完成的包裹生命周期已完结，严禁被误判为在途。
+          // P44：用户未手动点「已取」的 pickedUp，若时间轴/描述最新仍是运输中/派送/待取，
+          // 启动时自愈回滚（不等同步；同步跳过闸门曾把误标锁死）。
+          if (pkg.status == PackageStatus.pickedUp && pkg.pickedUpAt == null) {
+            final healed = _healMisfiledPickedUpFromLocalEvidence(pkg);
+            if (healed != null) {
+              debugPrint('[PackageListNotifier] P44 Hive heal pickedUp → ${healed.status.label}: ${packageIdForLog(pkg.id)}');
+              pkg = healed;
+            } else {
+              loaded.add(pkg);
+              continue;
+            }
+          } else if (pkg.status.isCompleted) {
             loaded.add(pkg);
             continue;
           }
@@ -536,6 +548,46 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
         return a.isBefore(b) ? a : b;
       }(),
     );
+  }
+
+
+  /// P44：用本地时间轴/描述把误标 pickedUp 回滚到活跃态（仅当用户未点「已取」）。
+  Package? _healMisfiledPickedUpFromLocalEvidence(Package pkg) {
+    final events = pkg.parsedTimeline;
+    if (events.isNotEmpty) {
+      final derived = LogisticsStatusEngine.derive(
+        events: events,
+        isOrderSigned: true,
+        pickupCode: pkg.pickupCode,
+        stationName: pkg.stationName ?? '',
+      );
+      if (!derived.status.isCompleted) {
+        return pkg.copyWith(status: derived.status);
+      }
+      return null;
+    }
+    if (LogisticsStatusEngine.isActiveLogisticsText(pkg.description)) {
+      if (pkg.platform == 'pdd') {
+        final status = PddStatusClassifier.resolve(
+          statusPrompt: '',
+          logisticsDesc: pkg.description,
+          fullText: pkg.description,
+          pickupCode: pkg.pickupCode,
+        );
+        if (!status.isCompleted) return pkg.copyWith(status: status);
+      }
+      final action = LogisticsStatusEngine.classifyNode(pkg.description);
+      if (action == LogisticsNodeAction.inTransit) {
+        return pkg.copyWith(status: PackageStatus.transit);
+      }
+      if (action == LogisticsNodeAction.outForDelivery) {
+        return pkg.copyWith(status: PackageStatus.delivering);
+      }
+      if (action == LogisticsNodeAction.waitingPickup) {
+        return pkg.copyWith(status: PackageStatus.arrived);
+      }
+    }
+    return null;
   }
 
   /// 状态只能前进，不能倒退（支持未手动取件时的异常逆向智能自愈校准）

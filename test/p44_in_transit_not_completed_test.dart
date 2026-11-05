@@ -171,4 +171,90 @@ void main() {
       expect(status, isNot(PackageStatus.pickedUp));
     });
   });
+
+  group('P44 tip：已完成跳过同步闸门（禁拼「已取件」label）', () {
+    test('列表描述含运输中 → 即使 status 已是 pickedUp 也不得跳过', () {
+      expect(
+        PddCompletedSyncGate.shouldSkip(
+          status: PackageStatus.pickedUp,
+          listDescription: '运输中 $pddTicketLatest',
+        ),
+        isFalse,
+      );
+    });
+
+    test('空列表描述的误标 pickedUp → 不得跳过（解开 Hive 锁死）', () {
+      expect(
+        PddCompletedSyncGate.shouldSkip(
+          status: PackageStatus.pickedUp,
+          listDescription: '',
+        ),
+        isFalse,
+      );
+    });
+
+    test('回归：旧 bug 路径「desc + 已取件 label」不得再被当成真签收而跳过', () {
+      // 旧代码：listEvidence = '$desc ${status.label}' → classifyNode 命中「已取件」→ 永假回滚
+      final poisoned = '运输中 $pddTicketLatest 已取件';
+      expect(LogisticsStatusEngine.classifyNode(poisoned), LogisticsNodeAction.signed);
+      // 新闸门只看 desc，不看 label
+      expect(
+        PddCompletedSyncGate.shouldSkip(
+          status: PackageStatus.pickedUp,
+          listDescription: '运输中 $pddTicketLatest',
+        ),
+        isFalse,
+      );
+    });
+
+    test('列表物流真签收 → 仍可跳过', () {
+      expect(
+        PddCompletedSyncGate.shouldSkip(
+          status: PackageStatus.pickedUp,
+          listDescription: '已签收，签收人：本人签收',
+        ),
+        isTrue,
+      );
+    });
+
+    test('archived / rejected 仍跳过', () {
+      expect(
+        PddCompletedSyncGate.shouldSkip(
+          status: PackageStatus.archived,
+          listDescription: '运输中 $pddTicketLatest',
+        ),
+        isTrue,
+      );
+      expect(
+        PddCompletedSyncGate.shouldSkip(
+          status: PackageStatus.rejected,
+          listDescription: '',
+        ),
+        isTrue,
+      );
+    });
+
+    test('活跃态不跳过', () {
+      expect(
+        PddCompletedSyncGate.shouldSkip(
+          status: PackageStatus.transit,
+          listDescription: '',
+        ),
+        isFalse,
+      );
+    });
+  });
+
+  group('P44 tip：误标 pickedUp + 最新运输中 → derive 回滚', () {
+    test('Hive 已是 pickedUp、时间轴最新运输中 → transit（同步/启动自愈同源）', () {
+      final derived = LogisticsStatusEngine.derive(
+        events: [
+          {'tag': pddTicketTag, 'time': '2026-11-05 02:02:00', 'text': pddTicketLatest},
+        ],
+        isOrderSigned: true, // 模拟 Hive 误标 / 订单侧宽签收
+      );
+      expect(derived.status, PackageStatus.transit);
+      expect(derived.status.isCompleted, isFalse);
+    });
+  });
 }
