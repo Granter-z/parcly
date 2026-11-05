@@ -235,4 +235,57 @@ void main() {
       );
     });
   });
+
+
+  group('P43 登录流拦唤端', () {
+    test('淘宝 taobao:// / intent / open.taobao 应拦', () {
+      expect(
+        shouldBlockLoginAppLaunch(platform: 'taobao', url: 'taobao://login'),
+        isTrue,
+      );
+      expect(
+        shouldBlockLoginAppLaunch(
+          platform: 'taobao',
+          url: 'intent://m.taobao.com#Intent;scheme=taobao;end',
+        ),
+        isTrue,
+      );
+      expect(
+        shouldBlockLoginAppLaunch(
+          platform: 'tmall',
+          url: 'https://open.taobao.com/somewhere',
+        ),
+        isTrue,
+      );
+    });
+
+    test('淘宝登录 H5 http(s) 不拦；支付 scheme 不按淘宝唤端拦', () {
+      expect(
+        shouldBlockLoginAppLaunch(
+          platform: 'taobao',
+          url: 'https://login.m.taobao.com/login.htm',
+        ),
+        isFalse,
+      );
+      expect(
+        shouldBlockLoginAppLaunch(platform: 'taobao', url: 'alipays://pay'),
+        isFalse,
+      );
+    });
+
+    test('京东唤端仍拦（P37-c 口径复用）', () {
+      expect(
+        shouldBlockLoginAppLaunch(
+          platform: 'jd',
+          url: 'openapp.jdmobile://virtual',
+        ),
+        isTrue,
+      );
+      expect(
+        shouldBlockLoginAppLaunch(platform: 'jd', url: 'https://home.m.jd.com/'),
+        isFalse,
+      );
+    });
+  });
+
 }

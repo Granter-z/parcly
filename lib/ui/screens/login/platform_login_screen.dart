@@ -96,12 +96,12 @@ class _PlatformLoginScreenState extends State<PlatformLoginScreen> {
           onNavigationRequest: (request) {
             final url = request.url;
             final lower = url.toLowerCase();
-            // P37-c：京东登录流禁止唤端，避免「前往京东APP」干扰绑定
-            if (_shouldBlockJdAppLaunch(lower)) {
-              debugPrint('[WebView] P37 block JD app launch: $url');
+            // P43 / P37-c：登录流内拦截本平台官方 App 唤端，留页完成 H5 登录
+            if (shouldBlockLoginAppLaunch(platform: widget.platform, url: url)) {
+              debugPrint('[WebView] P43 block app launch: $url');
               return NavigationDecision.prevent;
             }
-            // 非 http(s) 的 DeepLink（如 pinduoduo://、taobao://）：交给系统用官方客户端打开
+            // 非 http(s) 的其它 DeepLink（支付等）：交给系统；不 pop 登录页
             if (!lower.startsWith('http://') && !lower.startsWith('https://')) {
               debugPrint('[WebView] External app scheme: $url');
               _openExternalApp(url);
@@ -188,7 +188,21 @@ class _PlatformLoginScreenState extends State<PlatformLoginScreen> {
       await injectCookieString(cookies: saved, domains: hosts.toList());
       debugPrint('[Login] Injected saved cookies for ${widget.platform}');
     }
-    await _controller.loadRequest(Uri.parse(_initialUrl));
+    final entry = _entryUrlForOpen();
+    debugPrint('[Login] entry url load: $entry expired=$_wasExpiredAtOpen');
+    await _controller.loadRequest(Uri.parse(entry));
+  }
+
+  /// P43 B′：失效重登直接进 H5 登录页，避免 main 站立刻 taobao:// 唤端把页带走。
+  String _entryUrlForOpen() {
+    if (_wasExpiredAtOpen) {
+      switch (widget.platform.toLowerCase()) {
+        case 'taobao':
+        case 'tmall':
+          return 'https://login.m.taobao.com/login.htm';
+      }
+    }
+    return _initialUrl;
   }
 
   List<String> get _cookieHosts {
@@ -393,23 +407,6 @@ class _PlatformLoginScreenState extends State<PlatformLoginScreen> {
     'weixin',
   };
 
-  /// P37-c：京东登录页是否应拦截唤端（openapp / jd:// / 带 openapp 的中间页）
-  bool _shouldBlockJdAppLaunch(String lowerUrl) {
-    if (widget.platform.toLowerCase() != 'jd') return false;
-    if (lowerUrl.startsWith('openapp.jdmobile:') ||
-        lowerUrl.startsWith('jdmobile:') ||
-        lowerUrl.startsWith('jd:')) {
-      return true;
-    }
-    // http(s) 中间页若夹带唤端参数也拦，避免跳到「前往京东APP」
-    if (lowerUrl.startsWith('http://') || lowerUrl.startsWith('https://')) {
-      if (lowerUrl.contains('openapp.jdmobile') ||
-          (lowerUrl.contains('openapp') && lowerUrl.contains('jdmobile'))) {
-        return true;
-      }
-    }
-    return false;
-  }
 
   /// 用系统外部应用打开 DeepLink（跳转电商官方客户端）；未安装时给出提示
   Future<void> _openExternalApp(String url) async {
@@ -595,6 +592,11 @@ class _PlatformLoginScreenState extends State<PlatformLoginScreen> {
   @override
   void dispose() {
     _slowHintTimer?.cancel();
+    // P43：卸页前拉 blank，减少 native WebView 在 FlutterJNI detach 后继续
+    // onLoadResource / JS channel 回调刷警告（QA：短暂 WebView → FlutterJNI detached）
+    try {
+      _controller.loadRequest(Uri.parse('about:blank'));
+    } catch (_) {}
     super.dispose();
   }
 
