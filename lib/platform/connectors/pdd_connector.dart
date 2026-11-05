@@ -384,7 +384,7 @@ class PddH5Connector implements PlatformConnector {
         final orphanPending = <String, _PddOrder>{};
         for (final local in locals) {
           if (local.platform != 'pdd') continue;
-          if (local.status != PackageStatus.pickedUp || local.pickedUpAt != null) continue;
+          if (!PddFalsePickupHeal.isFakePickup(local)) continue;
           final orderSn = local.id.startsWith('PDD_') ? local.id.substring(4) : '';
           if (orderSn.isEmpty) continue;
 
@@ -2053,37 +2053,34 @@ class PddFalsePickupHeal {
     );
   }
 
+  /// 假完成判定：无用户 `pickedUpAt` 的 pickedUp 记录（同步可安全回滚）。
+  static bool isFakePickup(Package pkg) =>
+      pkg.status == PackageStatus.pickedUp && pkg.pickedUpAt == null;
+
   /// P44-g+：不依赖订单列表/详情页的本地硬自愈。
   ///
-  /// 只处理拼多多、`pickedUp` 且无用户 `pickedUpAt` 的记录；真已取不碰。
-  static List<Package> healLocalFakePickups(Iterable<Package> locals) {
-    final healed = <Package>[];
-    for (final pkg in locals) {
-      if (pkg.platform != 'pdd') continue;
-      if (pkg.status != PackageStatus.pickedUp || pkg.pickedUpAt != null) continue;
-      final fixed = healMisfiledPickedUp(pkg);
-      if (fixed != null) healed.add(fixed);
-    }
-    return healed;
-  }
+  /// 只处理拼多多；真已取不碰（守卫统一在 [healMisfiledPickedUp]）。
+  static Iterable<Package> healLocalFakePickups(Iterable<Package> locals) => locals
+      .where((pkg) => pkg.platform == 'pdd')
+      .map(healMisfiledPickedUp)
+      .whereType<Package>();
 
   /// 若应回滚，返回活跃态副本；否则 null（保持 completed / 无证据）。
   static Package? healMisfiledPickedUp(Package pkg) {
-    if (pkg.status != PackageStatus.pickedUp || pkg.pickedUpAt != null) {
-      return null;
-    }
+    if (!isFakePickup(pkg)) return null;
     final events = LogisticsStatusEngine.eventsNewestFirst(pkg.rawTimelineJson);
     if (events.isNotEmpty) {
-      // P44-g+：最新节点明确在途/派送时，历史残留取件码不得把它压回「待取件」。
+      // P44-g+：最新节点仍活跃（在途/派送/待取）时，历史残留取件码不得把它压回「待取件」。
       // （JT554 假完成若带着旧码，旧逻辑会 heal 成 arrived，验收要的是 transit。）
-      final newest = '${events.first['tag'] ?? ''} ${events.first['text'] ?? ''}'.trim();
-      final newestAction = LogisticsStatusEngine.classifyNode(newest);
-      final codeOutranksNewest = newestAction != LogisticsNodeAction.inTransit &&
-          newestAction != LogisticsNodeAction.outForDelivery;
+      final newestAction = LogisticsStatusEngine.classifyNode(
+        LogisticsStatusEngine.newestNodeText(events),
+      );
       final derived = LogisticsStatusEngine.derive(
         events: events,
         isOrderSigned: true,
-        pickupCode: codeOutranksNewest ? pkg.pickupCode : '',
+        pickupCode: LogisticsStatusEngine.isActiveLogisticsAction(newestAction)
+            ? ''
+            : pkg.pickupCode,
         stationName: pkg.stationName ?? '',
       );
       if (!derived.status.isCompleted) {
