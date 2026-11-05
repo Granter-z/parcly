@@ -468,4 +468,153 @@ void main() {
     });
   });
 
+  group('P44-g+ / P0：同步前本地自愈 + 残留取件码', () {
+    const jtTracking = 'JT5542922044377';
+    const orderSn = '261103-181959473543156';
+    const activeJson = '['
+        '{"tag":"已下单","time":"2026-11-03 10:00:00","text":"您已提交订单，等待系统确认"},'
+        '{"tag":"运输中","time":"2026-11-05 02:02:00","text":"您的快件离开【东莞虎门转运中心】，已发往【邢台转运中心】"}'
+        ']';
+
+    Package fakeJt({
+      String pickupCode = '',
+      String? timeline,
+      DateTime? pickedUpAt,
+      String platform = 'pdd',
+      PackageStatus status = PackageStatus.pickedUp,
+    }) {
+      return Package(
+        id: 'PDD_$orderSn',
+        trackingNumber: jtTracking,
+        courier: CourierType.jt,
+        platform: platform,
+        description: pddTicketLatest,
+        pickupCode: pickupCode,
+        urgency: UrgencyLevel.normal,
+        status: status,
+        addedAt: DateTime(2026, 11, 3),
+        pickedUpAt: pickedUpAt,
+        rawTimelineJson: timeline ?? activeJson,
+      );
+    }
+
+    test('heal：最新运输中 + 残留取件码 → transit（码不得压过在途）', () {
+      final healed = PddFalsePickupHeal.healMisfiledPickedUp(
+        fakeJt(pickupCode: '8-2-6'),
+      );
+      expect(healed, isNotNull);
+      expect(healed!.status, PackageStatus.transit);
+      expect(healed.status.isCompleted, isFalse);
+    });
+
+    test('heal：最新待取件 → arrived（不误伤到站语义）', () {
+      final healed = PddFalsePickupHeal.healMisfiledPickedUp(
+        fakeJt(
+          pickupCode: '8-2-6',
+          timeline: '[{"tag":"待取件","time":"2026-11-05 10:00:00",'
+              '"text":"快件已入库，请凭取件码取件"}]',
+        ),
+      );
+      expect(healed, isNotNull);
+      expect(healed!.status, PackageStatus.arrived);
+    });
+
+    test('heal：最新已签收 → 不回滚', () {
+      final healed = PddFalsePickupHeal.healMisfiledPickedUp(
+        fakeJt(
+          timeline: '[{"tag":"已签收","time":"2026-11-05 20:00:00",'
+              '"text":"快件已签收，签收人：本人"}]',
+        ),
+      );
+      expect(healed, isNull);
+    });
+
+    test('healLocalFakePickups：无列表/无详情也把 JT554 拉出已完成', () {
+      final healed = PddFalsePickupHeal.healLocalFakePickups([fakeJt()]);
+      expect(healed, hasLength(1));
+      expect(healed.single.id, 'PDD_$orderSn');
+      expect(healed.single.status, PackageStatus.transit);
+    });
+
+    test('healLocalFakePickups：真 pickedUpAt 不回滚，非 pdd 不碰', () {
+      final healed = PddFalsePickupHeal.healLocalFakePickups([
+        fakeJt(pickedUpAt: DateTime(2026, 11, 5, 12)),
+        fakeJt(platform: 'jd'),
+        fakeJt(status: PackageStatus.transit),
+      ]);
+      expect(healed, isEmpty);
+    });
+  });
+
+  group('P44-h：揽件轨迹里的「已取件」不得判成签收', () {
+    // 真机 JT554 的 15 节点里，昨日的揽件轨迹正文含「…已取件,物流问题请联系…」。
+    // classifyNode 把「已取件」当签收 → derive 用更旧的签收覆盖最新「运输中」。
+    const jtNodes = [
+      {
+        'tag': '运输中',
+        'time': '2026-11-05 02:02:00',
+        'text': '您的快件离开【东莞虎门转运中心】，正发往【邢台转运中心】',
+      },
+      {
+        'tag': '运输中',
+        'time': '2026-11-05 02:00:00',
+        'text': '快件到达【东莞虎门转运中心】',
+      },
+      {
+        'tag': '已揽件',
+        'time': '2026-11-04 20:12:00',
+        'text': '【东莞凤岗竹塘路网点】的邹某（132****0987）已取件,物流问题请联系：0769-****452',
+      },
+      {
+        'tag': '已发货',
+        'time': '2026-11-04 10:30:00',
+        'text': '商家已发货，正在通知极兔速递取件',
+      },
+    ];
+
+    test('classifyNode：揽件正文里的「已取件」→ 非 signed', () {
+      final action = LogisticsStatusEngine.classifyNode(
+        '已揽件 ${jtNodes[2]['text']}',
+      );
+      expect(action, isNot(LogisticsNodeAction.signed));
+    });
+
+    test('classifyNode：真实签收「已取件」仍 → signed', () {
+      final action = LogisticsStatusEngine.classifyNode(
+        '已取件 您的包裹已取件，感谢使用',
+      );
+      expect(action, LogisticsNodeAction.signed);
+    });
+
+    test('derive：最新运输中 + 历史揽件含「已取件」→ transit', () {
+      final derived = LogisticsStatusEngine.derive(events: jtNodes);
+      expect(derived.status, PackageStatus.transit);
+    });
+
+    test('derive：订单侧宽签收也不得抬成 pickedUp', () {
+      final derived = LogisticsStatusEngine.derive(
+        events: jtNodes,
+        isOrderSigned: true,
+      );
+      expect(derived.status, PackageStatus.transit);
+    });
+
+    test('heal：本地同类时间轴假 pickedUp → transit', () {
+      final pkg = Package(
+        id: 'PDD_261103-181959473543156',
+        trackingNumber: 'JT5542922044377',
+        courier: CourierType.jt,
+        platform: 'pdd',
+        description: '您的快件离开【东莞虎门转运中心】，正发往【邢台转运中心】',
+        urgency: UrgencyLevel.normal,
+        status: PackageStatus.pickedUp,
+        addedAt: DateTime(2026, 11, 3),
+        rawTimelineJson: jsonEncode(jtNodes),
+      );
+      final healed = PddFalsePickupHeal.healMisfiledPickedUp(pkg);
+      expect(healed, isNotNull);
+      expect(healed!.status, PackageStatus.transit);
+    });
+  });
+
 }

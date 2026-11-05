@@ -75,7 +75,7 @@ class LogisticsStatusEngine {
   }) {
     // 0. 最新轨迹明确为拒收/退回：属于终结态，必须优先于列表侧的签收文案与取件码
     if (events.isNotEmpty) {
-      final newest = '${events.first['tag'] ?? ''} ${events.first['text'] ?? ''}'.trim();
+      final newest = newestNodeText(events);
       if (isRejectionSignal(newest)) {
         return DerivedDeliveryStatus(
           status: PackageStatus.rejected,
@@ -92,9 +92,7 @@ class LogisticsStatusEngine {
     // P44：若最新物流节点仍是在途/派送/待取，禁止仅凭订单侧宽签收短路进 pickedUp。
     if (isOrderSigned) {
       final newestActive = events.isNotEmpty &&
-          isActiveLogisticsAction(classifyNode(
-            '${events.first['tag'] ?? ''} ${events.first['text'] ?? ''}'.trim(),
-          ));
+          isActiveLogisticsAction(classifyNode(newestNodeText(events)));
       if (!newestActive) {
         return const DerivedDeliveryStatus(
           status: PackageStatus.pickedUp,
@@ -295,6 +293,12 @@ class LogisticsStatusEngine {
     ];
   }
 
+  /// 最新节点的「tag + 正文」合并文本；derive / 自愈等读最新节点时统一走这里。
+  static String newestNodeText(List<Map<String, String>> events) {
+    if (events.isEmpty) return '';
+    return '${events.first['tag'] ?? ''} ${events.first['text'] ?? ''}'.trim();
+  }
+
   /// 本地时间轴或描述是否仍呈活跃投递（在途/派送/待取）。
   static bool hasActiveLocalEvidence({
     String? rawTimelineJson,
@@ -302,8 +306,7 @@ class LogisticsStatusEngine {
   }) {
     final events = eventsNewestFirst(rawTimelineJson);
     if (events.isNotEmpty) {
-      final newest = '${events.first['tag'] ?? ''} ${events.first['text'] ?? ''}'.trim();
-      if (isActiveLogisticsText(newest)) return true;
+      if (isActiveLogisticsText(newestNodeText(events))) return true;
     }
     return isActiveLogisticsText(description);
   }
@@ -320,9 +323,13 @@ class LogisticsStatusEngine {
     }
 
     // A. 签收动作（最高终态）
+    // 「已取件」也可能出现在揽件轨迹正文（如“…的快递员已取件,物流问题请联系…”）：
+    // 同节点带「揽收/揽件」时属于快递员揽收，不是用户签收（JT554 假已取件根因）。
     if (_containsAny(t, const [
-      '已签收', '签收成功', '本人签收', '代收人已签收', '已取件', '已妥投', '妥投签收',
-    ])) {
+          '已签收', '签收成功', '本人签收', '代收人已签收', '已妥投', '妥投签收',
+        ]) ||
+        (t.contains('已取件') &&
+            !_containsAny(t, const ['揽收', '揽件']))) {
       return LogisticsNodeAction.signed;
     }
 

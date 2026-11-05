@@ -267,14 +267,23 @@ class PddH5Connector implements PlatformConnector {
       return;
     }
 
-    final cookies = _authStore.getCookies('pdd');
-    if (cookies == null || cookies.trim().isEmpty) {
-      debugPrint('[PDD] No cookies, skip');
-      return;
-    }
-
     _busy = true;
     try {
+      // P44-g+：免网络硬路径——列表/详情都拿不到时，也必须把 Hive 里的假 pickedUp
+      // （pickedUp 且无用户 pickedUpAt）按本地时间轴拽回活跃态，不能等详情。
+      for (final healed in PddFalsePickupHeal.healLocalFakePickups(
+        _getLocalPackages?.call() ?? const <Package>[],
+      )) {
+        debugPrint('[PDD NewMode] P44 同步前本地自愈 ${healed.id} → ${healed.status.label}');
+        yield healed;
+      }
+
+      final cookies = _authStore.getCookies('pdd');
+      if (cookies == null || cookies.trim().isEmpty) {
+        debugPrint('[PDD] No cookies, skip');
+        return;
+      }
+
       debugPrint('[PDD] Cookie len: ${cookies.length}');
       _lastIssue = null;
       await _injectCookies(cookies);
@@ -375,7 +384,7 @@ class PddH5Connector implements PlatformConnector {
         final orphanPending = <String, _PddOrder>{};
         for (final local in locals) {
           if (local.platform != 'pdd') continue;
-          if (local.status != PackageStatus.pickedUp || local.pickedUpAt != null) continue;
+          if (!PddFalsePickupHeal.isFakePickup(local)) continue;
           final orderSn = local.id.startsWith('PDD_') ? local.id.substring(4) : '';
           if (orderSn.isEmpty) continue;
 
@@ -464,20 +473,15 @@ class PddH5Connector implements PlatformConnector {
       maxDelay: const Duration(milliseconds: 400),
     );
 
-    final detailTasks = pendingCodes.entries.map((entry) {
-      return () => _fetchOrderDetail(entry.key, base: entry.value.pkg).then((detail) {
-        return {'orderSn': entry.key, 'order': entry.value, 'detail': detail};
-      });
-    }).toList();
-
-    final results = await executor.executeAll(detailTasks);
-
     final enrichSucceeded = <String>{};
-    for (final result in results) {
-      final orderSn = result['orderSn'] as String;
-      final orderEntry = result['order'] as _PddOrder;
-      final detail = result['detail'] as PddDetailResult?;
-      final base = orderEntry.pkg;
+    // P44-g+：逐单抓取、逐单 yield。串行下 executeAll 的批量屏障会让 JT554 的修复
+    // 等到全部订单抓完才可见（12s 单腿超时内常表现为「仍已完成」）。
+    for (final entry in pendingCodes.entries) {
+      final orderSn = entry.key;
+      final base = entry.value.pkg;
+      final detail = await executor.execute(
+        () => _fetchOrderDetail(orderSn, base: base),
+      );
 
       // P44-g：detail 失败（mismatch 且无 traces / 脏页）不得静默跳过——
       // 本地假 pickedUp + 活跃证据立刻 heal yield，避免 handled 后 orphan 也吃不到。
@@ -2049,17 +2053,34 @@ class PddFalsePickupHeal {
     );
   }
 
+  /// 假完成判定：无用户 `pickedUpAt` 的 pickedUp 记录（同步可安全回滚）。
+  static bool isFakePickup(Package pkg) =>
+      pkg.status == PackageStatus.pickedUp && pkg.pickedUpAt == null;
+
+  /// P44-g+：不依赖订单列表/详情页的本地硬自愈。
+  ///
+  /// 只处理拼多多；真已取不碰（守卫统一在 [healMisfiledPickedUp]）。
+  static Iterable<Package> healLocalFakePickups(Iterable<Package> locals) => locals
+      .where((pkg) => pkg.platform == 'pdd')
+      .map(healMisfiledPickedUp)
+      .whereType<Package>();
+
   /// 若应回滚，返回活跃态副本；否则 null（保持 completed / 无证据）。
   static Package? healMisfiledPickedUp(Package pkg) {
-    if (pkg.status != PackageStatus.pickedUp || pkg.pickedUpAt != null) {
-      return null;
-    }
+    if (!isFakePickup(pkg)) return null;
     final events = LogisticsStatusEngine.eventsNewestFirst(pkg.rawTimelineJson);
     if (events.isNotEmpty) {
+      // P44-g+：最新节点仍活跃（在途/派送/待取）时，历史残留取件码不得把它压回「待取件」。
+      // （JT554 假完成若带着旧码，旧逻辑会 heal 成 arrived，验收要的是 transit。）
+      final newestAction = LogisticsStatusEngine.classifyNode(
+        LogisticsStatusEngine.newestNodeText(events),
+      );
       final derived = LogisticsStatusEngine.derive(
         events: events,
         isOrderSigned: true,
-        pickupCode: pkg.pickupCode,
+        pickupCode: LogisticsStatusEngine.isActiveLogisticsAction(newestAction)
+            ? ''
+            : pkg.pickupCode,
         stationName: pkg.stationName ?? '',
       );
       if (!derived.status.isCompleted) {
