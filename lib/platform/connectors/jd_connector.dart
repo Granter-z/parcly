@@ -664,11 +664,8 @@ class JdH5Connector implements PlatformConnector {
           continue;
         }
 
-        // 正确识别已签收/自动收货（已完成）状态
-        final isCompleted = statusName.contains('完成') ||
-            statusName.contains('签收') ||
-            statusName.contains('妥投') ||
-            statusName.contains('已收货');
+        // P44：严格签收白名单，禁止裸「完成」宽匹配
+        final isCompleted = LogisticsStatusEngine.isStrictOrderSignedLabel(statusName);
 
         // 商品标题与主图
         String goodsName = '';
@@ -895,9 +892,8 @@ class JdH5Connector implements PlatformConnector {
         if (seenTitles.contains(title)) continue;
         seenTitles.add(title);
 
-        final isCompleted = matchedStatus.contains('签收') ||
-            matchedStatus.contains('完成') ||
-            matchedStatus.contains('妥投');
+        // P44：严格签收白名单，禁止裸「完成」
+        final isCompleted = LogisticsStatusEngine.isStrictOrderSignedLabel(matchedStatus);
         final pickupCode = _pickupCodeFromText('$matchedStatus $progress $title');
         final station = _stationFromText('$shopName $progress');
         final status = pickupCode.isNotEmpty
@@ -936,7 +932,8 @@ class JdH5Connector implements PlatformConnector {
   }
 
   PackageStatus _statusFromText(String block) {
-    if (block.contains('已签收') || block.contains('已完成') || block.contains('妥投')) {
+    // P44：禁止裸「已完成」；严格白名单
+    if (LogisticsStatusEngine.isStrictOrderSignedLabel(block)) {
       return PackageStatus.pickedUp;
     }
     if (block.contains('待发货') || block.contains('等待发货') || block.contains('待出库')) {

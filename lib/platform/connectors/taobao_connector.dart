@@ -1154,7 +1154,8 @@ class TaobaoH5Connector implements PlatformConnector {
   }
 
   PackageStatus _resolveStatus(String stateLabel) {
-    if (stateLabel.contains('签收') || stateLabel.contains('完成')) return PackageStatus.pickedUp;
+    // P44：禁止裸「完成」；走严格签收白名单
+    if (LogisticsStatusEngine.isStrictOrderSignedLabel(stateLabel)) return PackageStatus.pickedUp;
     if (stateLabel.contains('待取') || stateLabel.contains('已到') || stateLabel.contains('入库')) return PackageStatus.arrived;
     if (stateLabel.contains('派送') || stateLabel.contains('配送')) return PackageStatus.delivering;
     if (stateLabel.contains('待发货') || stateLabel.contains('等待发货') || stateLabel.contains('未发货')) return PackageStatus.pendingShipment;
@@ -1165,9 +1166,9 @@ class TaobaoH5Connector implements PlatformConnector {
   bool _isPendingLabel(String label) =>
       label.contains('待发货') || label.contains('未发货') || label.contains('待出库');
 
-  /// 状态标签是否表示「已签收/已完成」
+  /// 状态标签是否表示「已签收」（P44：收紧，禁止裸「完成」）
   bool _isSignedLabel(String label) =>
-      label.contains('签收') || label.contains('完成') || label.contains('已收货') || label.contains('妥投');
+      LogisticsStatusEngine.isStrictOrderSignedLabel(label);
 }
 
 class _TbOrder {
