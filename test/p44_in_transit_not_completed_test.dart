@@ -2,6 +2,7 @@
 // 本票：拼多多 / 极兔 JT5542922044377，最新「运输中 …离开【东莞虎门转运中心】…发往【邢台转运中心】」。
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pickup_app/core/engine/logistics_status_engine.dart';
+import 'package:pickup_app/core/models/package.dart';
 import 'package:pickup_app/core/models/package_status.dart';
 import 'package:pickup_app/platform/connectors/pdd_connector.dart';
 
@@ -254,4 +255,103 @@ void main() {
       );
     });
   });
+
+
+  group('P44 tip9：假 pickedUp 必须吃到 JT554（本地证据 / 扫尾口径）', () {
+    const jtTracking = 'JT5542922044377';
+    // 故意最旧在前：复刻 Hive 未排序存储；详情 UI 会再排，旧 heal 用 parsedTimeline 会踩首节点「已下单」
+    const oldestFirstJson = '['
+        '{"tag":"已下单","time":"2026-11-03 10:00:00","text":"您已提交订单，等待系统确认"},'
+        '{"tag":"运输中","time":"2026-11-05 02:00:00","text":"您的快件已到达【东莞虎门转运中心】"},'
+        '{"tag":"运输中","time":"2026-11-05 02:02:00","text":"您的快件离开【东莞虎门转运中心】，已发往【邢台转运中心】客服电话：956025"}'
+        ']';
+
+    Package fakeJt({DateTime? pickedUpAt, String? timeline}) {
+      return Package(
+        id: 'PDD_261103-1819594730000',
+        trackingNumber: jtTracking,
+        courier: CourierType.jt,
+        platform: 'pdd',
+        description: pddTicketLatest,
+        urgency: UrgencyLevel.normal,
+        status: PackageStatus.pickedUp,
+        addedAt: DateTime(2026, 11, 3),
+        pickedUpAt: pickedUpAt,
+        rawTimelineJson: timeline ?? oldestFirstJson,
+      );
+    }
+
+    test('eventsNewestFirst：Hive 旧序（最旧在前）仍取最新运输中', () {
+      final events = LogisticsStatusEngine.eventsNewestFirst(oldestFirstJson);
+      expect(events, isNotEmpty);
+      expect(events.first['tag'], '运输中');
+      expect(events.first['text'], contains('离开【东莞虎门转运中心】'));
+      expect(
+        LogisticsStatusEngine.hasActiveLocalEvidence(rawTimelineJson: oldestFirstJson),
+        isTrue,
+      );
+    });
+
+    test('heal：假 pickedUp + 旧序时间轴 → transit（tip8 启动自愈口径）', () {
+      final healed = PddFalsePickupHeal.healMisfiledPickedUp(fakeJt());
+      expect(healed, isNotNull);
+      expect(healed!.status, PackageStatus.transit);
+      expect(healed.status.isCompleted, isFalse);
+    });
+
+    test('heal：真用户 pickedUpAt → 不回滚', () {
+      final healed = PddFalsePickupHeal.healMisfiledPickedUp(
+        fakeJt(pickedUpAt: DateTime(2026, 11, 5, 12)),
+      );
+      expect(healed, isNull);
+    });
+
+    test('Gate：本地活跃证据 → 不得 skip（即便列表未标 pickedUp）', () {
+      expect(
+        PddCompletedSyncGate.shouldSkip(
+          status: PackageStatus.transit,
+          userPickedUpAt: null,
+          localActiveEvidence: true,
+        ),
+        isFalse,
+      );
+    });
+
+    test('Gate：真已取 + 本地仍有旧在途轨迹 → 仍可 skip（不回滚真已取）', () {
+      expect(
+        PddCompletedSyncGate.shouldSkip(
+          status: PackageStatus.pickedUp,
+          userPickedUpAt: DateTime(2026, 11, 5),
+          localActiveEvidence: true,
+        ),
+        isTrue,
+      );
+    });
+
+    test('coerceYield：enrich 吐 pickedUp 但本地活跃 → 回滚 transit', () {
+      final local = fakeJt();
+      final status = PddFalsePickupHeal.coerceYieldStatus(
+        derived: PackageStatus.pickedUp,
+        local: local,
+      );
+      expect(status, PackageStatus.transit);
+    });
+
+    test('coerceYield：真已取 → 保持 pickedUp', () {
+      final local = fakeJt(pickedUpAt: DateTime(2026, 11, 5));
+      final status = PddFalsePickupHeal.coerceYieldStatus(
+        derived: PackageStatus.pickedUp,
+        local: local,
+      );
+      expect(status, PackageStatus.pickedUp);
+    });
+
+    test('parsedTimeline 旧死穴：未排序时首节点是已下单；heal 不得再踩', () {
+      final pkg = fakeJt();
+      expect(pkg.parsedTimeline.first['tag'], '已下单');
+      final healed = PddFalsePickupHeal.healMisfiledPickedUp(pkg);
+      expect(healed!.status, PackageStatus.transit);
+    });
+  });
+
 }

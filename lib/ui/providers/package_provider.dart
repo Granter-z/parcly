@@ -7,7 +7,6 @@ import '../../core/debug/metrics.dart';
 import '../../core/engine/arrived_at.dart';
 import '../../core/engine/station_grouping.dart';
 import 'pickup_point_alias_provider.dart';
-import '../../core/engine/logistics_status_engine.dart';
 import '../../core/engine/package_identity.dart';
 import '../../core/engine/timeline_merge.dart';
 import '../../platform/storage/hive_package.dart';
@@ -510,10 +509,19 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
     return result;
   }
 
-  /// 合并同一运单号的两条记录：状态取更靠后的、取件码取更可信的、商品信息取更具体的
+  /// 合并优先级：假完成（pickedUp 且无 pickedUpAt）不压过活跃态（P44-f）。
+  int _effectiveMergePriority(Package p) {
+    if (p.status == PackageStatus.pickedUp && p.pickedUpAt == null) {
+      return 0;
+    }
+    return _statusPriority[p.status] ?? 0;
+  }
+
+  /// 合并同一运单号的两条记录：状态取更靠后的、取件码取更可信的、商品信息取更具体的。
+  /// P44-f：无用户 pickedUpAt 的假 pickedUp 不得压过 inTransit/delivering/arrived。
   Package _mergeDuplicatePair(Package a, Package b) {
-    final aPri = _statusPriority[a.status] ?? 0;
-    final bPri = _statusPriority[b.status] ?? 0;
+    final aPri = _effectiveMergePriority(a);
+    final bPri = _effectiveMergePriority(b);
     final primary = bPri > aPri ? b : a;
     final secondary = bPri > aPri ? a : b;
 
@@ -552,42 +560,9 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
 
 
   /// P44：用本地时间轴/描述把误标 pickedUp 回滚到活跃态（仅当用户未点「已取」）。
+  /// tip9：事件口径对齐详情 UI（最新在前 / 容错解析），见 [PddFalsePickupHeal]。
   Package? _healMisfiledPickedUpFromLocalEvidence(Package pkg) {
-    final events = pkg.parsedTimeline;
-    if (events.isNotEmpty) {
-      final derived = LogisticsStatusEngine.derive(
-        events: events,
-        isOrderSigned: true,
-        pickupCode: pkg.pickupCode,
-        stationName: pkg.stationName ?? '',
-      );
-      if (!derived.status.isCompleted) {
-        return pkg.copyWith(status: derived.status);
-      }
-      return null;
-    }
-    if (LogisticsStatusEngine.isActiveLogisticsText(pkg.description)) {
-      if (pkg.platform == 'pdd') {
-        final status = PddStatusClassifier.resolve(
-          statusPrompt: '',
-          logisticsDesc: pkg.description,
-          fullText: pkg.description,
-          pickupCode: pkg.pickupCode,
-        );
-        if (!status.isCompleted) return pkg.copyWith(status: status);
-      }
-      final action = LogisticsStatusEngine.classifyNode(pkg.description);
-      if (action == LogisticsNodeAction.inTransit) {
-        return pkg.copyWith(status: PackageStatus.transit);
-      }
-      if (action == LogisticsNodeAction.outForDelivery) {
-        return pkg.copyWith(status: PackageStatus.delivering);
-      }
-      if (action == LogisticsNodeAction.waitingPickup) {
-        return pkg.copyWith(status: PackageStatus.arrived);
-      }
-    }
-    return null;
+    return PddFalsePickupHeal.healMisfiledPickedUp(pkg);
   }
 
   /// 状态只能前进，不能倒退（支持未手动取件时的异常逆向智能自愈校准）
