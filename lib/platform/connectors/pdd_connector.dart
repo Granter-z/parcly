@@ -369,8 +369,8 @@ class PddH5Connector implements PlatformConnector {
 
         yield* _enrichPending(pendingCodes);
 
-        // P44-e / tip9：列表 page1+2 未吐出的假完成（如 JT554）——同步末扫尾。
-        // 真用户已取（pickedUpAt!=null）不扫。有本地活跃证据则先 yield 自愈，再尽量 enrich。
+        // P44-e / tip9 / tip10(P44-g)：列表未吐出、或 enrich 失败未成功 yield 活跃态的假完成——扫尾。
+        // 真用户已取（pickedUpAt!=null）不扫。先 heal yield；未 handled 的再强制 enrich。
         final locals = _getLocalPackages?.call() ?? const <Package>[];
         final orphanPending = <String, _PddOrder>{};
         for (final local in locals) {
@@ -379,7 +379,9 @@ class PddH5Connector implements PlatformConnector {
           final orderSn = local.id.startsWith('PDD_') ? local.id.substring(4) : '';
           if (orderSn.isEmpty) continue;
 
-          final healed = PddFalsePickupHeal.healMisfiledPickedUp(local);
+          // P44-g：已 handled 但 enrich 失败时同样必须 heal（不得因 handled 静默跳过自愈）。
+          final healed = PddFalsePickupHeal.recoverAfterEnrichFailure(local: local) ??
+              PddFalsePickupHeal.healMisfiledPickedUp(local);
           if (healed != null) {
             debugPrint('[PDD NewMode] P44 扫尾本地自愈 ${local.id} → ${healed.status.label}');
             yield healed;
@@ -454,9 +456,10 @@ class PddH5Connector implements PlatformConnector {
       await _controller?.clearCache();
     } catch (_) {}
 
-    // ⚡ 优化：并发拉取订单详情（限制并发数为 3）
+    // P44-g：共享 WebView 必须串行 enrich；maxConcurrent>1 会并行 loadRequest 串页
+    // （tip9：OrderSn mismatch + 丢 rawTraces → JT554 无 yield）。
     final executor = ThrottledExecutor(
-      maxConcurrent: 3,
+      maxConcurrent: 1,
       minDelay: const Duration(milliseconds: 200),
       maxDelay: const Duration(milliseconds: 400),
     );
@@ -469,14 +472,28 @@ class PddH5Connector implements PlatformConnector {
 
     final results = await executor.executeAll(detailTasks);
 
+    final enrichSucceeded = <String>{};
     for (final result in results) {
       final orderSn = result['orderSn'] as String;
       final orderEntry = result['order'] as _PddOrder;
       final detail = result['detail'] as PddDetailResult?;
-
-      if (detail == null) continue;
-
       final base = orderEntry.pkg;
+
+      // P44-g：detail 失败（mismatch 且无 traces / 脏页）不得静默跳过——
+      // 本地假 pickedUp + 活跃证据立刻 heal yield，避免 handled 后 orphan 也吃不到。
+      if (detail == null) {
+        final recovered = PddFalsePickupHeal.recoverAfterEnrichFailure(
+          local: _localPackageById(base.id),
+          listBase: base,
+        );
+        if (recovered != null) {
+          debugPrint('[PDD NewMode] P44 enrich失败本地自愈 $orderSn → ${recovered.status.label}');
+          enrichSucceeded.add(orderSn);
+          yield recovered;
+        }
+        continue;
+      }
+
 
       // ── 关键：由软件基于时间轴事件序列推导货物真实状态、时间轴稳定性与下次同步周期 ──
       final events = detail.parsedTimelineNodes;
@@ -524,6 +541,7 @@ class PddH5Connector implements PlatformConnector {
         recommendedSyncInterval: syncInterval,
       );
 
+      enrichSucceeded.add(orderSn);
       yield base.copyWith(
         courier: detail.courier != CourierType.other ? detail.courier : base.courier,
         trackingNumber: detail.trackingNo.isNotEmpty ? detail.trackingNo : base.trackingNumber,
@@ -534,6 +552,9 @@ class PddH5Connector implements PlatformConnector {
         status: yieldStatus, // derive 为准；假完成 + 本地活跃证据时 coerce 回滚
         rawTimelineJson: cachedTimeline,
       );
+    }
+    if (enrichSucceeded.length < pendingCodes.length) {
+      debugPrint('[PDD NewMode] P44 enrich 成功 ${enrichSucceeded.length}/${pendingCodes.length}（失败已走本地自愈）');
     }
   }
 
@@ -958,7 +979,10 @@ class PddH5Connector implements PlatformConnector {
       }
       await Future.delayed(const Duration(milliseconds: 100));
     }
-    return await _extractOrderRawData();
+    // P44-g：超时后也不得返回串页 rawData（错单 traces 会毒化本票）。
+    final last = await _extractOrderRawData();
+    if (last != null && last['orderSn'] == requiredOrderSn) return last;
+    return null;
   }
 
   /// 阶段 2：进入订单详情页 / 物流轨迹页，抽取承运商、运单号、完整时间线与取件码
@@ -1175,16 +1199,21 @@ class PddH5Connector implements PlatformConnector {
     List<Map<String, dynamic>>? rawTraces,
     DateTime? now,
   }) {
-    if (text.trim().isEmpty) return null;
+    final hasRawTraces = rawTraces != null && rawTraces.isNotEmpty;
+    if (text.trim().isEmpty && !hasRawTraces) return null;
 
-    // 若传入了 orderSn，核验文本中出现的订单编号是否一致，防止读到上个页面的脏文本
-    if (orderSn.isNotEmpty) {
+    // 若传入了 orderSn，核验文本中出现的订单编号是否一致，防止读到上个页面的脏文本。
+    // P44-g：mismatch 只丢弃脏 DOM，不得把同轮已拿到的官方 rawTraces 一并扔掉。
+    if (orderSn.isNotEmpty && text.trim().isNotEmpty) {
       final orderSnMatch = RegExp(r'订单编号[:：\s]*([0-9\-]+)').firstMatch(text);
       if (orderSnMatch != null) {
         final extractedSn = orderSnMatch.group(1)!.trim();
         if (extractedSn.isNotEmpty && extractedSn != orderSn) {
-          debugPrint('[PDD] OrderSn mismatch: expected $orderSn, found $extractedSn. Ignoring cross-page dirty text.');
-          return null;
+          debugPrint('[PDD] OrderSn mismatch: expected $orderSn, found $extractedSn. '
+              'Ignoring cross-page dirty text'
+              '${hasRawTraces ? ", keeping rawTraces=${rawTraces.length}" : ""}.');
+          if (!hasRawTraces) return null;
+          text = '';
         }
       }
     }
@@ -1970,6 +1999,9 @@ class PddDetailResult {
 /// tip8 / `d64e12b` / #40 后仍 FAIL：闸门只挂在「本轮列表循环」内；JT554 若不在
 /// page1+2、或 enrich/缓存又吐回 pickedUp，仍锁死。+9 补：本地活跃证据禁止 skip、
 /// 同步末扫尾假完成、深挖不得因列表假 pickedUp 短路。
+/// tip9 / `31ca14c` / #41 后仍 FAIL：Gate 命中但对共享 WebView 并发 enrich 串页 →
+/// OrderSn mismatch 丢 rawTraces → detail null 无 yield。+10 / P44-g：串行 enrich、
+/// mismatch 保 rawTraces、detail null 本地 heal yield。
 ///
 /// 规则：
 /// - archived / rejected → 跳过
@@ -2074,6 +2106,48 @@ class PddFalsePickupHeal {
       evidence.copyWith(status: PackageStatus.pickedUp),
     );
     return healed?.status ?? derived;
+  }
+
+  /// P44-g：detail==null（脏页 / mismatch 且无 traces）时的失败兜底。
+  ///
+  /// - 真用户 `pickedUpAt` → 不回滚
+  /// - 本地假 pickedUp + 活跃时间轴/描述 → heal 到活跃态
+  /// - heal 吃不到但列表侧已是活跃态 → 用列表状态把假完成拽出「已完成」
+  static Package? recoverAfterEnrichFailure({
+    required Package? local,
+    Package? listBase,
+  }) {
+    if (local != null && local.pickedUpAt != null) return null;
+
+    if (local != null) {
+      final healed = healMisfiledPickedUp(
+        local.status == PackageStatus.pickedUp
+            ? local
+            : local.copyWith(status: PackageStatus.pickedUp),
+      );
+      if (healed != null) return healed;
+    }
+
+    // 列表已识别运送中/派送/待取，本地仍假完成 → 直接采信列表活跃态
+    if (local != null &&
+        local.status == PackageStatus.pickedUp &&
+        local.pickedUpAt == null &&
+        listBase != null &&
+        !listBase.status.isCompleted) {
+      return local.copyWith(
+        status: listBase.status,
+        description: listBase.description.isNotEmpty ? listBase.description : local.description,
+      );
+    }
+
+    if (local == null &&
+        listBase != null &&
+        listBase.status == PackageStatus.pickedUp &&
+        hasActiveEvidence(listBase)) {
+      return healMisfiledPickedUp(listBase);
+    }
+
+    return null;
   }
 }
 
