@@ -320,9 +320,13 @@ class LogisticsStatusEngine {
     }
 
     // A. 签收动作（最高终态）
+    // 「已取件」也可能出现在揽件轨迹正文（如“…的快递员已取件,物流问题请联系…”）：
+    // 同节点带「揽收/揽件」时属于快递员揽收，不是用户签收（JT554 假已取件根因）。
+    final courierPickupTrace = RegExp(r'揽收|揽件').hasMatch(t);
     if (_containsAny(t, const [
-      '已签收', '签收成功', '本人签收', '代收人已签收', '已取件', '已妥投', '妥投签收',
-    ])) {
+          '已签收', '签收成功', '本人签收', '代收人已签收', '已妥投', '妥投签收',
+        ]) ||
+        (t.contains('已取件') && !courierPickupTrace)) {
       return LogisticsNodeAction.signed;
     }
 

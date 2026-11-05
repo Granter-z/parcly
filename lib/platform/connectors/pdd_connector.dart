@@ -267,14 +267,23 @@ class PddH5Connector implements PlatformConnector {
       return;
     }
 
-    final cookies = _authStore.getCookies('pdd');
-    if (cookies == null || cookies.trim().isEmpty) {
-      debugPrint('[PDD] No cookies, skip');
-      return;
-    }
-
     _busy = true;
     try {
+      // P44-g+：免网络硬路径——列表/详情都拿不到时，也必须把 Hive 里的假 pickedUp
+      // （pickedUp 且无用户 pickedUpAt）按本地时间轴拽回活跃态，不能等详情。
+      for (final healed in PddFalsePickupHeal.healLocalFakePickups(
+        _getLocalPackages?.call() ?? const <Package>[],
+      )) {
+        debugPrint('[PDD NewMode] P44 同步前本地自愈 ${healed.id} → ${healed.status.label}');
+        yield healed;
+      }
+
+      final cookies = _authStore.getCookies('pdd');
+      if (cookies == null || cookies.trim().isEmpty) {
+        debugPrint('[PDD] No cookies, skip');
+        return;
+      }
+
       debugPrint('[PDD] Cookie len: ${cookies.length}');
       _lastIssue = null;
       await _injectCookies(cookies);
@@ -464,20 +473,15 @@ class PddH5Connector implements PlatformConnector {
       maxDelay: const Duration(milliseconds: 400),
     );
 
-    final detailTasks = pendingCodes.entries.map((entry) {
-      return () => _fetchOrderDetail(entry.key, base: entry.value.pkg).then((detail) {
-        return {'orderSn': entry.key, 'order': entry.value, 'detail': detail};
-      });
-    }).toList();
-
-    final results = await executor.executeAll(detailTasks);
-
     final enrichSucceeded = <String>{};
-    for (final result in results) {
-      final orderSn = result['orderSn'] as String;
-      final orderEntry = result['order'] as _PddOrder;
-      final detail = result['detail'] as PddDetailResult?;
-      final base = orderEntry.pkg;
+    // P44-g+：逐单抓取、逐单 yield。串行下 executeAll 的批量屏障会让 JT554 的修复
+    // 等到全部订单抓完才可见（12s 单腿超时内常表现为「仍已完成」）。
+    for (final entry in pendingCodes.entries) {
+      final orderSn = entry.key;
+      final base = entry.value.pkg;
+      final detail = await executor.execute(
+        () => _fetchOrderDetail(orderSn, base: base),
+      );
 
       // P44-g：detail 失败（mismatch 且无 traces / 脏页）不得静默跳过——
       // 本地假 pickedUp + 活跃证据立刻 heal yield，避免 handled 后 orphan 也吃不到。
@@ -2049,6 +2053,20 @@ class PddFalsePickupHeal {
     );
   }
 
+  /// P44-g+：不依赖订单列表/详情页的本地硬自愈。
+  ///
+  /// 只处理拼多多、`pickedUp` 且无用户 `pickedUpAt` 的记录；真已取不碰。
+  static List<Package> healLocalFakePickups(Iterable<Package> locals) {
+    final healed = <Package>[];
+    for (final pkg in locals) {
+      if (pkg.platform != 'pdd') continue;
+      if (pkg.status != PackageStatus.pickedUp || pkg.pickedUpAt != null) continue;
+      final fixed = healMisfiledPickedUp(pkg);
+      if (fixed != null) healed.add(fixed);
+    }
+    return healed;
+  }
+
   /// 若应回滚，返回活跃态副本；否则 null（保持 completed / 无证据）。
   static Package? healMisfiledPickedUp(Package pkg) {
     if (pkg.status != PackageStatus.pickedUp || pkg.pickedUpAt != null) {
@@ -2056,10 +2074,16 @@ class PddFalsePickupHeal {
     }
     final events = LogisticsStatusEngine.eventsNewestFirst(pkg.rawTimelineJson);
     if (events.isNotEmpty) {
+      // P44-g+：最新节点明确在途/派送时，历史残留取件码不得把它压回「待取件」。
+      // （JT554 假完成若带着旧码，旧逻辑会 heal 成 arrived，验收要的是 transit。）
+      final newest = '${events.first['tag'] ?? ''} ${events.first['text'] ?? ''}'.trim();
+      final newestAction = LogisticsStatusEngine.classifyNode(newest);
+      final codeOutranksNewest = newestAction != LogisticsNodeAction.inTransit &&
+          newestAction != LogisticsNodeAction.outForDelivery;
       final derived = LogisticsStatusEngine.derive(
         events: events,
         isOrderSigned: true,
-        pickupCode: pkg.pickupCode,
+        pickupCode: codeOutranksNewest ? pkg.pickupCode : '',
         stationName: pkg.stationName ?? '',
       );
       if (!derived.status.isCompleted) {
