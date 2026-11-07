@@ -1,6 +1,6 @@
 # P45 前端交付 / 待 CTO 与 QA 验收
 
-> 当前以文末R2/+14为准；以下R1/+13保留为历史，不是当前候选。
+> 当前以文末R3/+15为准；以下R1/+13、R2/+14保留为历史，不是当前候选。
 
 更新时间：2026-11-08 01:30 Asia/Shanghai。
 
@@ -121,3 +121,47 @@ Flutter构建工具自动在本地gradle.properties写2个兼容flag，构建后
 - 原生启动命令：用本节SDK+原lock，在获授权Android设备上由QA `flutter run --no-pub -d <authorized-device>`；本轮无设备权限，未执行。无可用网页运行地址，不需要父代理打开桌面完成当前自动化结果。
 - 真机录屏、读屏/键盘实操、OS Reduce Motion、触觉、后台返回、真实三平台/P43/P44与同步墙钟、profile前后3轮/FrameTiming p95及慢帧仍**未测**。320px/1.8倍字既有11px顶栏溢出仍留债、不扩修。
 - 只正常追加commit/push更新原PR #45，无force/amend/merge/Release。PR最新head与Notion留痕结果以公司交付单和delivery.json为准。
+
+# R3 已完成菜单生命周期 P2 最小补丁 / 当前候选 +15
+
+本节取代上文R2/+14为当前前端交付候选。P1-A与原SDK/lock阻塞保持关闭；QA-R2-C1是完整base已存在的P2，修复待CTO/QA复验，不宣称P45整体验收或发布通过。用户授权仅追加同PR #45，不合入、不发布、不装用户机。
+
+## 独立复现与最小边界
+
+- 已读公司技术审查214行起、base/r2-probe.log、QA supplement/closeout报告及实际探针。自行在完整base c9b0128和原R2代码各重跑删除exit/reenter两条（0PASS/2FAIL、exit1），及旧撤销exit/reenter/程序化移除下层route三条（0PASS/3FAIL、exit1），均disposed-ref；见`base-delete-reproduce.log`、`reproduce-r2.log`、`base-undo-reproduce.log`、`r2-undo-reproduce.log`。这是异常证据，不是误删/进程崩溃证据。程序化Navigator.removeRoute边界不描述成普通用户穿透模态操作。
+- 唯一运行时代码更改为`completed_packages_sheet.dart`：原卡局部会话在显示菜单前同步监听原packageListProvider，复用既有status.isCompleted呈现资格；离开完成集合即永久失效，捕捉无中间pump的退出重入。同ID仅内容更新不失效；原卡销毁/ID换绑、原route或菜单退场使会话作废并释放监听；同ID重入不复权。
+- 提交先核会话、原owner及菜单route有效性，再从存活菜单Consumer的ref读原notifier。失效仅关自己仍current的菜单，不读ref、不提交删除/恢复、不发成功提示；不自动强关route，不误pop上层新route。不是仅加mounted，也未在打开时预捕获notifier绕过门禁。
+- 正常删除/撤销仍调用原按ID方法，详情、子按钮、触觉与文案保留；仅将原卡改为局部State owner。未改数据层/业务规则/取件撤销轨迹；core/platform/providers/login/plugins/共享StaggeredEntrance对main差异0。SpringCard和首页门禁本轮未改。
+
+## 真实验证（隔离SDK + 原lock）
+
+源码/构建固定SHA `4ded7bf917ff72b7e6af1961222a1cc84825cbec`，全新干净worktree `/workspace/parcly-p45-r3-final-verify`；后续提交仅交付文档。Flutter3.41.9 / revision `00b0c91f06209d9e4a41f71b7a512d6eb3b9c694`，engine `42d3d75a56efe1a2e9902f52dc8006099c45d937`，Dart3.11.5。官方Git remote/tag再次核验，专属完整cache，未切共享SDK。原lock前后SHA256 `956981f554bb63318109639552c683a032bf3764583c70e0d6879e7f68bc7383` 不变；actual-lock-pins.json记录原四pin真实解析目录。未普通pub get、未临时重解后恢复lock、未升级依赖。
+
+|检查/原命令（完整参数见results.jsonl）|结果|原始日志（证据根下）|
+|---|---|---|
+|flutter pub get --offline --enforce-lockfile（全新候选/基线）|各exit0|fixedhead-enforce-final.log / baseline-enforce.log|
+|python3 tools/check_p45_toolchain.py；flutter --version --machine；dart --version|exit0|toolchain-final.log / sdk-final.log / dart-final.log|
+|dart format --output=none --set-exit-if-changed（10 Dart文件）|exit0，0改变|format-check-final.log|
+|flutter test --no-pub --reporter expanded（6组件文件）|48 PASS，exit0|component-tests-final.log|
+|flutter test --no-pub --reporter expanded（原15关联文件+新增会话文件）|172 PASS，exit0|related-regression-final.log|
+|flutter test --no-pub --reporter expanded（全量）|531 PASS，无skip，exit0|full-tests-final.log|
+|flutter analyze --no-pub（候选与main基线）|各exit1、各132（8warning/124info），无新增/移除|candidate-analyze-final.log / baseline-analyze.log / diagnostic-delta.json|
+|bash tools/check_no_pii.sh|exit0|pii-final.log|
+|flutter build apk --release --no-pub --target-platform android-arm64|exit0|apk-build-final.log|
+|aapt dump badging；apksigner verify --print-certs|各exit0，versionCode15，arm64-v8a，Android Debug签名|apk-badging-final.log / apk-signature-final.log|
+
+新增16项真实菜单会话测试使用原provider方法，仅初态注入和提交次数观察：删除/撤销×正常、内容更新、退出、重入、无中间pump重入、程序化移除下层route、行身份换绑；加重复关开5轮/旧闭包拒提交与不误pop其他route。断言失效前后状态与提交计数完全不变、无成功提示，不仅是不抛异常。原共享组件测试所有动作/触觉断言保留，仅把相互矛盾的完成集合override与空source fixture改成实际source初态。原QA补充6项及closeout7项另存探针复跑，不与531累加、不把fixture同步称真实平台同步；原轨迹专项只做既有回归，不改业务。
+
+保留失败尝试：session-tests-first/second为测试import错误；third共用ID碰到真实内存blacklist（改用每测唯一虚构ID，未清任何真实数据/blacklist）。初固定SHA组件47PASS/1FAIL因旧integration夹具完成provider有包裹但source空；只修fixture，不削弱断言，最终48PASS。这些失败日志不覆盖。
+
+## APK、启动与证据
+
+- 候选`1.0.0+15`，25远端分支审计时15未占用，审计`remote-versions.json`；未上传Release/安装。package `com.example.pickup_app`，仅arm64-v8a。
+- APK `/workspace/p45-r3-evidence/parcly-1.0.0+15-arm64-v8a-release.apk`
+- SHA256 `5447120ab9852784c6d65967ab95c4d542d4378f60e3b98fcae05bdea2ccda38`；原始`apk-hash.log`。Android Debug签名证书SHA256 `92766ddf22ed64c7b604cb40a35d7f5f4c8b5a6ff954656c0e6f3081ae776d93`，不是发布签名。
+- 证据根`/workspace/p45-r3-evidence/`，`results.jsonl`记录全部原命令/退出码；`validation-context.json`记录cwd/源码SHA/SDK与Android/Gradle环境，`validate-final.py`可重跑本轮门禁。SDK详见`docs/parcly-P45-工具链.md`。
+- 本地复核：按工具链文档配置环境后运行`flutter pub get --offline --enforce-lockfile`、`flutter test --no-pub test/p45_completed_menu_session_test.dart`；只需box、不触真实数据。无可用网页地址，本轮未打开浏览器；原生体验需QA另获设备/安装权限后按既有交付说明执行，本轮不安装、不要求重登。
+
+## 明确保留的未测/阻塞
+
+真机、录屏、profile/FrameTiming前后各3轮、OS Reduce Motion/读屏键盘实际操作、真实剪贴板/通知/触觉、后台返回、真实三平台会话/P43/P44/网络同步墙钟、真人完整码辨读均未测。约10px长码字形真人辨读风险、320px/1.8倍字既有11px顶栏溢出仍保留；按压几何和单测不替代。无用户电脑/真实数据操作、卸装、清Hive、清登录或外发同事消息。待父代理转交CTO/QA复验，不替审核人接受P2风险。
