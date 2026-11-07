@@ -335,6 +335,12 @@ class ModernPackageCard extends ConsumerWidget {
 
   /// 长按菜单：复制运单号 / 删除包裹。
   void _showCardActions(BuildContext context, WidgetRef ref) {
+    // 菜单是独立路由：保存打开时的呈现代，而不是点选时借用新一代卡片。
+    final allowedAtOpen = interactionAllowed;
+    final interactiveAtOpen = interactive;
+    bool canSubmit() =>
+        context.mounted && interactiveAtOpen && (allowedAtOpen?.call() ?? true);
+
     showModalBottomSheet(
       context: context,
       builder: (ctx) => SafeArea(
@@ -345,6 +351,10 @@ class ModernPackageCard extends ConsumerWidget {
               title: const Text('复制运单号'),
               subtitle: Text(package.trackingNumber),
               onTap: () {
+                if (!canSubmit()) {
+                  Navigator.pop(ctx);
+                  return;
+                }
                 Clipboard.setData(ClipboardData(text: package.trackingNumber));
                 Navigator.pop(ctx);
                 ScaffoldMessenger.of(context).showSnackBar(
@@ -362,6 +372,10 @@ class ModernPackageCard extends ConsumerWidget {
                 style: TextStyle(color: AppColors.statusRejected),
               ),
               onTap: () {
+                if (!canSubmit()) {
+                  Navigator.pop(ctx);
+                  return;
+                }
                 Navigator.pop(ctx);
                 ref
                     .read(packageListProvider.notifier)

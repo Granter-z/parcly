@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -77,7 +78,7 @@ void main() {
     expect(
         haptics.where((h) => h == 'HapticFeedbackType.lightImpact').length, 1);
   });
-  testWidgets('窄屏大字完整码可复制，按压不裁断内容；详情也保留完整码', (t) async {
+  testWidgets('窄屏大字完整码可复制；按压中几何不裁断且保留字号比例', (t) async {
     final copies = <dynamic>[];
     t.binding.defaultBinaryMessenger
         .setMockMethodCallHandler(SystemChannels.platform, (call) async {
@@ -106,6 +107,57 @@ void main() {
     expect(t.takeException(), isNull);
     final text = t.widget<Text>(find.text('9-8-7000-123'));
     expect(text.overflow, isNot(TextOverflow.ellipsis));
+    final unpressedParagraph =
+        t.renderObject<RenderParagraph>(find.text('9-8-7000-123'));
+    final unpressedBoxes = unpressedParagraph.getBoxesForSelection(
+        const TextSelection(
+            baseOffset: 0, extentOffset: '9-8-7000-123'.length));
+    final unpressedHeights = [
+      for (final box in unpressedBoxes)
+        MatrixUtils.transformRect(
+                unpressedParagraph.getTransformTo(null), box.toRect())
+            .height
+    ];
+    final gesture = await t.startGesture(t.getCenter(find.text('虚构测试商品')));
+    await t.pump(const Duration(milliseconds: 120));
+    await t.pump();
+    var elapsed = 0;
+    for (final ms in [16, 40, 100]) {
+      await t.pump(Duration(milliseconds: ms - elapsed));
+      elapsed = ms;
+      final transform = t.widget<Transform>(find
+          .descendant(
+              of: find.byType(SpringCard), matching: find.byType(Transform))
+          .first);
+      expect(transform.transform.storage[0], lessThan(1));
+      final paragraph =
+          t.renderObject<RenderParagraph>(find.text('9-8-7000-123'));
+      expect(paragraph.didExceedMaxLines, false);
+      final glyphBoxes = paragraph.getBoxesForSelection(const TextSelection(
+          baseOffset: 0, extentOffset: '9-8-7000-123'.length));
+      expect(glyphBoxes, isNotEmpty);
+      final surface = t.getRect(find.byType(SpringCard));
+      final viewport = Offset.zero & t.view.physicalSize;
+      expect(glyphBoxes.length, unpressedHeights.length);
+      for (var i = 0; i < glyphBoxes.length; i++) {
+        final glyphBox = glyphBoxes[i];
+        final local = glyphBox.toRect();
+        final painted =
+            MatrixUtils.transformRect(paragraph.getTransformTo(null), local);
+        expect(surface.inflate(.01).contains(painted.topLeft), true);
+        expect(surface.inflate(.01).contains(painted.bottomRight), true);
+        expect(viewport.contains(painted.topLeft), true);
+        expect(viewport.contains(painted.bottomRight), true);
+        // 验证按压仅有预期缩放且没有新裁剪；不把几何范围冒充真人辨读。
+        debugPrint(
+            'P45 glyph sample t=${ms}ms scale=${transform.transform.storage[0]} baselineHeight=${unpressedHeights[i]} painted=$painted');
+        expect(
+            painted.height / unpressedHeights[i], inInclusiveRange(.97, 1.01));
+      }
+      expect(t.takeException(), isNull);
+    }
+    await gesture.cancel();
+    await t.pumpAndSettle();
     await t.tap(find.text('9-8-7000-123'));
     await t.pump();
     await t.pump(const Duration(seconds: 2));

@@ -27,6 +27,9 @@ Package pkg(String id, {String? title, bool arrived = false}) => Package(
 
 class FakePackages extends PackageListNotifier {
   final picked = <String>[];
+  final removed = <String>[];
+  @override
+  void removePackage(String id) => removed.add(id);
   @override
   void markPickedUp(String id) => picked.add(id);
 }
