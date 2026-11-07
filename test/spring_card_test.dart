@@ -115,7 +115,7 @@ void main() {
     var taps = 0;
     final semantics = t.ensureSemantics();
     await t.pumpWidget(host(tap: () => taps++));
-    t.binding.pipelineOwner.semanticsOwner!.performAction(
+    t.binding.renderViews.first.owner!.semanticsOwner!.performAction(
         t.getSemantics(find.text('card')).id, SemanticsAction.tap);
     await t.pump();
     expect(taps, 1);

@@ -229,7 +229,7 @@ void main() {
     expect(find.bySemanticsLabel(RegExp('fixture-A')), findsNothing);
     old.onTap!();
     old.onLongPress!();
-    t.binding.pipelineOwner.semanticsOwner!
+    t.binding.renderViews.first.owner!.semanticsOwner!
         .performAction(node, SemanticsAction.tap);
     await t.pump(const Duration(milliseconds: 16));
     expect(find.byType(TrackingTimelineSheet), findsNothing);

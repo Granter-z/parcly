@@ -139,7 +139,9 @@ class _AnimatedPackageListState extends State<AnimatedPackageList>
       if (!mounted ||
           generation != entry.generation ||
           !identical(_entries[id], entry) ||
-          entry.present) return;
+          entry.present) {
+        return;
+      }
       // 取消也会回调；仅真正收起至 0 的当前退出代可以回收。
       if (entry.controller.value != 0) return;
       setState(() {
