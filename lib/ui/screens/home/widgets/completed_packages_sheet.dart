@@ -113,14 +113,132 @@ class CompletedPackagesSheet extends ConsumerWidget {
 }
 
 /// 已完成列表里的单张卡片：点击进入物流轨迹抽屉；长按可撤销已取或删除。
-class _CompletedPackageCard extends ConsumerWidget {
+class _CompletedPackageCard extends ConsumerStatefulWidget {
   final Package package;
 
   const _CompletedPackageCard({required this.package});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final pkg = package;
+  ConsumerState<_CompletedPackageCard> createState() =>
+      _CompletedPackageCardState();
+}
+
+class _CompletedPackageCardState extends ConsumerState<_CompletedPackageCard> {
+  _CompletedMenuSession? _menuSession;
+
+  @override
+  void didUpdateWidget(covariant _CompletedPackageCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.package.id != widget.package.id) {
+      _menuSession?.dispose();
+      _menuSession = null;
+    }
+  }
+
+  @override
+  void dispose() {
+    _menuSession?.dispose();
+    super.dispose();
+  }
+
+  Future<void> _showActions(Package pkg) async {
+    _menuSession?.dispose();
+    final session = _CompletedMenuSession(ModalRoute.of(context));
+    _menuSession = session;
+    // Observe the source synchronously: even exit/reentry without a build must
+    // permanently retire this presentation session. Reuse the domain predicate.
+    session.subscription = ref.listenManual(packageListProvider, (_, packages) {
+      if (!packages.any((p) => p.id == pkg.id && p.status.isCompleted)) {
+        session.invalidate();
+      }
+    });
+    if (!ref.read(packageListProvider).any(
+          (p) => p.id == pkg.id && p.status.isCompleted,
+        )) {
+      session.dispose();
+      return;
+    }
+    try {
+      await showModalBottomSheet<void>(
+        context: context,
+        builder: (ctx) => Consumer(
+          builder: (ctx, menuRef, _) {
+            final menuRoute = ModalRoute.of(ctx)!;
+            session.attachMenu(menuRoute);
+            bool canSubmit() =>
+                session.valid &&
+                mounted &&
+                context.mounted &&
+                ctx.mounted &&
+                session.originRoute?.isActive != false &&
+                menuRoute.isCurrent;
+            void closeMenu() {
+              if (ctx.mounted && menuRoute.isCurrent) Navigator.of(ctx).pop();
+            }
+
+            return SafeArea(
+              child: Wrap(
+                children: [
+                  if (pkg.status == PackageStatus.pickedUp)
+                    ListTile(
+                      leading: const Icon(Icons.undo_rounded),
+                      title: const Text('撤销已取'),
+                      subtitle: const Text('恢复到待取件，可再次取件'),
+                      onTap: () {
+                        if (!canSubmit()) {
+                          closeMenu();
+                          return;
+                        }
+                        final notifier =
+                            menuRef.read(packageListProvider.notifier);
+                        final messenger = ScaffoldMessenger.of(context);
+                        closeMenu();
+                        notifier.restorePackage(pkg.id);
+                        messenger.showSnackBar(
+                          const SnackBar(
+                            content: Text('已撤销取件，包裹回到待取列表'),
+                            duration: Duration(seconds: 2),
+                            behavior: SnackBarBehavior.floating,
+                            persist: false,
+                          ),
+                        );
+                      },
+                    ),
+                  ListTile(
+                    leading: const Icon(
+                      Icons.delete_outline_rounded,
+                      color: AppColors.statusRejected,
+                    ),
+                    title: const Text(
+                      '删除该包裹',
+                      style: TextStyle(color: AppColors.statusRejected),
+                    ),
+                    onTap: () {
+                      if (!canSubmit()) {
+                        closeMenu();
+                        return;
+                      }
+                      final notifier =
+                          menuRef.read(packageListProvider.notifier);
+                      closeMenu();
+                      notifier.removePackage(pkg.id);
+                    },
+                  ),
+                ],
+              ),
+            );
+          },
+        ),
+      );
+    } finally {
+      session.dispose();
+      if (identical(_menuSession, session)) _menuSession = null;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final pkg = widget.package;
 
     return SpringCard(
       padding: const EdgeInsets.all(AppSpacing.lg),
@@ -128,49 +246,7 @@ class _CompletedPackageCard extends ConsumerWidget {
       onTap: () => TrackingTimelineSheet.show(context, pkg),
       onLongPress: () {
         HapticFeedback.mediumImpact();
-        showModalBottomSheet(
-          context: context,
-          builder: (ctx) => SafeArea(
-            child: Wrap(
-              children: [
-                if (pkg.status == PackageStatus.pickedUp)
-                  ListTile(
-                    leading: const Icon(Icons.undo_rounded),
-                    title: const Text('撤销已取'),
-                    subtitle: const Text('恢复到待取件，可再次取件'),
-                    onTap: () {
-                      Navigator.pop(ctx);
-                      ref
-                          .read(packageListProvider.notifier)
-                          .restorePackage(pkg.id);
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text('已撤销取件，包裹回到待取列表'),
-                          duration: Duration(seconds: 2),
-                          behavior: SnackBarBehavior.floating,
-                          persist: false,
-                        ),
-                      );
-                    },
-                  ),
-                ListTile(
-                  leading: const Icon(
-                    Icons.delete_outline_rounded,
-                    color: AppColors.statusRejected,
-                  ),
-                  title: const Text(
-                    '删除该包裹',
-                    style: TextStyle(color: AppColors.statusRejected),
-                  ),
-                  onTap: () {
-                    Navigator.pop(ctx);
-                    ref.read(packageListProvider.notifier).removePackage(pkg.id);
-                  },
-                ),
-              ],
-            ),
-          ),
-        );
+        _showActions(pkg);
       },
       child: Row(
         children: [
@@ -233,6 +309,45 @@ class _CompletedPackageCard extends ConsumerWidget {
         ],
       ),
     );
+  }
+}
+
+/// A menu is local presentation authority, never a durable permission by ID.
+class _CompletedMenuSession {
+  _CompletedMenuSession(this.originRoute) {
+    originRoute?.animation?.addStatusListener(_onRouteStatus);
+  }
+
+  final ModalRoute<dynamic>? originRoute;
+  ModalRoute<dynamic>? _menuRoute;
+  ProviderSubscription<List<Package>>? subscription;
+  bool valid = true;
+
+  void attachMenu(ModalRoute<dynamic> route) {
+    if (identical(_menuRoute, route)) return;
+    _menuRoute?.animation?.removeStatusListener(_onRouteStatus);
+    _menuRoute = route;
+    route.animation?.addStatusListener(_onRouteStatus);
+  }
+
+  void _onRouteStatus(AnimationStatus status) {
+    if (status == AnimationStatus.reverse ||
+        status == AnimationStatus.dismissed) {
+      invalidate();
+    }
+  }
+
+  void invalidate() {
+    valid = false;
+    subscription?.close();
+    subscription = null;
+  }
+
+  void dispose() {
+    invalidate();
+    originRoute?.animation?.removeStatusListener(_onRouteStatus);
+    _menuRoute?.animation?.removeStatusListener(_onRouteStatus);
+    _menuRoute = null;
   }
 }
 
