@@ -24,6 +24,9 @@ Package fixture(PackageStatus status) => Package(
     );
 
 class FakePackages extends PackageListNotifier {
+  FakePackages() {
+    state = [fixture(PackageStatus.pickedUp)];
+  }
   final restored = <String>[];
   @override
   void restorePackage(String id) => restored.add(id);
@@ -42,8 +45,6 @@ void main() {
         .setMockMethodCallHandler(SystemChannels.platform, null));
     await t.pumpWidget(ProviderScope(
         overrides: [
-          completedPackagesProvider
-              .overrideWithValue([fixture(PackageStatus.pickedUp)]),
           packageListProvider.overrideWith((ref) => fake),
         ],
         child: MaterialApp(
