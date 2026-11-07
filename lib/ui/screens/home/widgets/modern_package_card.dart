@@ -29,7 +29,17 @@ import 'tracking_timeline_sheet.dart';
 class ModernPackageCard extends ConsumerWidget {
   final Package package;
 
-  const ModernPackageCard({super.key, required this.package});
+  /// 仅呈现层门禁：退出立即禁用；异步子动作还需检查启动时的呈现代。
+  final bool interactive;
+  final bool Function()? interactionAllowed;
+
+  const ModernPackageCard(
+      {super.key,
+      required this.package,
+      this.interactive = true,
+      this.interactionAllowed});
+
+  bool get _canInteract => interactive && (interactionAllowed?.call() ?? true);
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -44,14 +54,22 @@ class ModernPackageCard extends ConsumerWidget {
       padding: const EdgeInsets.all(AppSpacing.lg),
       borderRadius: GlassTokens.radiusContentAll,
       border: Border.all(
-        color: isArrived ? GlassTokens.arrivedBorder : GlassTokens.contentBorder,
+        color:
+            isArrived ? GlassTokens.arrivedBorder : GlassTokens.contentBorder,
         width: isArrived ? 1.4 : 1.0,
       ),
-      onTap: () => TrackingTimelineSheet.show(context, package),
-      onLongPress: () {
-        HapticFeedback.mediumImpact();
-        _showCardActions(context, ref);
-      },
+      onTap: !interactive
+          ? null
+          : () {
+              if (_canInteract) TrackingTimelineSheet.show(context, package);
+            },
+      onLongPress: !interactive
+          ? null
+          : () {
+              if (!_canInteract) return;
+              HapticFeedback.mediumImpact();
+              _showCardActions(context, ref);
+            },
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -219,6 +237,7 @@ class ModernPackageCard extends ConsumerWidget {
                             HeroPickupBadge(
                               pickupCode: package.pickupCode,
                               isLarge: true,
+                              enabled: interactive,
                             ),
                           ],
                         )
@@ -261,26 +280,32 @@ class ModernPackageCard extends ConsumerWidget {
                 // 右侧：标记已取 / 查看轨迹
                 if (isArrived)
                   _PickupConfirmButton(
-                    onConfirmed: () {
-                      final notifier = ref.read(packageListProvider.notifier);
-                      final pkgId = package.id;
-                      notifier.markPickedUp(pkgId);
-                      final messenger = ScaffoldMessenger.of(context);
-                      messenger.hideCurrentSnackBar();
-                      messenger.showSnackBar(
-                        SnackBar(
-                          content: Text('已标记取件「${package.goodsName ?? "包裹"}」'),
-                          duration: const Duration(seconds: 5),
-                          behavior: SnackBarBehavior.floating,
-                          // Flutter 3.47：有 action 时 persist 默认 true；撤销窗应自动消失。
-                          persist: false,
-                          action: SnackBarAction(
-                            label: '撤销',
-                            onPressed: () => notifier.restorePackage(pkgId),
-                          ),
-                        ),
-                      );
-                    },
+                    onConfirmed: !interactive
+                        ? null
+                        : () {
+                            if (!_canInteract) return;
+                            final notifier =
+                                ref.read(packageListProvider.notifier);
+                            final pkgId = package.id;
+                            notifier.markPickedUp(pkgId);
+                            final messenger = ScaffoldMessenger.of(context);
+                            messenger.hideCurrentSnackBar();
+                            messenger.showSnackBar(
+                              SnackBar(
+                                content:
+                                    Text('已标记取件「${package.goodsName ?? "包裹"}」'),
+                                duration: const Duration(seconds: 5),
+                                behavior: SnackBarBehavior.floating,
+                                // Flutter 3.47：有 action 时 persist 默认 true；撤销窗应自动消失。
+                                persist: false,
+                                action: SnackBarAction(
+                                  label: '撤销',
+                                  onPressed: () =>
+                                      notifier.restorePackage(pkgId),
+                                ),
+                              ),
+                            );
+                          },
                   )
                 else
                   const Row(
@@ -427,7 +452,7 @@ class _Placeholder extends StatelessWidget {
 /// 「确认取件」按钮：点按后在原位上做一次绿色脉冲 + 放大回弹，
 /// 动画播完才真正标记已取，让卡片消失前先给出明确反馈。
 class _PickupConfirmButton extends StatefulWidget {
-  final VoidCallback onConfirmed;
+  final VoidCallback? onConfirmed;
 
   const _PickupConfirmButton({required this.onConfirmed});
 
@@ -469,7 +494,8 @@ class _PickupConfirmButtonState extends State<_PickupConfirmButton>
   }
 
   Future<void> _handleTap() async {
-    if (_controller.isAnimating) return;
+    final confirm = widget.onConfirmed;
+    if (_controller.isAnimating || confirm == null) return;
     HapticFeedback.mediumImpact();
 
     // 移除动画时跳过脉冲，直接确认 —— 反馈仍有（触觉 + 列表退场）。
@@ -478,7 +504,7 @@ class _PickupConfirmButtonState extends State<_PickupConfirmButton>
       if (!mounted) return;
       _controller.value = 0; // 复位，避免交回上层时残留高亮
     }
-    widget.onConfirmed();
+    confirm();
   }
 
   @override
@@ -498,7 +524,7 @@ class _PickupConfirmButtonState extends State<_PickupConfirmButton>
         return Transform.scale(
           scale: _scale.value,
           child: InkWell(
-            onTap: _handleTap,
+            onTap: widget.onConfirmed == null ? null : _handleTap,
             borderRadius: AppRadius.xsAll,
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),

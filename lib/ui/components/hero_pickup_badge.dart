@@ -18,12 +18,14 @@ class HeroPickupBadge extends StatefulWidget {
   final String pickupCode;
   final bool isLarge;
   final VoidCallback? onCopied;
+  final bool enabled;
 
   const HeroPickupBadge({
     super.key,
     required this.pickupCode,
     this.isLarge = false,
     this.onCopied,
+    this.enabled = true,
   });
 
   @override
@@ -34,7 +36,7 @@ class _HeroPickupBadgeState extends State<HeroPickupBadge> {
   bool _isCopied = false;
 
   Future<void> _handleCopy() async {
-    if (widget.pickupCode.trim().isEmpty) return;
+    if (!widget.enabled || widget.pickupCode.trim().isEmpty) return;
 
     await Clipboard.setData(ClipboardData(text: widget.pickupCode));
     HapticFeedback.mediumImpact();
@@ -76,7 +78,7 @@ class _HeroPickupBadgeState extends State<HeroPickupBadge> {
     return Material(
       color: Colors.transparent,
       child: InkWell(
-        onTap: _handleCopy,
+        onTap: widget.enabled ? _handleCopy : null,
         borderRadius: AppRadius.xsAll,
         child: AnimatedContainer(
           duration: Motion.of(context, Motion.fast),
