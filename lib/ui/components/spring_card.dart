@@ -54,6 +54,11 @@ class _SpringCardState extends State<SpringCard>
   late final AnimationController _controller;
   late Animation<double> _scaleAnimation;
 
+  bool _reduced = false;
+  int _generation = 0;
+
+  bool get _enabled => widget.onTap != null || widget.onLongPress != null;
+
   final _springDesc = const SpringDescription(
     mass: 1.0,
     stiffness: 520.0,
@@ -71,36 +76,58 @@ class _SpringCardState extends State<SpringCard>
 
   @override
   void dispose() {
+    _generation++;
     _controller.dispose();
     super.dispose();
   }
 
-  void _handleTapDown(TapDownDetails details) {
-    if (widget.onTap == null && widget.onLongPress == null) return;
-    if (Motion.reduce(context)) {
-      _controller.value = 1.0;
-      return;
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final reduced = Motion.reduce(context);
+    if (reduced != _reduced) {
+      _reduced = reduced;
+      _settle();
     }
-    final simulation =
-        SpringSimulation(_springDesc, _controller.value, 1.0, 0.0);
-    _controller.animateWith(simulation);
   }
 
-  void _handleTapUp(TapUpDetails details) {
-    _releaseSpring();
-    widget.onTap?.call();
+  @override
+  void didUpdateWidget(covariant SpringCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.pressScale != widget.pressScale) {
+      _scaleAnimation = _controller.drive(
+        Tween<double>(begin: 1.0, end: widget.pressScale),
+      );
+    }
+    if (!_enabled) _settle();
   }
 
-  void _handleTapCancel() => _releaseSpring();
+  void _settle() {
+    _generation++;
+    _controller.value = 0;
+  }
 
-  void _releaseSpring() {
-    if (Motion.reduce(context)) {
-      _controller.value = 0.0;
+  void _retarget(double target) {
+    if (_reduced || !_enabled) {
+      _settle();
       return;
     }
-    final simulation =
-        SpringSimulation(_springDesc, _controller.value, 0.0, 0.0);
-    _controller.animateWith(simulation);
+    // q 无量纲，v 为有符号 q/秒；stop 后 velocity 会归零，必须先采样。
+    final q = _controller.value;
+    final v = _controller.velocity;
+    final generation = ++_generation;
+    _controller.stop();
+    _controller
+        .animateWith(SpringSimulation(
+      _springDesc,
+      q,
+      target,
+      v,
+      tolerance: const Tolerance(distance: 1e-3, velocity: 1e-3),
+    ))
+        .whenCompleteOrCancel(() {
+      if (mounted && generation == _generation) _controller.value = target;
+    });
   }
 
   @override
@@ -137,20 +164,29 @@ class _SpringCardState extends State<SpringCard>
     }
 
     return RepaintBoundary(
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTapDown: _handleTapDown,
-        onTapUp: _handleTapUp,
-        onTapCancel: _handleTapCancel,
-        onLongPress: widget.onLongPress,
-        child: AnimatedBuilder(
-          animation: _scaleAnimation,
-          builder: (context, child) => Transform.scale(
-            scale: _scaleAnimation.value,
-            alignment: Alignment.center,
-            child: child,
+      child: Semantics(
+        onLongPress: widget.onTap == null ? widget.onLongPress : null,
+        child: GestureDetector(
+          excludeFromSemantics: widget.onTap == null,
+          behavior: HitTestBehavior.opaque,
+          onTapDown: _enabled ? (_) => _retarget(1) : null,
+          onTapUp: _enabled ? (_) => _retarget(0) : null,
+          onTapCancel: _enabled ? () => _retarget(0) : null,
+          onTap: widget.onTap,
+          onLongPress: widget.onLongPress,
+          onLongPressStart:
+              widget.onLongPress != null ? (_) => _retarget(0) : null,
+          onLongPressEnd:
+              widget.onLongPress != null ? (_) => _retarget(0) : null,
+          child: AnimatedBuilder(
+            animation: _scaleAnimation,
+            builder: (context, child) => Transform.scale(
+              scale: _scaleAnimation.value,
+              alignment: Alignment.center,
+              child: child,
+            ),
+            child: body,
           ),
-          child: body,
         ),
       ),
     );
