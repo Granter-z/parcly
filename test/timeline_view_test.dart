@@ -184,7 +184,7 @@ void main() {
     });
 
     test('运单号、长数字串、日期时间不会被截成电话', () {
-      expect(findPhones('运单号YT1380000111122已揽收'), isEmpty);
+      expect(findPhones('运单号YT0000000000001已揽收'), isEmpty);
       expect(findPhones('运单号773138000011112已签收'), isEmpty);
       expect(findPhones('2026-10-06 14:23:05 已到达'), isEmpty);
       expect(findPhones('订单编号 1380000111122334'), isEmpty);

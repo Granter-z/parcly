@@ -57,11 +57,19 @@ WAYBILL_PREFIXES = (
     "JD",
 )
 # Prefix plus 8–18 digits, optional hyphens between prefix and digit groups.
+# 不能用 \b：Python 的 Unicode \b 把中文当 word 字符，
+# 「运单号JT...」「取件码3-5-6036请领取」这类中文紧贴的写法会漏检。
+# 这里用 ASCII 标识符边界，中文相邻仍能命中。
+_ASCII_ID_BOUNDARY = r"A-Za-z0-9_"
 WAYBILL_RE = re.compile(
-    r"\b(?:%s)(?:-?\d){8,18}\b" % "|".join(WAYBILL_PREFIXES),
+    r"(?<![%s])(?:%s)(?:-?\d){8,18}(?![%s])"
+    % (_ASCII_ID_BOUNDARY, "|".join(WAYBILL_PREFIXES), _ASCII_ID_BOUNDARY),
     re.IGNORECASE,
 )
-PICKUP_RE = re.compile(r"\b\d{1,2}-\d{1,2}-\d{1,6}\b")
+PICKUP_RE = re.compile(
+    r"(?<![%s])\d{1,2}-\d{1,2}-\d{1,6}(?![%s])"
+    % (_ASCII_ID_BOUNDARY, _ASCII_ID_BOUNDARY)
+)
 
 
 def load_allowlist() -> set[str]:

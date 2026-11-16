@@ -34,6 +34,7 @@ for required in \
   "pickup_code" \
   "phone" \
   "real_shaped.dart" \
+  "real_shaped_adjacent.dart" \
   "docs_hit.md" \
   "heuristic_too_loose.dart" \
   "p2_shapes.dart"
@@ -62,6 +63,15 @@ if ! grep -E 'p2_shapes\.dart:[0-9]+  waybill$' "$fail_log" | grep -q .; then
   echo "FAIL：带分隔运单或 JD 前缀反例未被标为 waybill"
   exit 1
 fi
+# P1：中文紧贴运单/取件码时必须命中（Unicode \b 会漏）
+if ! grep -E 'real_shaped_adjacent\.dart:[0-9]+  waybill$' "$fail_log" | grep -q .; then
+  echo "FAIL：中文紧贴运单反例未被标为 waybill"
+  exit 1
+fi
+if ! grep -E 'real_shaped_adjacent\.dart:[0-9]+  pickup_code$' "$fail_log" | grep -q .; then
+  echo "FAIL：中文紧贴取件码反例未被标为 pickup_code"
+  exit 1
+fi
 
 # 输出不得包含夹具里的真实形态原文（含审查用虚构边界样例）
 leaked=0
@@ -77,7 +87,8 @@ for secret in \
   JT1121212112121 \
   139.2468.1357 \
   YT-4729183057264 \
-  JD3817264590231
+  JD3817264590231 \
+  3-5-6036
 do
   if grep -Fq "$secret" "$fail_log"; then
     echo "FAIL：输出泄漏了夹具标记"
