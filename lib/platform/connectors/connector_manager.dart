@@ -150,6 +150,7 @@ class ConnectorManager {
       final legTimeout = perPlatformTimeout ?? kConnectorPerPlatformTimeout;
       final futures = connectors.map((connector) async {
         final cw = Stopwatch()..start();
+        var completed = false;
         try {
           // P42-b：单腿硬超时；只结束本平台 future，不取消其它平台
           await (() async {
@@ -165,24 +166,34 @@ class ConnectorManager {
               }
             }
           })().timeout(legTimeout);
+          completed = true;
         } on TimeoutException {
           debugPrint(
             '[ConnectorManager] ${connector.platformId} sync timed out '
             '(${legTimeout.inMilliseconds}ms)',
           );
+          // 超时只结束 Future 不会取消 stream，显式通知连接器停手
+          try {
+            await connector.cancelSync();
+          } catch (_) {}
           // soft：无登录失效信号 → syncFailed，不踢号
           final msg = '${connector.displayName}暂时不可达或同步超时，已保留旧数据';
           _lastIssue = _lastIssue == null ? msg : '$_lastIssue;$msg';
         } catch (e, stack) {
           debugPrint('[ConnectorManager] Error syncing ${connector.platformId}: ${e.runtimeType}\n$stack');
+          try {
+            await connector.cancelSync();
+          } catch (_) {}
           final msg = '${connector.displayName}同步响应异常，已保留旧数据';
           _lastIssue = _lastIssue == null ? msg : '$_lastIssue;$msg';
         } finally {
           cw.stop();
           triggerEarly();
           debugPrint('[ConnectorManager] ${connector.platformId} sync took ${cw.elapsedMilliseconds}ms');
-          // 记录本次同步时间：保活据此在「用户刚同步过」的 6 小时内跳过心跳
-          await SyncHistoryManager().recordPlatformSync(connector.platformId);
+          // 只记录真正完成的同步：超时/异常若也记，会误让保活跳过 6 小时心跳
+          if (completed) {
+            await SyncHistoryManager().recordPlatformSync(connector.platformId);
+          }
           final issue = connector.lastIssue;
           if (issue != null && (_lastIssue == null || !_lastIssue!.contains(issue))) {
             _lastIssue = _lastIssue == null ? issue : '$_lastIssue;$issue';

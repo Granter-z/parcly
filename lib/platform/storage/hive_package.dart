@@ -30,6 +30,7 @@ class HivePackage {
   final UrgencyLevel urgency;
   final PackageStatus status;
   final DateTime addedAt;
+  final DateTime? lastFetchedAt;
   final DateTime? pickedUpAt;
   final DateTime? arrivedAt;
   final bool notifiedArrived;
@@ -53,6 +54,7 @@ class HivePackage {
     required this.urgency,
     required this.status,
     required this.addedAt,
+    this.lastFetchedAt,
     this.pickedUpAt,
     this.arrivedAt,
     this.notifiedArrived = false,
@@ -79,6 +81,7 @@ class HivePackage {
       urgency: package.urgency,
       status: package.status,
       addedAt: package.addedAt,
+      lastFetchedAt: package.lastFetchedAt,
       pickedUpAt: package.pickedUpAt,
       arrivedAt: package.arrivedAt,
       notifiedArrived: package.notifiedArrived,
@@ -106,6 +109,7 @@ class HivePackage {
       urgency: urgency,
       status: status,
       addedAt: addedAt,
+      lastFetchedAt: lastFetchedAt,
       pickedUpAt: pickedUpAt,
       arrivedAt: arrivedAt,
       notifiedArrived: notifiedArrived,
@@ -131,6 +135,7 @@ class HivePackage {
     UrgencyLevel? urgency,
     PackageStatus? status,
     DateTime? addedAt,
+    DateTime? lastFetchedAt,
     DateTime? pickedUpAt,
     DateTime? arrivedAt,
     bool? notifiedArrived,
@@ -153,6 +158,7 @@ class HivePackage {
       urgency: urgency ?? this.urgency,
       status: status ?? this.status,
       addedAt: addedAt ?? this.addedAt,
+      lastFetchedAt: lastFetchedAt ?? this.lastFetchedAt,
       pickedUpAt: pickedUpAt ?? this.pickedUpAt,
       arrivedAt: arrivedAt ?? this.arrivedAt,
       notifiedArrived: notifiedArrived ?? this.notifiedArrived,

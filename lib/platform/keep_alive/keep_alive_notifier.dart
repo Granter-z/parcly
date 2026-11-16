@@ -33,6 +33,10 @@ class KeepAliveNotifier {
   static Future<void> _sendViaAdapter(String platform, String displayName) async {
     final adapter = NotificationAdapter();
     await adapter.initialize();
+    // 权限被拒时 Android 会静默丢弃通知；此时抛错，避免去重标记被误写
+    if (!await adapter.notificationsEnabled()) {
+      throw StateError('通知权限未授予，失效提醒未发送');
+    }
     await adapter.showKeepAliveExpiredNotification(
       platform: platform,
       displayName: displayName,

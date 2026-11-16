@@ -254,7 +254,9 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
         }(),
         description: package.description.isNotEmpty ? package.description : existing.description,
         urgency: _higherUrgency(existing.urgency, package.urgency),
-        addedAt: package.addedAt.isAfter(existing.addedAt) ? package.addedAt : existing.addedAt,
+        // addedAt 是「加入时间」，一旦入库不再随同步刷新（排序/归档语义依赖它）
+        addedAt: existing.addedAt,
+        lastFetchedAt: package.lastFetchedAt ?? DateTime.now(),
         status: resolvedStatus,
         // 同步从不清 pickedUpAt（它标记用户手动点过已取）；首次进入拒收态时记录结束时间，供已完成列表排序
         pickedUpAt: existing.pickedUpAt ?? (resolvedStatus == PackageStatus.rejected ? DateTime.now() : null),
@@ -272,6 +274,9 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
         for (int i = 0; i < state.length; i++)
           if (i == existingIndex) updated else state[i],
       ];
+      // 增量落盘：一次同步 addPackage N 次，不再每次全量写穿 + 全表扫描
+      if (updated.id != existing.id) _box?.delete(existing.id);
+      _persistOne(updated);
 
       if (updated.status.isArrived && !updated.notifiedArrived) {
         debugPrint('[PackageListNotifier] arrived, triggering notification');
@@ -302,8 +307,10 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
       final created = package.copyWith(
         arrivedAt: createDecision.value,
         clearArrivedAt: createDecision.clear,
+        lastFetchedAt: package.lastFetchedAt ?? DateTime.now(),
       );
       state = [...state, created];
+      _persistOne(created);
 
       if (created.status.isArrived && !created.notifiedArrived) {
         debugPrint('[PackageListNotifier] arrived, triggering notification');
@@ -311,28 +318,46 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
       }
     }
 
-    // ── Step 3: Persist ──────────────────────────────────────
-    _sync();
     debugPrint('[PackageListNotifier] addPackage completed. Final state: ${state.length} packages');
 
     DebugTrace.separator('ADD PACKAGE COMPLETE');
   }
   
   /// 触发到件通知
-  void _triggerArrivedNotification(Package package) {
+  ///
+  /// 只有通知与提醒都发送成功才落盘 `notifiedArrived`；失败保持 false，
+  /// 下次同步会重试（通知 id 稳定，重复发送是同 id 替换而非堆叠）。
+  Future<void> _triggerArrivedNotification(Package package) async {
     final notificationService = NotificationAdapter();
-    
-    // 标记为已通知
+    if (!await notificationService.notificationsEnabled()) {
+      debugPrint('[PackageListNotifier] notifications disabled, keep retryable');
+      return;
+    }
+    try {
+      await notificationService.showArrivedNotification(package);
+      await notificationService.scheduleReminderNotification(package);
+    } catch (e) {
+      debugPrint('[PackageListNotifier] arrived notification failed: $e');
+      return;
+    }
+
     final updatedPackage = package.copyWith(notifiedArrived: true);
     state = [
       for (final p in state)
         if (p.id == package.id) updatedPackage else p,
     ];
-    _sync();
-    
-    // 异步发送通知（在无通知插件的环境，例如单元测试中，静默跳过）
-    notificationService.showArrivedNotification(package).catchError((_) {});
-    notificationService.scheduleReminderNotification(package).catchError((_) {});
+    _persistOne(updatedPackage);
+  }
+
+  /// 单条增量落盘（同步热路径）；全量对账只在加载/删除时做。
+  void _persistOne(Package package) {
+    final box = _box;
+    if (box == null) return;
+    try {
+      box.put(package.id, HivePackage.fromPackage(package));
+    } catch (e) {
+      debugPrint('[PackageListNotifier] persist one failed: $e');
+    }
   }
   
   /// 查找已存在的相同包裹
@@ -435,7 +460,7 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
   /// 驿站名择优：泛称不得覆盖具体网点名。
   ///
   /// 菜鸟接口拿不到驿站全称时会回落到泛称「菜鸟驿站」，但多数具体网点名本身就含这三个字
-  /// （如「邢台信都区绿城诚园北门店菜鸟驿站」），所以无法用「是否含菜鸟驿站」判断具体性，
+  /// （如「示例市青柠花园北门店菜鸟驿站」），所以无法用「是否含菜鸟驿站」判断具体性，
   /// 只能按「是否恰好等于某个泛称」来判定，否则具体名会被泛称覆盖掉。
   @visibleForTesting
   static String preferStationName(String current, String incoming) {

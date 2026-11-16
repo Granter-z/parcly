@@ -1,16 +1,13 @@
 #!/usr/bin/env bash
-# 提交前检查：test/ 下不能出现真实手机号（仓库是公开的）。
-# 覆盖：连写 11 位、+86/86 前缀、空格或横杠分隔（如 138 0000 1111、138-0000-1111）。
-# 用法：bash tools/check_no_pii.sh   （发现可疑内容时返回非 0）
+# 提交前检查：公开仓库中不得出现真实手机号、真实形态运单号、真实形态取件码。
+# 默认扫描 test/、docs/、lib/ 以及根目录 README.md、CLAUDE.md。
+# 已 gitignore 的真实样本目录、以及 tools/pii_check_fixtures/ 不在默认范围。
+# 命中时只打印「路径:行号  规则」，不输出原文。
+# 放行仅限 tools/pii_allowlist.txt 精确登记，或严格演示形态
+# （全同数字、长零填充、整段连续、极短取件占位）。
+# 用法：
+#   bash tools/check_no_pii.sh
+#   bash tools/check_no_pii.sh path/to/dir
 set -euo pipefail
 cd "$(dirname "$0")/.."
-[ -d test ] || exit 0
-re='(^|[^0-9])((\+|＋)?86[ -]?)?1[3-9][0-9]([ -]?[0-9]){8}([^0-9]|$)'
-hits=$(grep -rEn --include='*.txt' --include='*.json' --include='*.dart' \
-  "$re" test/ --exclude-dir=fixtures_private || true)
-if [ -n "$hits" ]; then
-  echo "发现疑似真实手机号，请先脱敏（替换成 1**********）："
-  echo "$hits"
-  exit 1
-fi
-echo "OK：test/ 下没有发现手机号"
+exec python3 tools/check_no_pii.py "$@"

@@ -274,6 +274,14 @@ void main() {
 
       expect(store.lastAt('taobao'), isNull);
     });
+
+    test('skipped 不推进下次保活闸门（下轮仍可重试）', () async {
+      taobaoHb.responder = () => HeartbeatResult.skipped('WebView 正忙');
+
+      await service.performManualKeepAlive();
+
+      expect(store.nextAt('taobao'), isNull);
+    });
   });
 
   group('失效提醒联动', () {

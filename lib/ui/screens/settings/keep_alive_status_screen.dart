@@ -10,6 +10,7 @@ import 'package:workmanager/workmanager.dart';
 import '../../../core/engine/keep_alive_plan.dart';
 import '../../../core/models/keep_alive_state.dart';
 import '../../../core/models/platform_ids.dart';
+import '../../../platform/keep_alive/battery_optimization.dart';
 import '../../../platform/keep_alive/keep_alive_controller.dart';
 import '../../components/platform_meta.dart';
 
@@ -20,8 +21,41 @@ class KeepAliveStatusScreen extends ConsumerStatefulWidget {
   ConsumerState<KeepAliveStatusScreen> createState() => _KeepAliveStatusScreenState();
 }
 
-class _KeepAliveStatusScreenState extends ConsumerState<KeepAliveStatusScreen> {
+class _KeepAliveStatusScreenState extends ConsumerState<KeepAliveStatusScreen>
+    with WidgetsBindingObserver {
   bool _isRefreshing = false;
+
+  /// null 表示尚未查询完成
+  bool? _batteryExempt;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _loadBatteryStatus();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // 用户从系统授权弹窗返回时刷新状态
+    if (state == AppLifecycleState.resumed) _loadBatteryStatus();
+  }
+
+  Future<void> _loadBatteryStatus() async {
+    final exempt = await BatteryOptimization.isIgnoring();
+    if (mounted) setState(() => _batteryExempt = exempt);
+  }
+
+  Future<void> _requestBatteryExemption() async {
+    await BatteryOptimization.requestIgnore();
+    await _loadBatteryStatus();
+  }
 
   /// 手动触发保活（绕过闸门，立即真实执行一轮）
   Future<void> _performManualKeepAlive() async {
@@ -56,7 +90,8 @@ class _KeepAliveStatusScreenState extends ConsumerState<KeepAliveStatusScreen> {
   /// 注册一个 3 秒后触发的 one-off 后台任务，验证后台 isolate 续期链路
   Future<void> _testBackgroundWorker() async {
     await Workmanager().registerOneOffTask(
-      'keep_alive_test_once',
+      // 唯一名：重复点击时不会被 WorkManager 的 keep 策略吞掉
+      'keep_alive_test_once_${DateTime.now().millisecondsSinceEpoch}',
       'keepAliveTask',
       initialDelay: const Duration(seconds: 3),
       constraints: Constraints(networkType: NetworkType.connected),
@@ -496,6 +531,29 @@ class _KeepAliveStatusScreenState extends ConsumerState<KeepAliveStatusScreen> {
             subtitle: const Text('根据 Cookie 年龄自动调整', style: TextStyle(fontSize: 12)),
             trailing: const Icon(Icons.chevron_right_rounded, size: 20),
             onTap: () => _showFrequencyDialog(snapshot),
+          ),
+          ListTile(
+            leading: Icon(
+              _batteryExempt == true
+                  ? Icons.battery_charging_full_rounded
+                  : Icons.battery_alert_rounded,
+              color: _batteryExempt == true
+                  ? const Color(0xFF34C759)
+                  : const Color(0xFFFF9800),
+            ),
+            title: const Text('后台运行权限', style: TextStyle(fontSize: 14.5)),
+            subtitle: Text(
+              _batteryExempt == null
+                  ? '检查中…'
+                  : (_batteryExempt!
+                      ? '已允许，后台保活不受电池优化限制'
+                      : '未允许，后台保活可能被系统推迟或终止，点击申请'),
+              style: const TextStyle(fontSize: 12),
+            ),
+            trailing: _batteryExempt == false
+                ? const Icon(Icons.chevron_right_rounded, size: 20)
+                : null,
+            onTap: _batteryExempt == false ? _requestBatteryExemption : null,
           ),
           ListTile(
             leading: const Icon(Icons.play_circle_outline_rounded, color: Color(0xFF007AFF)),

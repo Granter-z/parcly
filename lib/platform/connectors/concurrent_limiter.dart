@@ -58,8 +58,9 @@ class ThrottledExecutor {
   Future<T> execute<T>(Future<T> Function() task) async {
     return _limiter.run(() async {
       // 添加随机延迟，避免请求模式过于规律
-      final delayMs = minDelay.inMilliseconds +
-          _random.nextInt(maxDelay.inMilliseconds - minDelay.inMilliseconds);
+      final delta = maxDelay.inMilliseconds - minDelay.inMilliseconds;
+      final delayMs =
+          minDelay.inMilliseconds + (delta > 0 ? _random.nextInt(delta) : 0);
       await Future.delayed(Duration(milliseconds: delayMs));
       return await task();
     });

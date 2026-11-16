@@ -268,6 +268,8 @@ class LogisticsStatusEngine {
       '已妥投',
       '妥投签收',
       '已收货',
+      '已取走',
+      '已领取',
       '交易成功',
     ]);
   }
@@ -285,7 +287,7 @@ class LogisticsStatusEngine {
   /// 与详情 UI 一致：容错解析 + 最新节点在前，供 derive / 假完成自愈使用。
   ///
   /// [Package.parsedTimeline] 不做排序且 `Map<String,String>.from` 遇非 String 会整表失败；
-  /// tip8 JT554 详情能显示「运输中」而启动自愈吃不到，就是这条口径差。
+  /// tip8 P44 在途样例详情能显示「运输中」而启动自愈吃不到，就是这条口径差。
   static List<Map<String, String>> eventsNewestFirst(String? rawTimelineJson) {
     return [
       for (final n in timelineForDisplay(rawTimelineJson))
@@ -324,12 +326,25 @@ class LogisticsStatusEngine {
 
     // A. 签收动作（最高终态）
     // 「已取件」也可能出现在揽件轨迹正文（如“…的快递员已取件,物流问题请联系…”）：
-    // 同节点带「揽收/揽件」时属于快递员揽收，不是用户签收（JT554 假已取件根因）。
+    // 同节点带「揽收/揽件」时属于快递员揽收，不是用户签收（P44 在途样例假已取件根因）。
     if (_containsAny(t, const [
           '已签收', '签收成功', '本人签收', '代收人已签收', '已妥投', '妥投签收',
         ]) ||
         (t.contains('已取件') &&
-            !_containsAny(t, const ['揽收', '揽件']))) {
+            !_containsAny(t, const ['揽收', '揽件'])) ||
+        // EMS/邮政等末端轨迹用「您的快件已取走【驿站】」表示用户取件；
+        // 必须带收件人/站点上下文，排除「快递员已取走」这类揽件动作。
+        (t.contains('已取走') &&
+            !_containsAny(t, const ['揽收', '揽件', '快递员已取走', '取件员已取走']) &&
+            _containsAny(t, const [
+              '您的快件', '您的包裹', '驿站', '自提点', '自提柜', '快递柜', '门店', '代收点',
+            ])) ||
+        // 圆通等：「快件已领取，收件人在[菜鸟驿站]取件」
+        (t.contains('已领取') &&
+            !_containsAny(t, const ['揽收', '揽件', '快递员已领取', '取件员已领取']) &&
+            _containsAny(t, const [
+              '快件已领取', '包裹已领取', '收件人', '驿站', '自提点', '自提柜', '快递柜', '门店',
+            ]))) {
       return LogisticsNodeAction.signed;
     }
 

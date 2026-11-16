@@ -36,7 +36,7 @@ flutter build apk --release
 # 按 CPU 架构分包（体积更小，用于分发）
 flutter build apk --release --split-per-abi
 
-# 提交前扫描真实订单号 / 手机号等 PII，防止混入仓库
+# 提交前扫描真实形态手机号 / 运单号 / 取件码，防止混入仓库
 ./tools/check_no_pii.sh
 ```
 
@@ -343,7 +343,7 @@ flutter test test/taobao_sync_rules_test.dart
 ## Project-Specific Conventions
 
 - **交互语言**: 始终使用简体中文回复（与 `.cursor/rules/行为准则.mdc` 的 `Always respond in Chinese-simplified` 一致）
-- **日志脱敏**: 运单号、订单号、取件码只记录平台前缀与计数，不打包完整值；提交前跑 `./tools/check_no_pii.sh`
+- **日志脱敏**: 运单号、订单号、取件码只记录平台前缀与计数，不打包完整值；公开树只用合成样本（见 `docs/合成样本约定.md`），提交前跑 `./tools/check_no_pii.sh`
 - **中文注释**: 核心业务逻辑注释使用简体中文（领域语言为中文）
 - **包裹 ID 格式**: `<平台前缀>_<平台订单号>` (如 `PDD_240101123456`, `TB_1000000000000000001`, `CN_YT1234567890123`)
 - **Cookie 管理**: 各平台凭据存 `PlatformAuthStore`，WebView 捕获后持久化

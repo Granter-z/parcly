@@ -1117,7 +1117,9 @@ class TaobaoH5Connector implements PlatformConnector {
         return body;
       }
       return null;
-    } catch (_) {
+    } catch (e) {
+      // 至少留下异常类型与摘要，避免 DNS/TLS 失败被当成「同步成功 0 单」
+      _logTb('[Taobao] mtop call failed: ${e.runtimeType}: $e');
       return null;
     }
   }

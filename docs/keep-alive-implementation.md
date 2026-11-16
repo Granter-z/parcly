@@ -49,8 +49,8 @@
 
 通过后发送心跳，并把 `next_keep_alive_at` 置为 `now + 间隔 ± 随机 0-30 分钟`（抖动用来避开固定时间点）。
 
-前台检查定时器为 **1 小时一次**，各平台按自己的动态间隔独立放行；后台 WorkManager 周期任务为 **6 小时一次**，
-与前台共用同一份闸门状态。
+前台检查定时器为 **1 小时一次**，各平台按自己的动态间隔独立放行；后台 WorkManager 周期任务为 **4 小时一次**，
+与前台共用同一份闸门状态。注册使用 `ExistingPeriodicWorkPolicy.keep`，避免每次冷启动重置周期计时。
 
 ---
 
@@ -69,16 +69,27 @@ Hive box `keep_alive_state`，明文存储（只含时间戳与计数，无凭�
 | `history` | List\<Map\> | 最近 50 条保活记录 |
 | `schema_version` | int | 当前为 1 |
 
-### 前后台并发写同一 box
+### 后台 worker 不写 Hive（P45）
 
-前台进程与 WorkManager 后台 isolate 会各自打开该 box，约定的写入边界：
+WorkManager 的 FlutterEngine 与主 App 在同一进程的不同 isolate。POSIX 文件锁按进程生效，
+两个 isolate 会各自缓存 Hive 写偏移；主 isolate 崩溃恢复截断文件后，另一个 isolate 仍按旧偏移写入，
+box 会被反复损坏（真机表现为每次冷启动打印 `Recovering corrupted box.`）。
 
-- 后台 isolate **只写单 key 标量**（`last_keep_alive_at` / `failure_count` / `next_keep_alive_at`），
-  幂等且 last-writer-wins，交错写入不会造成结构损坏；
-- 需要 read-modify-write 的 `history` **只由主 isolate 写**，后台绝不触碰；
-- 前台启动时 `KeepAliveStore.loadIntoCache()` 以磁盘为准覆盖内存缓存，由此与后台写入收敛。
+因此后台 worker **不打开 `keep_alive_state` box**，改用 `keep_alive_worker_bridge.dart` 的 JSON 通道：
 
-两个 isolate 各有独立的内存缓存，**不要跨 isolate 假设缓存一致**。
+- 主 isolate 写 `keep_alive_worker_config.json`（开关 / 闸门 / 失败计数），worker 只读；
+- worker 写 `keep_alive_worker_result.json`（平台、结局、下次时间），主 isolate 下次启动时
+  `KeepAliveService._applyWorkerResults()` 合并进 Hive 并补发失效提醒；
+- worker 自己的失效提醒去重标记写在 `keep_alive_worker_notify.json`；
+- 两边都用临时文件 + rename 原子替换。
+
+worker 仍会读凭据 box（无法避免），但不再写任何 Hive box；淘宝令牌轮换在 worker 中禁用
+（`TaobaoHeartbeat(persistTokenRotation: false)`），下次前台心跳会自行轮换。
+
+### 通知权限
+
+Android 13+ 必须运行时申请 `POST_NOTIFICATIONS`，否则到件通知和登录失效提醒都会被系统静默丢弃。
+首页首帧调用 `NotificationAdapter.ensurePermission()` 申请。
 
 ---
 
