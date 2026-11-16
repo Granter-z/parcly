@@ -148,7 +148,18 @@ class _CompletedPackageCardState extends ConsumerState<_CompletedPackageCard> {
     // Observe the source synchronously: even exit/reentry without a build must
     // permanently retire this presentation session. Reuse the domain predicate.
     session.subscription = ref.listenManual(packageListProvider, (_, packages) {
-      if (!packages.any((p) => p.id == pkg.id && p.status.isCompleted)) {
+      Package? current;
+      for (final p in packages) {
+        if (p.id == pkg.id) {
+          current = p;
+          break;
+        }
+      }
+      // 状态在已完成集合内变化（pickedUp → archived/rejected）也会让旧菜单失效，
+      // 否则「撤销已取」会 no-op 却弹成功提示。
+      if (current == null ||
+          !current.status.isCompleted ||
+          current.status != pkg.status) {
         session.invalidate();
       }
     });
@@ -185,7 +196,12 @@ class _CompletedPackageCardState extends ConsumerState<_CompletedPackageCard> {
                       title: const Text('撤销已取'),
                       subtitle: const Text('恢复到待取件，可再次取件'),
                       onTap: () {
-                        if (!canSubmit()) {
+                        final stillPickedUp = menuRef
+                            .read(packageListProvider)
+                            .any((p) =>
+                                p.id == pkg.id &&
+                                p.status == PackageStatus.pickedUp);
+                        if (!canSubmit() || !stillPickedUp) {
                           closeMenu();
                           return;
                         }

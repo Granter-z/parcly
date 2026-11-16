@@ -20,7 +20,7 @@ Package pkg(String id, {String? title, bool arrived = false}) => Package(
       courier: CourierType.yt,
       urgency: UrgencyLevel.normal,
       status: arrived ? PackageStatus.arrived : PackageStatus.transit,
-      pickupCode: arrived ? '9-8-7000' : '',
+      pickupCode: arrived ? '9-9-9999' : '',
       addedAt: DateTime(2026, 10, 7),
       platform: 'pdd',
     );
@@ -274,13 +274,13 @@ void main() {
         .setMockMethodCallHandler(SystemChannels.platform, null));
     final h = Harness();
     await h.mount(t, [pkg('A', arrived: true)]);
-    await t.tap(find.text('9-8-7000'));
+    await t.tap(find.text('9-9-9999'));
     await t.pump();
     await t.pump(const Duration(seconds: 2));
     expect(calls.where((m) => m == 'Clipboard.setData').length, 1);
     expect(calls.where((m) => m == 'HapticFeedback.vibrate').length, 1);
     expect(find.byType(TrackingTimelineSheet), findsNothing);
-    final gesture = await t.startGesture(t.getCenter(find.text('9-8-7000')));
+    final gesture = await t.startGesture(t.getCenter(find.text('9-9-9999')));
     await t.pump(const Duration(milliseconds: 100));
     await h.update(t, []);
     await gesture.up();

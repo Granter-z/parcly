@@ -18,7 +18,7 @@ Package fixture(PackageStatus status) => Package(
       courier: CourierType.yt,
       urgency: UrgencyLevel.normal,
       status: status,
-      pickupCode: '9-8-7000-123',
+      pickupCode: '9-9-9999-123',
       addedAt: DateTime(2026, 10, 7),
       platform: 'pdd',
     );
@@ -104,15 +104,15 @@ void main() {
                   child: ModernPackageCard(
                       package: fixture(PackageStatus.arrived))))),
     ))));
-    expect(find.text('9-8-7000-123'), findsOneWidget);
+    expect(find.text('9-9-9999-123'), findsOneWidget);
     expect(t.takeException(), isNull);
-    final text = t.widget<Text>(find.text('9-8-7000-123'));
+    final text = t.widget<Text>(find.text('9-9-9999-123'));
     expect(text.overflow, isNot(TextOverflow.ellipsis));
     final unpressedParagraph =
-        t.renderObject<RenderParagraph>(find.text('9-8-7000-123'));
+        t.renderObject<RenderParagraph>(find.text('9-9-9999-123'));
     final unpressedBoxes = unpressedParagraph.getBoxesForSelection(
         const TextSelection(
-            baseOffset: 0, extentOffset: '9-8-7000-123'.length));
+            baseOffset: 0, extentOffset: '9-9-9999-123'.length));
     final unpressedHeights = [
       for (final box in unpressedBoxes)
         MatrixUtils.transformRect(
@@ -132,10 +132,10 @@ void main() {
           .first);
       expect(transform.transform.storage[0], lessThan(1));
       final paragraph =
-          t.renderObject<RenderParagraph>(find.text('9-8-7000-123'));
+          t.renderObject<RenderParagraph>(find.text('9-9-9999-123'));
       expect(paragraph.didExceedMaxLines, false);
       final glyphBoxes = paragraph.getBoxesForSelection(const TextSelection(
-          baseOffset: 0, extentOffset: '9-8-7000-123'.length));
+          baseOffset: 0, extentOffset: '9-9-9999-123'.length));
       expect(glyphBoxes, isNotEmpty);
       final surface = t.getRect(find.byType(SpringCard));
       final viewport = Offset.zero & t.view.physicalSize;
@@ -159,15 +159,15 @@ void main() {
     }
     await gesture.cancel();
     await t.pumpAndSettle();
-    await t.tap(find.text('9-8-7000-123'));
+    await t.tap(find.text('9-9-9999-123'));
     await t.pump();
     await t.pump(const Duration(seconds: 2));
-    expect(copies.single['text'], '9-8-7000-123');
+    expect(copies.single['text'], '9-9-9999-123');
     expect(find.byType(TrackingTimelineSheet), findsNothing);
     await t.tap(find.text('虚构测试商品'));
     await t.pumpAndSettle();
     expect(find.byType(TrackingTimelineSheet), findsOneWidget);
-    expect(find.text('9-8-7000-123'), findsWidgets);
+    expect(find.text('9-9-9999-123'), findsWidgets);
     expect(t.takeException(), isNull);
   });
 }

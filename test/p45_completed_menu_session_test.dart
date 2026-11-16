@@ -85,6 +85,7 @@ void main() {
     for (final phase in [
       'normal',
       'content-update',
+      'status-change',
       'exit',
       'reenter',
       'no-pump-reenter',
@@ -103,6 +104,14 @@ void main() {
         if (phase == 'content-update') {
           n.addPackage(
               fixture(n.id).copyWith(goodsName: 'Updated without exit'));
+          await tester.pump();
+        } else if (phase == 'status-change') {
+          n.state = [
+            n.state.single.copyWith(
+              status: PackageStatus.archived,
+              archivedAt: DateTime(2026, 11, 8),
+            ),
+          ];
           await tester.pump();
         } else if (phase == 'remove-origin-route') {
           // Programmatic route-lifecycle boundary, NOT user input through a modal.
