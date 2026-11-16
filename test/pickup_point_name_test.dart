@@ -5,9 +5,9 @@ import 'package:pickup_app/core/parser/taobao_trace_parser.dart';
 void main() {
   group('extractPickupPointName P28-c 非驿站取件点', () {
     test('丰巢柜机（无「驿站」字样）写入取件点名', () {
-      const text = '快件已放入绿城诚园北门丰巢，请凭取件码取件';
-      expect(extractPickupPointName(text), '绿城诚园北门丰巢');
-      expect(TaobaoTraceParser.extractStationName(text), '绿城诚园北门丰巢');
+      const text = '快件已放入青柠花园北门丰巢，请凭取件码取件';
+      expect(extractPickupPointName(text), '青柠花园北门丰巢');
+      expect(TaobaoTraceParser.extractStationName(text), '青柠花园北门丰巢');
     });
 
     test('自提柜写入取件点名', () {
