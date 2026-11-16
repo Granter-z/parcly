@@ -130,6 +130,9 @@ class Package {
   final UrgencyLevel urgency;
   final PackageStatus status;
   final DateTime addedAt;
+
+  /// 最近一次成功拉取详情的时间；null 表示旧数据（回退到 addedAt）。
+  final DateTime? lastFetchedAt;
   final DateTime? pickedUpAt;
   /// 真实到站时间（北京时间墙钟）；未知 null。P16，后端写、前端只读。
   final DateTime? arrivedAt;
@@ -213,6 +216,7 @@ class Package {
     required this.urgency,
     required this.status,
     required this.addedAt,
+    this.lastFetchedAt,
     this.pickedUpAt,
     this.arrivedAt,
     this.archivedAt,
@@ -266,6 +270,7 @@ class Package {
     UrgencyLevel? urgency,
     PackageStatus? status,
     DateTime? addedAt,
+    DateTime? lastFetchedAt,
     DateTime? pickedUpAt,
     bool clearPickedUpAt = false,
     DateTime? arrivedAt,
@@ -293,6 +298,7 @@ class Package {
       urgency: urgency ?? this.urgency,
       status: status ?? this.status,
       addedAt: addedAt ?? this.addedAt,
+      lastFetchedAt: lastFetchedAt ?? this.lastFetchedAt,
       pickedUpAt: clearPickedUpAt ? null : (pickedUpAt ?? this.pickedUpAt),
       arrivedAt: clearArrivedAt ? null : (arrivedAt ?? this.arrivedAt),
       archivedAt: archivedAt ?? this.archivedAt,

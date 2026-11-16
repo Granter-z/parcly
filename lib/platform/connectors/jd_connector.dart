@@ -592,44 +592,6 @@ class JdH5Connector implements PlatformConnector {
     }
   }
 
-  /// 确保页面处于「购物」分类（排斥秒送外卖，保持全量购物物流流）
-  Future<void> _switchToShoppingWaitReceive(WebViewController controller) async {
-    const switchJs = '''
-(async function(){
-  try {
-    // 1) 优先点击「购物」分类（避开秒送外卖与生活服务，聚焦电商实物订单）
-    var topTabs = document.querySelectorAll('div, span, a, li');
-    for (var i = 0; i < topTabs.length; i++) {
-      var t = (topTabs[i].innerText || '').trim();
-      if (t === '购物' && topTabs[i].offsetParent !== null) {
-        topTabs[i].click();
-        break;
-      }
-    }
-
-    await new Promise(r => setTimeout(r, 600));
-
-    // 2) 确保保持在包含在途与最新完成的购物订单流
-    // 注意：不点击仅限“待收货”的单向过滤，确保包裹自动收货转入“已完成”后依然能感知更新
-    var subTabs = document.querySelectorAll('div, span, a, li, button');
-    for (var j = 0; j < subTabs.length; j++) {
-      var st = (subTabs[j].innerText || '').trim();
-      if (st.indexOf('待使用') === 0 && subTabs[j].offsetParent !== null) {
-        // 避开非实物服务类
-      }
-    }
-
-    await new Promise(r => setTimeout(r, 1000));
-  } catch(e) {}
-})()
-''';
-    try {
-      await controller.runJavaScript(switchJs);
-    } catch (e) {
-      _logJd('[JD] switch tab error: $e');
-    }
-  }
-
   /// 从拦截到的 order_list_m JSON 响应中解析
   List<_JdOrder> _parseOrdersFromJson(String jsonStr) {
     final list = <_JdOrder>[];
@@ -683,6 +645,12 @@ class JdH5Connector implements PlatformConnector {
         final latestText = prog?['content']?.toString() ?? statusName;
         final tip = prog?['tip']?.toString() ?? '';
         final rawProgressLink = prog?['progressLink']?.toString() ?? '';
+
+        // P45：部分秒送单 progressId 同为 logistics，结构标记漏网时用状态文案兜底
+        if (looksLikeJdInstantDeliveryText('$latestText $statusName $tip')) {
+          _logJd('[JD Filter] Instant delivery, drop: $orderId');
+          continue;
+        }
         final orderDetailLink =
             (item['orderDetailLink'] as Map<String, dynamic>?)?['url']?.toString() ?? '';
 
@@ -780,7 +748,6 @@ class JdH5Connector implements PlatformConnector {
 ''';
     try {
       final r = await controller.runJavaScriptReturningResult(jsCode);
-      if (r == null) return null;
       var s = r.toString();
       if (s == 'null' || s == '""') return null;
       if (s.startsWith('"') && s.endsWith('"')) {
@@ -892,6 +859,12 @@ class JdH5Connector implements PlatformConnector {
         if (seenTitles.contains(title)) continue;
         seenTitles.add(title);
 
+        // P45：DOM 兜底没有 JSON 结构，用状态/进展文案排除秒送外卖单
+        if (looksLikeJdInstantDeliveryText('$matchedStatus $progress')) {
+          _logJd('[JD Filter] Instant delivery in DOM, drop: $title');
+          continue;
+        }
+
         // P44：严格签收白名单，禁止裸「完成」
         final isCompleted = LogisticsStatusEngine.isStrictOrderSignedLabel(matchedStatus);
         final pickupCode = _pickupCodeFromText('$matchedStatus $progress $title');
@@ -949,13 +922,6 @@ class JdH5Connector implements PlatformConnector {
     return PackageStatus.transit;
   }
 
-  String _statusTextFromText(String block) {
-    if (block.contains('待收货') || block.contains('等待收货')) return '等待收货';
-    if (block.contains('派送中')) return '派送中';
-    if (block.contains('已存入')) return '已存入自提柜';
-    return '运输中';
-  }
-
   String _pickupCodeFromText(String block) {
     final m = RegExp(r'(?:取件码|提货码|取货码|凭码|自提码)[:：\s]*([A-Za-z0-9\-]{3,12})').firstMatch(block);
     return m?.group(1) ?? '';
@@ -963,21 +929,6 @@ class JdH5Connector implements PlatformConnector {
 
   String _stationFromText(String block) => extractPickupPointName(block);
 
-  String _goodsFromText(String block) {
-    for (final raw in block.split('\n')) {
-      final line = raw.trim();
-      if (line.length < 4) continue;
-      if (line.contains('订单号') || line.contains('订单编号') || line.contains('实付')) continue;
-      if (line.contains('共') && line.contains('件')) continue;
-      if (line.contains('再次购买') || line.contains('查看物流') || line.contains('去支付') || line.contains('退换')) continue;
-      if (line.contains('我要催单') || line.contains('申请退款') || line.contains('正在出库') || line.contains('准备出库')) continue;
-      if (line.endsWith('旗舰店') || line.endsWith('专卖店') || line.endsWith('专营店') || line.endsWith('自营店')) continue;
-      if (RegExp(r'^\d{4}-\d{2}-\d{2}').hasMatch(line)) continue;
-      if (RegExp(r'^[0-9\s\-\:]+$').hasMatch(line)) continue;
-      return line.length > 50 ? line.substring(0, 50) : line;
-    }
-    return '';
-  }
 }
 
 class _JdOrder {

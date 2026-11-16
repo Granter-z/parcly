@@ -6,13 +6,21 @@ import 'package:pickup_app/platform/connectors/sync_optimizer.dart';
 
 const _orderId = '1000000000000000001';
 
-Package _pkg(PackageStatus status, {Duration age = const Duration(hours: 1)}) => Package(
+Package _pkg(
+  PackageStatus status, {
+  Duration age = const Duration(hours: 1),
+  Duration? fetchedAge,
+}) =>
+    Package(
       id: 'TB_$_orderId',
       trackingNumber: 'YT0055555550001',
       courier: CourierType.yt,
       urgency: UrgencyLevel.normal,
       status: status,
       addedAt: DateTime.now().subtract(age),
+      lastFetchedAt: fetchedAge == null
+          ? null
+          : DateTime.now().subtract(fetchedAge),
     );
 
 void main() {
@@ -33,6 +41,34 @@ void main() {
           localPackage: _pkg(PackageStatus.arrived),
           incomingStatus: PackageStatus.transit,
           force: true,
+        ),
+        isFalse,
+      );
+    });
+
+    test('按 lastFetchedAt 判定：加入很久但刚拉过 → 跳过', () {
+      expect(
+        SyncOptimizer.shouldSkipDetailFetch(
+          localPackage: _pkg(
+            PackageStatus.transit,
+            age: const Duration(days: 7),
+            fetchedAge: const Duration(hours: 1),
+          ),
+          incomingStatus: PackageStatus.transit,
+        ),
+        isTrue,
+      );
+    });
+
+    test('按 lastFetchedAt 判定：刚加入但 48h 没拉 → 拉取', () {
+      expect(
+        SyncOptimizer.shouldSkipDetailFetch(
+          localPackage: _pkg(
+            PackageStatus.transit,
+            age: const Duration(hours: 1),
+            fetchedAge: const Duration(hours: 48),
+          ),
+          incomingStatus: PackageStatus.transit,
         ),
         isFalse,
       );

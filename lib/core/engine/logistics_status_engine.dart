@@ -268,6 +268,8 @@ class LogisticsStatusEngine {
       '已妥投',
       '妥投签收',
       '已收货',
+      '已取走',
+      '已领取',
       '交易成功',
     ]);
   }
@@ -329,7 +331,20 @@ class LogisticsStatusEngine {
           '已签收', '签收成功', '本人签收', '代收人已签收', '已妥投', '妥投签收',
         ]) ||
         (t.contains('已取件') &&
-            !_containsAny(t, const ['揽收', '揽件']))) {
+            !_containsAny(t, const ['揽收', '揽件'])) ||
+        // EMS/邮政等末端轨迹用「您的快件已取走【驿站】」表示用户取件；
+        // 必须带收件人/站点上下文，排除「快递员已取走」这类揽件动作。
+        (t.contains('已取走') &&
+            !_containsAny(t, const ['揽收', '揽件', '快递员已取走', '取件员已取走']) &&
+            _containsAny(t, const [
+              '您的快件', '您的包裹', '驿站', '自提点', '自提柜', '快递柜', '门店', '代收点',
+            ])) ||
+        // 圆通等：「快件已领取，收件人在[菜鸟驿站]取件」
+        (t.contains('已领取') &&
+            !_containsAny(t, const ['揽收', '揽件', '快递员已领取', '取件员已领取']) &&
+            _containsAny(t, const [
+              '快件已领取', '包裹已领取', '收件人', '驿站', '自提点', '自提柜', '快递柜', '门店',
+            ]))) {
       return LogisticsNodeAction.signed;
     }
 

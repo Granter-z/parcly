@@ -42,9 +42,9 @@ class SyncOptimizer {
       return false;
     }
 
-    // 在途状态，检查最近更新时间
+    // 在途状态，检查最近一次详情拉取时间（旧数据回退到加入时间）
     final now = DateTime.now();
-    final lastUpdate = localPackage.addedAt;
+    final lastUpdate = localPackage.lastFetchedAt ?? localPackage.addedAt;
     final timeSinceUpdate = now.difference(lastUpdate);
 
     if (timeSinceUpdate < recentThreshold) {

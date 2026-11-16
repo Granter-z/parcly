@@ -21,6 +21,7 @@ import '../../core/models/platform_ids.dart';
 import '../storage/keep_alive_store.dart';
 import '../storage/platform_auth_store.dart';
 import 'keep_alive_notifier.dart';
+import 'keep_alive_worker_bridge.dart';
 import 'platform_heartbeat.dart';
 
 /// 保活服务
@@ -95,7 +96,10 @@ class KeepAliveService {
     _starting = true;
     try {
       await _store.loadIntoCache();
+      // 合并 App 进程不在时 worker 的结果（跨 isolate 不写同一个 Hive box）
+      await _applyWorkerResults();
       _enabled = _store.enabled;
+      await _syncWorkerConfig();
 
       if (!_enabled) {
         debugPrint('[KeepAliveService] disabled by user, not starting');
@@ -129,6 +133,7 @@ class KeepAliveService {
       await start();
     } else {
       stop();
+      await _syncWorkerConfig();
     }
     _onChanged?.call();
   }
@@ -136,6 +141,7 @@ class KeepAliveService {
   /// 设置单个平台是否参与保活
   Future<void> setPlatformEnabled(String platform, bool enabled) async {
     await _store.setPlatformEnabled(platform, enabled);
+    await _syncWorkerConfig();
     _onChanged?.call();
   }
 
@@ -201,14 +207,19 @@ class KeepAliveService {
       }
 
       final interval = KeepAlivePlan.calculateInterval(cookieAge);
-      await _performHeartbeatForPlatform(platform, heartbeat, cookies, cookieAge);
+      final kind =
+          await _performHeartbeatForPlatform(platform, heartbeat, cookies, cookieAge);
 
-      // 落盘下次保活时间（带随机抖动，避开固定时间点）
-      final jitter = Duration(minutes: _random.nextInt(61) - 30);
-      await _store.setNext(
-        platform,
-        KeepAlivePlan.calculateNextTime(interval, now: DateTime.now(), jitter: jitter),
-      );
+      // 落盘下次保活时间（带随机抖动，避开固定时间点）。
+      // 跳过不推进闸门：WebView 正忙/网络抖动只是本轮没探活，
+      // 不该被排期到数小时后（与后台 worker 的语义保持一致）。
+      if (kind != KeepAliveOutcomeKind.skipped) {
+        final jitter = Duration(minutes: _random.nextInt(61) - 30);
+        await _store.setNext(
+          platform,
+          KeepAlivePlan.calculateNextTime(interval, now: DateTime.now(), jitter: jitter),
+        );
+      }
 
       // 避免短时间内发送大量请求
       if (_interPlatformDelay > Duration.zero) {
@@ -225,13 +236,16 @@ class KeepAliveService {
       await _notifyExpired(expired);
     }
 
+    // 把最新闸门/开关同步给后台 worker
+    await _syncWorkerConfig();
+
     _lastCheckAt = DateTime.now();
     debugPrint('[KeepAliveService] Keep-alive check completed');
     _onChanged?.call();
   }
 
-  /// 为单个平台执行心跳并落盘结果
-  Future<void> _performHeartbeatForPlatform(
+  /// 为单个平台执行心跳并落盘结果，返回结局分类（供调用方决定是否推进闸门）
+  Future<KeepAliveOutcomeKind> _performHeartbeatForPlatform(
     String platform,
     PlatformHeartbeat heartbeat,
     String cookies,
@@ -248,11 +262,18 @@ class KeepAliveService {
       result = HeartbeatResult.failure('$e');
     }
 
-    await _recordResult(platform, result);
+    return _recordResult(platform, result);
   }
 
-  /// 依据心跳结果更新持久化状态与失效标记
-  Future<void> _recordResult(String platform, HeartbeatResult result) async {
+  /// 依据心跳结果更新持久化状态与失效标记，返回结局分类。
+  ///
+  /// [at] 为结果实际发生时间（合并 worker 结果时使用），默认当前时间。
+  Future<KeepAliveOutcomeKind> _recordResult(
+    String platform,
+    HeartbeatResult result, {
+    DateTime? at,
+  }) async {
+    final recordTime = at ?? DateTime.now();
     final kind = result.skipped
         ? KeepAliveOutcomeKind.skipped
         : result.success
@@ -270,12 +291,12 @@ class KeepAliveService {
       debugPrint('[KeepAliveService] - $platform heartbeat skipped: ${result.errorMessage}');
       await _store.appendHistory(KeepAliveRecord(
         platform: platform,
-        time: DateTime.now(),
+        time: recordTime,
         success: true,
         skipped: true,
         error: result.errorMessage,
       ));
-      return;
+      return KeepAliveOutcomeKind.skipped;
     }
 
     if (kind == KeepAliveOutcomeKind.success) {
@@ -300,15 +321,83 @@ class KeepAliveService {
       await _store.setLastNotifiedAt(platform, null);
     }
     if (plan.updateLastSuccess) {
-      await _store.setLast(platform, DateTime.now());
+      await _store.setLast(platform, recordTime);
+    }
+    if (kind == KeepAliveOutcomeKind.success) {
+      // 前台成功恢复后清除 worker 的失效提醒标记，避免重登后短期再失效被 7 天窗口压掉
+      await clearWorkerNotifiedAt(platform);
     }
 
     await _store.appendHistory(KeepAliveRecord(
       platform: platform,
-      time: DateTime.now(),
+      time: recordTime,
       success: kind == KeepAliveOutcomeKind.success,
       authFailure: kind == KeepAliveOutcomeKind.authFailure,
       error: kind == KeepAliveOutcomeKind.success ? null : result.errorMessage,
+    ));
+    return kind;
+  }
+
+  /// 合并后台 worker 上次写下的结果。
+  ///
+  /// worker 不写 Hive，只写 JSON 结果文件；这里按与前台相同的落盘规则合并，
+  /// 保证「后台成功恢复 / 后台判定失效」都能反映到前台状态与提醒。
+  Future<void> _applyWorkerResults() async {
+    final results = await readAndClearWorkerResults();
+    if (results.isEmpty) return;
+    if (!_store.enabled) {
+      debugPrint(
+          '[KeepAliveService] keep-alive disabled, discard ${results.length} worker result(s)');
+      return;
+    }
+
+    debugPrint('[KeepAliveService] Applying ${results.length} worker result(s)');
+    for (final r in results) {
+      final kind = switch (r.kind) {
+        'success' => KeepAliveOutcomeKind.success,
+        'authFailure' => KeepAliveOutcomeKind.authFailure,
+        'skipped' => KeepAliveOutcomeKind.skipped,
+        _ => KeepAliveOutcomeKind.networkFailure,
+      };
+      final result = switch (kind) {
+        KeepAliveOutcomeKind.success => HeartbeatResult.success(),
+        KeepAliveOutcomeKind.authFailure =>
+          HeartbeatResult.failure(r.error ?? '登录态已失效', isAuthFailure: true),
+        KeepAliveOutcomeKind.skipped =>
+          HeartbeatResult.skipped(r.error ?? '不可探活'),
+        KeepAliveOutcomeKind.networkFailure =>
+          HeartbeatResult.failure(r.error ?? '网络错误'),
+      };
+
+      await _recordResult(r.platform, result, at: r.time);
+      if (kind != KeepAliveOutcomeKind.skipped && r.nextKeepAliveAt != null) {
+        await _store.setNext(r.platform, r.nextKeepAliveAt);
+      }
+    }
+
+    final expired = kPlatformIds
+        .where((p) =>
+            _store.platformEnabled(p) &&
+            _authStore.isBound(p) &&
+            _authStore.isExpired(p))
+        .toList();
+    if (expired.isNotEmpty) {
+      await _notifyExpired(expired);
+    }
+  }
+
+  /// 把开关与闸门同步给后台 worker（worker 只读 JSON 配置）
+  Future<void> _syncWorkerConfig() async {
+    await writeWorkerConfig(WorkerKeepAliveConfig(
+      enabled: _store.enabled,
+      platforms: {
+        for (final p in kPlatformIds)
+          p: WorkerPlatformConfig(
+            enabled: _store.platformEnabled(p),
+            nextKeepAliveAt: _store.nextAt(p),
+            failureCount: _store.failureCount(p),
+          ),
+      },
     ));
   }
 

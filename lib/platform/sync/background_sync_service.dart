@@ -22,6 +22,7 @@ class BackgroundSyncService {
   AppLifecycleListener? _lifecycleListener;
   DateTime? _lastSyncTime;
   bool _isBackgroundSyncEnabled = true;
+  bool _disposed = false;
 
   BackgroundSyncService(this._ref);
 
@@ -84,9 +85,10 @@ class BackgroundSyncService {
 
     // 创建定时器
     _syncTimer = Timer.periodic(interval, (_) async {
+      if (_disposed) return;
       await _performSync();
       // 同步完成后重新计算间隔（自适应）
-      _restartWithNewInterval();
+      if (!_disposed) _restartWithNewInterval();
     });
 
     // 立即执行一次同步
@@ -102,6 +104,7 @@ class BackgroundSyncService {
 
   /// 执行同步
   Future<void> _performSync() async {
+    if (_disposed) return;
     debugPrint('[BackgroundSyncService] Performing sync...');
     _lastSyncTime = DateTime.now();
 
@@ -116,7 +119,7 @@ class BackgroundSyncService {
 
   /// 根据新的包裹状态重新启动定时器
   void _restartWithNewInterval() {
-    if (_syncTimer == null) return;
+    if (_disposed || _syncTimer == null) return;
 
     final newInterval = _calculateNextSyncInterval();
     final currentInterval = _syncTimer!.tick > 0
@@ -132,6 +135,7 @@ class BackgroundSyncService {
 
   /// 计算下次同步间隔（自适应策略）
   Duration _calculateNextSyncInterval() {
+    if (_disposed) return const Duration(hours: 24);
     final packages = _ref.read(packageListProvider);
 
     // 过滤出在途/派送中/待取的包裹
@@ -197,6 +201,7 @@ class BackgroundSyncService {
   /// 销毁服务
   void dispose() {
     debugPrint('[BackgroundSyncService] Disposing...');
+    _disposed = true;
     _syncTimer?.cancel();
     _lifecycleListener?.dispose();
   }

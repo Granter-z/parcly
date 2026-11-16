@@ -65,7 +65,9 @@ class PddH5Connector implements PlatformConnector {
   Future<bool> isAuthenticated() async => _authStore.isBound('pdd');
 
   @override
-  Future<void> cancelSync() async {}
+  Future<void> cancelSync() async {
+    _cancelled = true;
+  }
 
   WebViewController? _controller;
   Completer<String>? _bridgeCompleter;
@@ -73,6 +75,9 @@ class PddH5Connector implements PlatformConnector {
 
   /// 同步与保活探活共用同一个 WebView，用互斥位串行化，避免两个 loadRequest 互相打断
   bool _busy = false;
+
+  /// 连接器管理器超时/离开页面时置位，让正在跑的 stream 尽快退出
+  bool _cancelled = false;
 
   /// 物流时间线缓存：orderSn -> (抓取时的列表最新轨迹, 时间线 JSON)
   /// 列表接口返回的最新轨迹未发生变化时，说明包裹没有新动态，直接复用缓存，无需再次深挖详情页。
@@ -114,7 +119,7 @@ class PddH5Connector implements PlatformConnector {
         onMessageReceived: (JavaScriptMessage message) {
           final m = message.message;
           if (m.startsWith('{"type":"LOGISTICS_API"')) {
-            _handleCapturedLogisticsApi(m);
+            // 物流响应体积大且解析走 window.name，不再常驻内存
             return;
           }
           debugPrint('[PDD] Bridge msg len=${m.length}');
@@ -149,7 +154,6 @@ class PddH5Connector implements PlatformConnector {
   }
 
   static const _hookChannel = MethodChannel('com.example.pickup_app/webview_hook');
-  final Map<String, String> _capturedLogisticsJsons = {};
 
   Future<void> _installDocumentStartHook(int identifier) async {
     try {
@@ -172,7 +176,7 @@ class PddH5Connector implements PlatformConnector {
         try { arr = JSON.parse(window.name); } catch(e) { arr = []; }
       }
       arr.push({ u: String(url || '').slice(0, 300), b: String(body || '') });
-      if (arr.length > 200) arr = arr.slice(arr.length - 200);
+      if (arr.length > 10) arr = arr.slice(arr.length - 10);
       window.name = JSON.stringify(arr);
     } catch(e) {}
   }
@@ -244,21 +248,6 @@ class PddH5Connector implements PlatformConnector {
     }
   }
 
-  /// 记录抓取到的官方物流接口响应
-  void _handleCapturedLogisticsApi(String rawMsg) {
-    try {
-      final data = jsonDecode(rawMsg) as Map<String, dynamic>;
-      final url = data['url']?.toString() ?? '';
-      final body = data['body']?.toString() ?? '';
-      final snMatch = RegExp(r'order_sn=([^&]+)').firstMatch(url);
-      if (snMatch != null) {
-        _capturedLogisticsJsons[snMatch.group(1)!] = body;
-      }
-    } catch (e) {
-      debugPrint('[PDD] handle captured api error: $e');
-    }
-  }
-
   @override
   Stream<Package> streamSync() async* {
     // 保活探活与同步共用同一个 WebView，必须串行，否则两个 loadRequest 会互相打断
@@ -268,6 +257,7 @@ class PddH5Connector implements PlatformConnector {
     }
 
     _busy = true;
+    _cancelled = false;
     try {
       // P44-g+：免网络硬路径——列表/详情都拿不到时，也必须把 Hive 里的假 pickedUp
       // （pickedUp 且无用户 pickedUpAt）按本地时间轴拽回活跃态，不能等详情。
@@ -308,6 +298,7 @@ class PddH5Connector implements PlatformConnector {
         _cacheHits = 0;
 
         for (final o in orders) {
+          if (_cancelled) return;
           final parsed = _parseOrder(o);
           if (parsed == null) continue;
           if (parsed.isFiltered) continue;
@@ -321,8 +312,13 @@ class PddH5Connector implements PlatformConnector {
             status: parsed.package.status,
             userPickedUpAt: local?.pickedUpAt,
             localActiveEvidence: localActive,
+            staleCompletion: parsed.package.status == PackageStatus.pickedUp &&
+                local != null &&
+                PddFalsePickupHeal.isStaleCompleted(local),
           )) {
             debugPrint('[PDD NewMode] 已经完成，跳过同步: ${parsed.package.id} (${parsed.package.status.label})');
+            // 标记已处理，别让扫尾逻辑再把旧件拉去 enrich
+            handledOrderSns.add(parsed.package.id.replaceFirst('PDD_', ''));
             continue;
           }
           if (parsed.package.status == PackageStatus.pickedUp && local?.pickedUpAt == null) {
@@ -377,6 +373,7 @@ class PddH5Connector implements PlatformConnector {
         debugPrint('[PDD NewMode] 活跃在运/已购/到货包裹: ${pendingCodes.length}单需深挖时间轴, 缓存复用: $_cacheHits单');
 
         yield* _enrichPending(pendingCodes);
+        if (_cancelled) return;
 
         // P44-e / tip9 / tip10(P44-g)：列表未吐出、或 enrich 失败未成功 yield 活跃态的假完成——扫尾。
         // 真用户已取（pickedUpAt!=null）不扫。先 heal yield；未 handled 的再强制 enrich。
@@ -399,7 +396,7 @@ class PddH5Connector implements PlatformConnector {
           if (handledOrderSns.contains(orderSn)) continue;
           if (healed == null && !PddFalsePickupHeal.hasActiveEvidence(local)) continue;
 
-          orphanPending[orderSn] = _PddOrder(pkg: local);
+          orphanPending[orderSn] = _PddOrder(pkg: local, fromList: false);
           handledOrderSns.add(orderSn);
           debugPrint('[PDD NewMode] P44 扫尾强制 enrich: $orderSn');
         }
@@ -477,6 +474,7 @@ class PddH5Connector implements PlatformConnector {
     // P44-g+：逐单抓取、逐单 yield。串行下 executeAll 的批量屏障会让 P44 在途样例的修复
     // 等到全部订单抓完才可见（12s 单腿超时内常表现为「仍已完成」）。
     for (final entry in pendingCodes.entries) {
+      if (_cancelled) break;
       final orderSn = entry.key;
       final base = entry.value.pkg;
       final detail = await executor.execute(
@@ -522,16 +520,41 @@ class PddH5Connector implements PlatformConnector {
       final cachedTimeline = _richerTimeline(detail.rawTimelineJson, base.rawTimelineJson);
 
       final local = _localPackageById(base.id);
-      final yieldStatus = PddFalsePickupHeal.coerceYieldStatus(
-        derived: derivedStatus,
-        local: local,
-        evidenceFallback: base.copyWith(
-          description: effectiveDescription,
-          rawTimelineJson: cachedTimeline,
-          pickupCode: detail.pickupCode.isNotEmpty ? detail.pickupCode : base.pickupCode,
-          stationName: detail.stationName.isNotEmpty ? detail.stationName : base.stationName,
-        ),
-      );
+
+      // 订单列表已明确完成（已取件/已签收/交易成功），且最新轨迹已超过 7 天：
+      // 末端轨迹常常停在「待取件」而不会补写签收（用户取走后快递员不再更新），
+      // 此时以订单完成态为准，避免几十天前的旧件被 enrich 拉回待取件。
+      final newestTraceTime = events.isNotEmpty ? (events.first['time'] ?? '') : '';
+      final newestTraceAt = DateTime.tryParse(newestTraceTime);
+      final newestAction = events.isNotEmpty
+          ? LogisticsStatusEngine.classifyNode(
+              LogisticsStatusEngine.newestNodeText(events),
+            )
+          : LogisticsNodeAction.unknown;
+      // 最新仍运输中/派送中时不采信旧件的「已完成」，避免把在途包裹藏进已完成
+      final staleListCompletion = entry.value.fromList &&
+          newestAction != LogisticsNodeAction.inTransit &&
+          newestAction != LogisticsNodeAction.outForDelivery &&
+          PddFalsePickupHeal.staleListCompletion(
+            listPickedUp: base.status == PackageStatus.pickedUp,
+            newestTraceAt: newestTraceAt,
+          );
+
+      final yieldStatus = staleListCompletion
+          ? PackageStatus.pickedUp
+          : PddFalsePickupHeal.coerceYieldStatus(
+              derived: derivedStatus,
+              local: local,
+              evidenceFallback: base.copyWith(
+                description: effectiveDescription,
+                rawTimelineJson: cachedTimeline,
+                pickupCode: detail.pickupCode.isNotEmpty ? detail.pickupCode : base.pickupCode,
+                stationName: detail.stationName.isNotEmpty ? detail.stationName : base.stationName,
+              ),
+            );
+      if (staleListCompletion && derivedStatus != PackageStatus.pickedUp) {
+        debugPrint('[PDD NewMode] 列表已完成且最新轨迹超 7 天，采信完成: $orderSn');
+      }
       if (yieldStatus != derivedStatus) {
         debugPrint('[PDD NewMode] P44 coerce yield $orderSn ${derivedStatus.label} → ${yieldStatus.label}');
       }
@@ -1937,7 +1960,12 @@ class _TimelineCache {
 
 class _PddOrder {
   final Package pkg;
-  _PddOrder({required this.pkg});
+
+  /// 是否来自本次订单列表；扫尾的本地孤儿件为 false。
+  /// 旧件采信完成必须依赖列表侧「已取件」，不能只凭本地旧 pickedUp。
+  final bool fromList;
+
+  _PddOrder({required this.pkg, this.fromList = true});
 }
 
 class PddDetailResult {
@@ -2021,10 +2049,13 @@ class PddCompletedSyncGate {
     required PackageStatus status,
     DateTime? userPickedUpAt,
     bool localActiveEvidence = false,
+    bool staleCompletion = false,
   }) {
     if (status == PackageStatus.archived || status == PackageStatus.rejected) {
       return true;
     }
+    // 旧件已完成（最新轨迹超过 7 天）：不再每轮 enrich，避免拖垮同步墙钟
+    if (userPickedUpAt == null && staleCompletion) return true;
     // 真用户已取：信任，可跳过（即使本地还留着旧在途轨迹）
     if (userPickedUpAt != null && status == PackageStatus.pickedUp) {
       return true;
@@ -2057,16 +2088,52 @@ class PddFalsePickupHeal {
   static bool isFakePickup(Package pkg) =>
       pkg.status == PackageStatus.pickedUp && pkg.pickedUpAt == null;
 
+  /// 旧件采信完成：订单列表已判完成，且最新轨迹超过 [threshold]。
+  ///
+  /// 末端轨迹常停在「待取件」而不补写签收；超过 7 天后不再用轨迹把订单
+  /// 拉回待取件，否则几十天前的旧件会一直挂在首页。
+  static bool staleListCompletion({
+    required bool listPickedUp,
+    required DateTime? newestTraceAt,
+    DateTime? now,
+    Duration threshold = const Duration(days: 7),
+  }) {
+    if (!listPickedUp || newestTraceAt == null) return false;
+    return (now ?? DateTime.now()).difference(newestTraceAt) > threshold;
+  }
+
+  /// 本地旧件是否已完成且最新轨迹超过 7 天（可跳过后续 enrich）。
+  static bool isStaleCompleted(Package pkg, {DateTime? now}) {
+    if (pkg.status != PackageStatus.pickedUp &&
+        pkg.status != PackageStatus.archived) {
+      return false;
+    }
+    final events = LogisticsStatusEngine.eventsNewestFirst(pkg.rawTimelineJson);
+    if (events.isEmpty) return false;
+    return staleListCompletion(
+      listPickedUp: true,
+      newestTraceAt: DateTime.tryParse(events.first['time'] ?? ''),
+      now: now,
+    );
+  }
+
   /// P44-g+：不依赖订单列表/详情页的本地硬自愈。
   ///
   /// 只处理拼多多；真已取不碰（守卫统一在 [healMisfiledPickedUp]）。
-  static Iterable<Package> healLocalFakePickups(Iterable<Package> locals) => locals
-      .where((pkg) => pkg.platform == 'pdd')
-      .map(healMisfiledPickedUp)
-      .whereType<Package>();
+  static Iterable<Package> healLocalFakePickups(
+    Iterable<Package> locals, {
+    DateTime? now,
+  }) =>
+      locals
+          .where((pkg) => pkg.platform == 'pdd')
+          .map((pkg) => healMisfiledPickedUp(pkg, now: now))
+          .whereType<Package>();
 
   /// 若应回滚，返回活跃态副本；否则 null（保持 completed / 无证据）。
-  static Package? healMisfiledPickedUp(Package pkg) {
+  ///
+  /// [now] 可注入；最新轨迹超过 7 天时不再回滚——末端轨迹常停在「待取件」，
+  /// 旧件会被反复拉回首页。
+  static Package? healMisfiledPickedUp(Package pkg, {DateTime? now}) {
     if (!isFakePickup(pkg)) return null;
     final events = LogisticsStatusEngine.eventsNewestFirst(pkg.rawTimelineJson);
     if (events.isNotEmpty) {
@@ -2075,6 +2142,21 @@ class PddFalsePickupHeal {
       final newestAction = LogisticsStatusEngine.classifyNode(
         LogisticsStatusEngine.newestNodeText(events),
       );
+      // 旧件豁免只适用于「轨迹已停在待取/未知」的单；最新仍是运输中/派送中时
+      // 说明包裹可能真的还在路上，不能被 7 天规则锁进已完成。
+      final activeDelivery = newestAction == LogisticsNodeAction.inTransit ||
+          newestAction == LogisticsNodeAction.outForDelivery;
+      final newestAt = DateTime.tryParse(events.first['time'] ?? '');
+      if (!activeDelivery &&
+          staleListCompletion(
+            listPickedUp: true,
+            newestTraceAt: newestAt,
+            now: now,
+          )) {
+        return null;
+      }
+      // P44-g+：最新节点仍活跃（在途/派送/待取）时，历史残留取件码不得把它压回「待取件」。
+      // （JT554 假完成若带着旧码，旧逻辑会 heal 成 arrived，验收要的是 transit。）
       final derived = LogisticsStatusEngine.derive(
         events: events,
         isOrderSigned: true,
@@ -2118,6 +2200,7 @@ class PddFalsePickupHeal {
     required PackageStatus derived,
     required Package? local,
     Package? evidenceFallback,
+    DateTime? now,
   }) {
     if (!derived.isCompleted) return derived;
     if (local?.pickedUpAt != null) return derived;
@@ -2125,6 +2208,7 @@ class PddFalsePickupHeal {
     if (evidence == null) return derived;
     final healed = healMisfiledPickedUp(
       evidence.copyWith(status: PackageStatus.pickedUp),
+      now: now,
     );
     return healed?.status ?? derived;
   }
@@ -2137,6 +2221,7 @@ class PddFalsePickupHeal {
   static Package? recoverAfterEnrichFailure({
     required Package? local,
     Package? listBase,
+    DateTime? now,
   }) {
     if (local != null && local.pickedUpAt != null) return null;
 
@@ -2145,6 +2230,7 @@ class PddFalsePickupHeal {
         local.status == PackageStatus.pickedUp
             ? local
             : local.copyWith(status: PackageStatus.pickedUp),
+        now: now,
       );
       if (healed != null) return healed;
     }
