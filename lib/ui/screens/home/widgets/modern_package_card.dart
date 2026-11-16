@@ -357,8 +357,9 @@ class ModernPackageCard extends ConsumerWidget {
   static String _displayTitle(Package p) {
     final name = p.goodsName;
     if (name != null && name.isNotEmpty && name != 'OCR') return name;
-    if (p.description.isNotEmpty && p.description != 'OCR')
+    if (p.description.isNotEmpty && p.description != 'OCR') {
       return p.description;
+    }
     return '快件包裹';
   }
 

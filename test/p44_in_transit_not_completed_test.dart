@@ -8,6 +8,9 @@ import 'package:pickup_app/core/models/package_status.dart';
 import 'package:pickup_app/platform/connectors/pdd_connector.dart';
 
 void main() {
+  // 固定测试时钟：本票轨迹抓取于 2026-11-05，heal 的「旧件 7 天」规则必须可注入
+  final testNow = DateTime(2026, 11, 5, 21);
+
   // 合成在途样例最新轨迹原文
   const pddTicketLatest =
       '您的快件离开【示例南转运中心】，已发往【示例北转运中心】客服电话：956025';
@@ -47,6 +50,50 @@ void main() {
       expect(derived.status, PackageStatus.pickedUp);
     });
 
+    test('③c EMS 末端「您的快件已取走【驿站】」→ pickedUp', () {
+      final derived = LogisticsStatusEngine.derive(
+        events: [
+          {
+            'tag': '运输中',
+            'time': '2026-10-03 19:25:00',
+            'text': '您的快件已取走【邢台信都区绿城诚园北门店】，如有疑问请电联快递员',
+          },
+          {
+            'tag': '待取件',
+            'time': '2026-10-03 10:35:00',
+            'text': '您的快件已派送至【邢台信都区绿城诚园北门店】，请您凭取件码领取快件',
+          },
+        ],
+        isOrderSigned: false,
+      );
+      expect(derived.status, PackageStatus.pickedUp);
+    });
+
+    test('③e 圆通「快件已领取，收件人在驿站取件」→ pickedUp', () {
+      final derived = LogisticsStatusEngine.derive(
+        events: [
+          {
+            'tag': '运输中',
+            'time': '2026-10-06 19:29:00',
+            'text': '快件已领取，收件人在[菜鸟驿站](邢台信都区绿城诚园北门店)取件',
+          },
+          {
+            'tag': '待取件',
+            'time': '2026-10-06 17:31:00',
+            'text': '您好，快件已到达[菜鸟驿站]，请及时取件',
+          },
+        ],
+      );
+      expect(derived.status, PackageStatus.pickedUp);
+    });
+
+    test('③d 揽件动作「快递员已取走」不得当签收', () {
+      expect(
+        LogisticsStatusEngine.classifyNode('快递员已取走您的包裹，正在揽收'),
+        isNot(LogisticsNodeAction.signed),
+      );
+    });
+
     test('③b 无轨迹但 isOrderSigned 真签收标签 → pickedUp', () {
       final derived = LogisticsStatusEngine.derive(
         events: const [],
@@ -81,6 +128,51 @@ void main() {
     });
   });
 
+  group('P45 旧件：列表已完成 + 轨迹滞留「待取件」', () {
+    final now = DateTime(2026, 11, 16, 12);
+
+    test('43 天前的轨迹 → 采信订单完成', () {
+      expect(
+        PddFalsePickupHeal.staleListCompletion(
+          listPickedUp: true,
+          newestTraceAt: DateTime(2026, 10, 3, 19, 25),
+          now: now,
+        ),
+        isTrue,
+      );
+    });
+
+    test('7 天内的轨迹 → 继续按轨迹判活跃（防 JT554 误杀）', () {
+      expect(
+        PddFalsePickupHeal.staleListCompletion(
+          listPickedUp: true,
+          newestTraceAt: DateTime(2026, 11, 15, 10),
+          now: now,
+        ),
+        isFalse,
+      );
+    });
+
+    test('列表未判完成或没有轨迹时间 → 不采信', () {
+      expect(
+        PddFalsePickupHeal.staleListCompletion(
+          listPickedUp: false,
+          newestTraceAt: DateTime(2026, 10, 3),
+          now: now,
+        ),
+        isFalse,
+      );
+      expect(
+        PddFalsePickupHeal.staleListCompletion(
+          listPickedUp: true,
+          newestTraceAt: null,
+          now: now,
+        ),
+        isFalse,
+      );
+    });
+  });
+
   group('P44-c 签收白名单', () {
     test('裸「完成」「已完成」「待评价」不是严格签收', () {
       expect(LogisticsStatusEngine.isStrictOrderSignedLabel('完成'), isFalse);
@@ -98,6 +190,7 @@ void main() {
         '已妥投',
         '妥投签收',
         '已收货',
+        '已取走',
         '交易成功',
       ]) {
         expect(LogisticsStatusEngine.isStrictOrderSignedLabel(ok), isTrue, reason: ok);
@@ -294,7 +387,8 @@ void main() {
     });
 
     test('heal：假 pickedUp + 旧序时间轴 → transit（tip8 启动自愈口径）', () {
-      final healed = PddFalsePickupHeal.healMisfiledPickedUp(fakeJt());
+      final healed =
+          PddFalsePickupHeal.healMisfiledPickedUp(fakeJt(), now: testNow);
       expect(healed, isNotNull);
       expect(healed!.status, PackageStatus.transit);
       expect(healed.status.isCompleted, isFalse);
@@ -318,6 +412,30 @@ void main() {
       );
     });
 
+    test('Gate：旧件已完成（轨迹超 7 天）→ skip，避免每轮 enrich 拖垮同步', () {
+      expect(
+        PddCompletedSyncGate.shouldSkip(
+          status: PackageStatus.pickedUp,
+          userPickedUpAt: null,
+          localActiveEvidence: true,
+          staleCompletion: true,
+        ),
+        isTrue,
+      );
+    });
+
+    test('Gate：近期假完成 → 不 skip（继续 enrich 回滚）', () {
+      expect(
+        PddCompletedSyncGate.shouldSkip(
+          status: PackageStatus.pickedUp,
+          userPickedUpAt: null,
+          localActiveEvidence: true,
+          staleCompletion: false,
+        ),
+        isFalse,
+      );
+    });
+
     test('Gate：真已取 + 本地仍有旧在途轨迹 → 仍可 skip（不回滚真已取）', () {
       expect(
         PddCompletedSyncGate.shouldSkip(
@@ -334,6 +452,7 @@ void main() {
       final status = PddFalsePickupHeal.coerceYieldStatus(
         derived: PackageStatus.pickedUp,
         local: local,
+        now: testNow,
       );
       expect(status, PackageStatus.transit);
     });
@@ -347,10 +466,45 @@ void main() {
       expect(status, PackageStatus.pickedUp);
     });
 
+    test('P45：旧轨迹但最新仍是运输中 → 仍回滚 transit', () {
+      final healed = PddFalsePickupHeal.healMisfiledPickedUp(
+        fakeJt(
+          timeline: '[{"tag":"运输中","time":"2026-10-01 10:00:00",'
+              '"text":"您的快件离开【A】，已发往【B】"}]',
+        ),
+        now: DateTime(2026, 11, 16),
+      );
+      expect(healed?.status, PackageStatus.transit);
+    });
+
+    test('P45：旧轨迹停在待取件 → 保持已完成（不回滚）', () {
+      final healed = PddFalsePickupHeal.healMisfiledPickedUp(
+        fakeJt(
+          timeline: '[{"tag":"待取件","time":"2026-10-01 10:00:00",'
+              '"text":"快件已入库，请凭取件码取件"}]',
+        ),
+        now: DateTime(2026, 11, 16),
+      );
+      expect(healed, isNull);
+    });
+
+    test('P45：快递员已取走不算签收', () {
+      expect(
+        LogisticsStatusEngine.classifyNode('快递员已取走您的包裹'),
+        isNot(LogisticsNodeAction.signed),
+      );
+      expect(
+        LogisticsStatusEngine.classifyNode(
+            '您的快件已取走【邢台信都区绿城诚园北门店】'),
+        LogisticsNodeAction.signed,
+      );
+    });
+
     test('parsedTimeline 旧死穴：未排序时首节点是已下单；heal 不得再踩', () {
       final pkg = fakeJt();
       expect(pkg.parsedTimeline.first['tag'], '已下单');
-      final healed = PddFalsePickupHeal.healMisfiledPickedUp(pkg);
+      final healed =
+          PddFalsePickupHeal.healMisfiledPickedUp(pkg, now: testNow);
       expect(healed!.status, PackageStatus.transit);
     });
   });
@@ -429,6 +583,7 @@ void main() {
       final recovered = PddFalsePickupHeal.recoverAfterEnrichFailure(
         local: local,
         listBase: local.copyWith(status: PackageStatus.transit),
+        now: testNow,
       );
       expect(recovered, isNotNull);
       expect(recovered!.status, PackageStatus.transit);
@@ -501,6 +656,7 @@ void main() {
     test('heal：最新运输中 + 残留取件码 → transit（码不得压过在途）', () {
       final healed = PddFalsePickupHeal.healMisfiledPickedUp(
         fakeJt(pickupCode: '8-2-6'),
+        now: testNow,
       );
       expect(healed, isNotNull);
       expect(healed!.status, PackageStatus.transit);
@@ -514,6 +670,7 @@ void main() {
           timeline: '[{"tag":"待取件","time":"2026-11-05 10:00:00",'
               '"text":"快件已入库，请凭取件码取件"}]',
         ),
+        now: testNow,
       );
       expect(healed, isNotNull);
       expect(healed!.status, PackageStatus.arrived);
@@ -530,7 +687,8 @@ void main() {
     });
 
     test('healLocalFakePickups：无列表/无详情也把合成运单拉出已完成', () {
-      final healed = PddFalsePickupHeal.healLocalFakePickups([fakeJt()]);
+      final healed =
+          PddFalsePickupHeal.healLocalFakePickups([fakeJt()], now: testNow);
       expect(healed, hasLength(1));
       expect(healed.single.id, 'PDD_$orderSn');
       expect(healed.single.status, PackageStatus.transit);
@@ -611,7 +769,8 @@ void main() {
         addedAt: DateTime(2026, 11, 3),
         rawTimelineJson: jsonEncode(jtNodes),
       );
-      final healed = PddFalsePickupHeal.healMisfiledPickedUp(pkg);
+      final healed =
+          PddFalsePickupHeal.healMisfiledPickedUp(pkg, now: testNow);
       expect(healed, isNotNull);
       expect(healed!.status, PackageStatus.transit);
     });

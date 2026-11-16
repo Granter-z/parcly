@@ -74,9 +74,14 @@ class TaobaoHeartbeat implements PlatformHeartbeat {
   /// 单测可注入，生产走 [TaobaoTokenRefresher.refresh]
   final Future<MtopRefreshResult> Function(String cookies)? _refreshOverride;
 
+  /// 是否把轮换后的令牌写回 Hive。后台 worker 必须关闭：
+  /// 跨 isolate 写同一个 box 会损坏文件（见 keep_alive_worker_bridge）。
+  final bool persistTokenRotation;
+
   TaobaoHeartbeat({
     PlatformAuthStore? authStore,
     Future<MtopRefreshResult> Function(String cookies)? refreshOverride,
+    this.persistTokenRotation = true,
   })  : _authStore = authStore ?? PlatformAuthStore(),
         _refreshOverride = refreshOverride;
 
@@ -121,8 +126,8 @@ class TaobaoHeartbeat implements PlatformHeartbeat {
         return HeartbeatResult.failure(msg, isAuthFailure: false);
       }
 
-      // 轮换令牌就地落盘，不刷新授权绑定时间
-      if (result.rotated) {
+      // 轮换令牌就地落盘，不刷新授权绑定时间（后台 worker 不写，避免跨 isolate 损坏 box）
+      if (result.rotated && persistTokenRotation) {
         await _authStore.updateCookieTokenFields(
           'taobao',
           token: result.newToken,

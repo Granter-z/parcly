@@ -1,7 +1,7 @@
 name: pickup_app
 description: iOS-style pickup management app
 publish_to: 'none'
-version: 1.0.0+12
+version: 1.0.0+20
 
 environment:
   sdk: ^3.6.0
@@ -20,7 +20,9 @@ dependencies:
   equatable: ^2.0.5
   crypto: ^3.0.3
   webview_flutter: ^4.14.1
+  webview_flutter_android: ^4.12.0
   http: ^1.6.0
+  path_provider: ^2.1.6
   url_launcher: ^6.3.3
   workmanager: ^0.10.10
   secure_store:

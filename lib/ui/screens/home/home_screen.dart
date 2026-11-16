@@ -23,6 +23,7 @@ import '../../../core/engine/platform_auth_status.dart'
     show kLoginExpiredSignals, PlatformAuthStatus;
 import '../../../platform/connectors/connector_manager.dart';
 import '../../../platform/sync/background_sync_service.dart';
+import '../../../platform/notification/notification_adapter.dart';
 import '../../../platform/keep_alive/keep_alive_controller.dart';
 import '../../components/glass_backdrop.dart';
 import '../../components/glass_surface.dart';
@@ -69,12 +70,18 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     );
 
     // 延迟初始化后台同步服务和保活服务（等待 ref 可用）
-    WidgetsBinding.instance.addPostFrameCallback((_) {
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
       _backgroundSyncService = BackgroundSyncService(ref);
       _backgroundSyncService!.initialize();
 
+      // Android 13+ 先拿到通知权限再启动保活：
+      // 否则保活合并到期的失效结果时，通知会被系统静默丢弃却仍写了去重标记。
+      await NotificationAdapter().ensurePermission();
+
       // 启动前台保活（进程外续期由 WorkManager 承担）
-      ref.read(keepAliveControllerProvider.notifier).start();
+      if (mounted) {
+        ref.read(keepAliveControllerProvider.notifier).start();
+      }
     });
   }
 
@@ -92,6 +99,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     final refreshCompleter = Completer<void>();
 
     final syncFuture = manager.syncAll(
+      // 用户主动同步：绕过 SyncOptimizer 的 24h 窗口，避免「下拉刷新没反应」
+      force: true,
       onEarlyProgress: () {
         if (!refreshCompleter.isCompleted) {
           refreshCompleter.complete();

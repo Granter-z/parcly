@@ -79,6 +79,7 @@ class PlatformAuthStore {
         final plain = await _decrypt(raw);
         if (plain == null) continue;
         _plainCache[platform] = plain;
+        if (_readOnly) continue;
         if (!raw.startsWith(_encryptedPrefix)) {
           // 迁移历史明文
           final encrypted = await _encrypt(plain);
@@ -87,6 +88,10 @@ class PlatformAuthStore {
             migrated = true;
           }
         }
+      }
+      if (_readOnly) {
+        _preloaded = true;
+        return;
       }
       // Hive 是追加式日志：压缩一次才能真正抹掉磁盘上残留的明文帧
       if (migrated) await box.compact();
@@ -119,14 +124,21 @@ class PlatformAuthStore {
     }
     _box = Hive.isBoxOpen(_boxName)
         ? Hive.box(_boxName)
-        : await Hive.openBox(_boxName);
+        : await Hive.openBox(_boxName, crashRecovery: !_readOnly);
     await _preload();
   }
 
   /// 启动时预打开存储并解密凭据（在 main.dart 中调用，确保重启后凭据可读）
-  static Future<void> initialize() async {
+  /// [readOnly] 供后台 isolate 使用：禁止崩溃恢复截断与明文迁移写入。
+  ///
+  /// Hive 盒不是多 isolate 安全的；worker 只读凭据时若触发 recovery/compact，
+  /// 会与主 isolate 的 token 轮换争抢写偏移，损坏凭据盒。
+  static bool _readOnly = false;
+
+  static Future<void> initialize({bool readOnly = false}) async {
+    _readOnly = readOnly;
     if (!Hive.isBoxOpen(_boxName)) {
-      await Hive.openBox(_boxName);
+      await Hive.openBox(_boxName, crashRecovery: !readOnly);
     }
     await _preload();
   }

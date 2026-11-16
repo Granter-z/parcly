@@ -77,16 +77,17 @@ class HivePackageAdapter extends TypeAdapter<HivePackage> {
     for (int i = 0; i < numOfFields; i++) {
       fields[reader.readByte()] = reader.read();
     }
+    // 旧版本记录的字段可能缺失/类型不符：用默认值兜底，避免整条包裹静默消失
     return HivePackage(
-      id: fields[0] as String,
-      trackingNumber: fields[1] as String,
-      courier: fields[2] as CourierType,
+      id: fields[0] as String? ?? '',
+      trackingNumber: fields[1] as String? ?? '',
+      courier: fields[2] as CourierType? ?? CourierType.other,
       pickupCode: fields[3] as String? ?? '',
       location: fields[4] as String? ?? '',
       description: fields[5] as String? ?? '',
-      urgency: fields[6] as UrgencyLevel,
-      status: fields[7] as PackageStatus,
-      addedAt: fields[8] as DateTime,
+      urgency: fields[6] as UrgencyLevel? ?? UrgencyLevel.normal,
+      status: fields[7] as PackageStatus? ?? PackageStatus.transit,
+      addedAt: fields[8] as DateTime? ?? DateTime.now(),
       pickedUpAt: fields[9] as DateTime?,
       notifiedArrived: fields[10] as bool? ?? false,
       archivedAt: fields[11] as DateTime?,
@@ -99,13 +100,14 @@ class HivePackageAdapter extends TypeAdapter<HivePackage> {
       stationName: fields[18] as String?,
       rawTimelineJson: fields[19] as String?,
       arrivedAt: fields[20] as DateTime?,
+      lastFetchedAt: fields[21] as DateTime?,
     );
   }
 
   @override
   void write(BinaryWriter writer, HivePackage obj) {
     writer
-      ..writeByte(21)
+      ..writeByte(22)
       ..writeByte(0)
       ..write(obj.id)
       ..writeByte(1)
@@ -147,6 +149,8 @@ class HivePackageAdapter extends TypeAdapter<HivePackage> {
       ..writeByte(19)
       ..write(obj.rawTimelineJson)
       ..writeByte(20)
-      ..write(obj.arrivedAt);
+      ..write(obj.arrivedAt)
+      ..writeByte(21)
+      ..write(obj.lastFetchedAt);
   }
 }

@@ -22,12 +22,19 @@ class NotificationAdapter {
 
   final _plugin = FlutterLocalNotificationsPlugin();
 
-  static const int _arrivedBaseId = 10000;
-  static const int _reminderBaseId = 20000;
+  static const int _arrivedBaseId = 1000000;
+  static const int _reminderBaseId = 200000000;
 
-  /// 保活相关通知独立号段，避开按 `Package.id` 派生的 10000/20000 段，
-  /// 避免长登录失效提醒与包裹通知互相覆盖。
+  /// 保活相关通知独立号段，避开包裹通知的两段大区间
   static const int _keepAliveBaseId = 30000;
+
+  /// 包裹通知 id：用完整 hash 的大区间，避免 10000 桶的生日碰撞误伤
+  static int _packageNotificationId(String packageId, int base) =>
+      base + (packageId.hashCode & 0x07FFFFFF);
+
+  /// 旧版 10000 桶 id，升级后仍需取消，避免残留通知
+  static int _legacyPackageNotificationId(String packageId, int base) =>
+      base + packageId.hashCode.abs() % 10000;
 
   /// 登录失效提醒的点击跳转 payload 前缀
   static const String keepAliveExpiredPrefix = 'keep_alive_expired:';
@@ -54,7 +61,7 @@ class NotificationAdapter {
 
     tz.initializeTimeZones();
 
-    const android = AndroidInitializationSettings('@mipmap/ic_launcher');
+    const android = AndroidInitializationSettings('ic_stat_parcel');
     const ios = DarwinInitializationSettings();
 
     await _plugin.initialize(
@@ -77,6 +84,36 @@ class NotificationAdapter {
     }
 
     DebugTrace.separator('NOTIFICATION SERVICE INITIALIZED');
+  }
+
+  /// Android 13+ 通知权限：不申请则到件与登录失效通知都会被系统静默丢弃。
+  ///
+  /// 由首页首帧调用（此时 Activity 已 resumed），避免在 [initialize] 里弹窗。
+  Future<void> ensurePermission() async {
+    if (defaultTargetPlatform != TargetPlatform.android) return;
+    try {
+      final android = _plugin.resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin>();
+      if (android == null) return;
+      final enabled = await android.areNotificationsEnabled() ?? false;
+      if (enabled) return;
+      final granted = await android.requestNotificationsPermission() ?? false;
+      DebugTrace.separator('NOTIFICATION PERMISSION: $granted');
+    } catch (e) {
+      DebugTrace.separator('NOTIFICATION PERMISSION ERROR: $e');
+    }
+  }
+
+  /// 当前是否真的能发通知（Android 13+ 权限被拒时 notify 会被静默丢弃）。
+  Future<bool> notificationsEnabled() async {
+    if (defaultTargetPlatform != TargetPlatform.android) return true;
+    try {
+      final android = _plugin.resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin>();
+      return await android?.areNotificationsEnabled() ?? true;
+    } catch (_) {
+      return true;
+    }
   }
 
   void _onNotificationResponse(NotificationResponse response) {
@@ -133,11 +170,16 @@ class NotificationAdapter {
 
   Future<void> showArrivedNotification(Package package) async {
     DebugTrace.separator('SHOW ARRIVED NOTIFICATION');
-    print('package: ${package.courier.shortName} ${package.pickupCode}');
+    debugPrint(
+        '[Notify] arrived courier=${package.courier.shortName} hasCode=${package.pickupCode.isNotEmpty}');
 
     final title = _buildArrivedTitle(package);
     final body = _buildArrivedBody(package);
-    final notificationId = _arrivedBaseId + package.id.hashCode.abs() % 10000;
+    final notificationId = _packageNotificationId(package.id, _arrivedBaseId);
+    try {
+      await _plugin.cancel(
+          _legacyPackageNotificationId(package.id, _arrivedBaseId));
+    } catch (_) {}
 
     await _showNotification(
       id: notificationId,
@@ -187,11 +229,15 @@ class NotificationAdapter {
 
   Future<void> scheduleReminderNotification(Package package) async {
     DebugTrace.separator('SCHEDULE REMINDER NOTIFICATION');
-    print('package: ${package.courier.shortName}');
+    debugPrint('[Notify] reminder courier=${package.courier.shortName}');
 
     final title = '快递还在等你';
     final body = '${package.courier.shortName} 已等待超过 24 小时';
-    final notificationId = _reminderBaseId + package.id.hashCode.abs() % 10000;
+    final notificationId = _packageNotificationId(package.id, _reminderBaseId);
+    try {
+      await _plugin.cancel(
+          _legacyPackageNotificationId(package.id, _reminderBaseId));
+    } catch (_) {}
 
     await _scheduleNotification(
       id: notificationId,
@@ -204,14 +250,20 @@ class NotificationAdapter {
 
   Future<void> cancelNotification(String packageId) async {
     DebugTrace.separator('CANCEL NOTIFICATION');
-    print('packageId: $packageId');
+    debugPrint('[Notify] cancel');
 
-    final arrivedId = _arrivedBaseId + packageId.hashCode.abs() % 10000;
-    final reminderId = _reminderBaseId + packageId.hashCode.abs() % 10000;
+    final arrivedId = _packageNotificationId(packageId, _arrivedBaseId);
+    final reminderId = _packageNotificationId(packageId, _reminderBaseId);
+    final legacyArrivedId =
+        _legacyPackageNotificationId(packageId, _arrivedBaseId);
+    final legacyReminderId =
+        _legacyPackageNotificationId(packageId, _reminderBaseId);
 
     try {
       await _plugin.cancel(arrivedId);
       await _plugin.cancel(reminderId);
+      await _plugin.cancel(legacyArrivedId);
+      await _plugin.cancel(legacyReminderId);
     } catch (_) {}
   }
 
@@ -230,7 +282,7 @@ class NotificationAdapter {
       channelDescription: channelDescription,
       importance: Importance.high,
       priority: Priority.high,
-      icon: '@mipmap/ic_launcher',
+      icon: 'ic_stat_parcel',
     );
     const ios = DarwinNotificationDetails(
       presentAlert: true,
@@ -255,7 +307,7 @@ class NotificationAdapter {
       channelDescription: '包裹到达提醒',
       importance: Importance.high,
       priority: Priority.high,
-      icon: '@mipmap/ic_launcher',
+      icon: 'ic_stat_parcel',
     );
     const ios = DarwinNotificationDetails(
       presentAlert: true,
@@ -273,7 +325,8 @@ class NotificationAdapter {
       scheduledDate,
       details,
       payload: payload,
-      androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
+      // 24h 提醒不需要秒级精度；exact 在 Android 12+ 需额外授权，未授权会直接抛异常
+      androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
       uiLocalNotificationDateInterpretation:
           UILocalNotificationDateInterpretation.absoluteTime,
     );
