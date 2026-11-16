@@ -285,7 +285,7 @@ class LogisticsStatusEngine {
   /// 与详情 UI 一致：容错解析 + 最新节点在前，供 derive / 假完成自愈使用。
   ///
   /// [Package.parsedTimeline] 不做排序且 `Map<String,String>.from` 遇非 String 会整表失败；
-  /// tip8 JT554 详情能显示「运输中」而启动自愈吃不到，就是这条口径差。
+  /// tip8 P44 在途样例详情能显示「运输中」而启动自愈吃不到，就是这条口径差。
   static List<Map<String, String>> eventsNewestFirst(String? rawTimelineJson) {
     return [
       for (final n in timelineForDisplay(rawTimelineJson))
@@ -324,7 +324,7 @@ class LogisticsStatusEngine {
 
     // A. 签收动作（最高终态）
     // 「已取件」也可能出现在揽件轨迹正文（如“…的快递员已取件,物流问题请联系…”）：
-    // 同节点带「揽收/揽件」时属于快递员揽收，不是用户签收（JT554 假已取件根因）。
+    // 同节点带「揽收/揽件」时属于快递员揽收，不是用户签收（P44 在途样例假已取件根因）。
     if (_containsAny(t, const [
           '已签收', '签收成功', '本人签收', '代收人已签收', '已妥投', '妥投签收',
         ]) ||

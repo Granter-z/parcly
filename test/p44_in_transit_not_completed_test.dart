@@ -1,5 +1,5 @@
 // P44：在途/派送不得因订单侧宽「完成」进入「已完成」(pickedUp)。
-// 本票：拼多多 / 极兔 JT5542922044377，最新「运输中 …离开【东莞虎门转运中心】…发往【邢台转运中心】」。
+// 合成样例：拼多多 / 极兔 JT0000000000001，最新「运输中 …离开【示例南转运中心】…发往【示例北转运中心】」。
 import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pickup_app/core/engine/logistics_status_engine.dart';
@@ -8,9 +8,9 @@ import 'package:pickup_app/core/models/package_status.dart';
 import 'package:pickup_app/platform/connectors/pdd_connector.dart';
 
 void main() {
-  // 嘉豪真机本票最新轨迹原文（见 docs/device-qa-2026-11-05/p44-repro-notes.md）
+  // 合成在途样例最新轨迹原文
   const pddTicketLatest =
-      '您的快件离开【东莞虎门转运中心】，已发往【邢台转运中心】客服电话：956025';
+      '您的快件离开【示例南转运中心】，已发往【示例北转运中心】客服电话：956025';
   const pddTicketTag = '运输中';
 
   group('P44-c LogisticsStatusEngine.derive', () {
@@ -18,7 +18,7 @@ void main() {
       final derived = LogisticsStatusEngine.derive(
         events: [
           {'tag': pddTicketTag, 'time': '2026-11-05 02:02:00', 'text': pddTicketLatest},
-          {'tag': '运输中', 'time': '2026-11-05 02:00:00', 'text': '您的快件已到达【东莞虎门转运中心】'},
+          {'tag': '运输中', 'time': '2026-11-05 02:00:00', 'text': '您的快件已到达【示例南转运中心】'},
         ],
         isOrderSigned: true,
       );
@@ -61,18 +61,18 @@ void main() {
           {'tag': '运输中', 'time': '2026-11-05 02:02:00', 'text': pddTicketLatest},
         ],
         isOrderSigned: true,
-        pickupCode: '13-5-6036',
+        pickupCode: '3-2-1002',
       );
       expect(derived.status, PackageStatus.arrived);
     });
 
-    test('⑤ 本票：PDD 文案场景下 derive 不得 pickedUp', () {
+    test('⑤ 合成样例：PDD 文案场景下 derive 不得 pickedUp', () {
       final derived = LogisticsStatusEngine.derive(
         events: [
           {
             'tag': '运输中',
             'time': '2026-11-05 02:02:00',
-            'text': '您的快件离开【东莞虎门转运中心】，已发往【邢台转运中心】客服电话：956025',
+            'text': '您的快件离开【示例南转运中心】，已发往【示例北转运中心】客服电话：956025',
           },
         ],
         isOrderSigned: true, // 模拟订单侧误标「已完成/待评价」
@@ -105,8 +105,8 @@ void main() {
     });
   });
 
-  group('P44-c PddStatusClassifier（本票路径）', () {
-    test('① prompt「已完成」+ 最新「运输中」离开虎门 → transit', () {
+  group('P44-c PddStatusClassifier（合成样例路径）', () {
+    test('① prompt「已完成」+ 最新「运输中」离开示例南站 → transit', () {
       final status = PddStatusClassifier.resolve(
         statusPrompt: '已完成',
         logisticsDesc: '运输中 $pddTicketLatest',
@@ -119,7 +119,7 @@ void main() {
     test('①b prompt「待评价」+ 运输中 → transit', () {
       final status = PddStatusClassifier.resolve(
         statusPrompt: '待评价',
-        logisticsDesc: '运输中：您的快件离开【东莞虎门转运中心】，已发往【邢台转运中心】',
+        logisticsDesc: '运输中：您的快件离开【示例南转运中心】，已发往【示例北转运中心】',
       );
       expect(status, PackageStatus.transit);
     });
@@ -258,18 +258,18 @@ void main() {
   });
 
 
-  group('P44 tip9：假 pickedUp 必须吃到 JT554（本地证据 / 扫尾口径）', () {
-    const jtTracking = 'JT5542922044377';
+  group('P44 tip9：假 pickedUp 必须吃到合成运单（本地证据 / 扫尾口径）', () {
+    const jtTracking = 'JT0000000000001';
     // 故意最旧在前：复刻 Hive 未排序存储；详情 UI 会再排，旧 heal 用 parsedTimeline 会踩首节点「已下单」
     const oldestFirstJson = '['
         '{"tag":"已下单","time":"2026-11-03 10:00:00","text":"您已提交订单，等待系统确认"},'
-        '{"tag":"运输中","time":"2026-11-05 02:00:00","text":"您的快件已到达【东莞虎门转运中心】"},'
-        '{"tag":"运输中","time":"2026-11-05 02:02:00","text":"您的快件离开【东莞虎门转运中心】，已发往【邢台转运中心】客服电话：956025"}'
+        '{"tag":"运输中","time":"2026-11-05 02:00:00","text":"您的快件已到达【示例南转运中心】"},'
+        '{"tag":"运输中","time":"2026-11-05 02:02:00","text":"您的快件离开【示例南转运中心】，已发往【示例北转运中心】客服电话：956025"}'
         ']';
 
     Package fakeJt({DateTime? pickedUpAt, String? timeline}) {
       return Package(
-        id: 'PDD_261103-1819594730000',
+        id: 'PDD_990101-200000000000001',
         trackingNumber: jtTracking,
         courier: CourierType.jt,
         platform: 'pdd',
@@ -286,7 +286,7 @@ void main() {
       final events = LogisticsStatusEngine.eventsNewestFirst(oldestFirstJson);
       expect(events, isNotEmpty);
       expect(events.first['tag'], '运输中');
-      expect(events.first['text'], contains('离开【东莞虎门转运中心】'));
+      expect(events.first['text'], contains('离开【示例南转运中心】'));
       expect(
         LogisticsStatusEngine.hasActiveLocalEvidence(rawTimelineJson: oldestFirstJson),
         isTrue,
@@ -357,13 +357,13 @@ void main() {
 
 
   group('P44 tip10 / P44-g：mismatch 保 traces + enrich 失败本地 heal', () {
-    const jtTracking = 'JT5542922044377';
-    const orderSn = '261103-181959473543156';
-    const dirtyOrderSn = '261002-207827822983156';
+    const jtTracking = 'JT0000000000001';
+    const orderSn = '990101-200000000000001';
+    const dirtyOrderSn = '880202-200000000000002';
     const oldestFirstJson = '['
         '{"tag":"已下单","time":"2026-11-03 10:00:00","text":"您已提交订单，等待系统确认"},'
-        '{"tag":"运输中","time":"2026-11-05 02:00:00","text":"您的快件已到达【东莞虎门转运中心】"},'
-        '{"tag":"运输中","time":"2026-11-05 02:02:00","text":"您的快件离开【东莞虎门转运中心】，已发往【邢台转运中心】客服电话：956025"}'
+        '{"tag":"运输中","time":"2026-11-05 02:00:00","text":"您的快件已到达【示例南转运中心】"},'
+        '{"tag":"运输中","time":"2026-11-05 02:02:00","text":"您的快件离开【示例南转运中心】，已发往【示例北转运中心】客服电话：956025"}'
         ']';
     final now = DateTime(2026, 11, 5, 22, 30);
 
@@ -395,7 +395,7 @@ void main() {
         },
         {
           'time': '2026-11-05 02:00:00',
-          'info': '您的快件已到达【东莞虎门转运中心】',
+          'info': '您的快件已到达【示例南转运中心】',
           'status': 'TRANSPORT',
         },
       ];
@@ -411,7 +411,7 @@ void main() {
       expect(r.status, PackageStatus.transit);
       final list = jsonDecode(r.rawTimelineJson!) as List;
       expect(list, isNotEmpty);
-      expect(list.first['text'], contains('离开【东莞虎门转运中心】'));
+      expect(list.first['text'], contains('离开【示例南转运中心】'));
     });
 
     test('①b mismatch 且无 rawTraces → null（失败，走 enrich 兜底）', () {
@@ -469,11 +469,11 @@ void main() {
   });
 
   group('P44-g+ / P0：同步前本地自愈 + 残留取件码', () {
-    const jtTracking = 'JT5542922044377';
-    const orderSn = '261103-181959473543156';
+    const jtTracking = 'JT0000000000001';
+    const orderSn = '990101-200000000000001';
     const activeJson = '['
         '{"tag":"已下单","time":"2026-11-03 10:00:00","text":"您已提交订单，等待系统确认"},'
-        '{"tag":"运输中","time":"2026-11-05 02:02:00","text":"您的快件离开【东莞虎门转运中心】，已发往【邢台转运中心】"}'
+        '{"tag":"运输中","time":"2026-11-05 02:02:00","text":"您的快件离开【示例南转运中心】，已发往【示例北转运中心】"}'
         ']';
 
     Package fakeJt({
@@ -529,7 +529,7 @@ void main() {
       expect(healed, isNull);
     });
 
-    test('healLocalFakePickups：无列表/无详情也把 JT554 拉出已完成', () {
+    test('healLocalFakePickups：无列表/无详情也把合成运单拉出已完成', () {
       final healed = PddFalsePickupHeal.healLocalFakePickups([fakeJt()]);
       expect(healed, hasLength(1));
       expect(healed.single.id, 'PDD_$orderSn');
@@ -547,23 +547,23 @@ void main() {
   });
 
   group('P44-h：揽件轨迹里的「已取件」不得判成签收', () {
-    // 真机 JT554 的 15 节点里，昨日的揽件轨迹正文含「…已取件,物流问题请联系…」。
+    // 合成样例时间轴里，更早的揽件轨迹正文含「…已取件,物流问题请联系…」。
     // classifyNode 把「已取件」当签收 → derive 用更旧的签收覆盖最新「运输中」。
     const jtNodes = [
       {
         'tag': '运输中',
         'time': '2026-11-05 02:02:00',
-        'text': '您的快件离开【东莞虎门转运中心】，正发往【邢台转运中心】',
+        'text': '您的快件离开【示例南转运中心】，正发往【示例北转运中心】',
       },
       {
         'tag': '运输中',
         'time': '2026-11-05 02:00:00',
-        'text': '快件到达【东莞虎门转运中心】',
+        'text': '快件到达【示例南转运中心】',
       },
       {
         'tag': '已揽件',
         'time': '2026-11-04 20:12:00',
-        'text': '【东莞凤岗竹塘路网点】的邹某（132****0987）已取件,物流问题请联系：0769-****452',
+        'text': '【示例南站网点】的测试员（130****0000）已取件,物流问题请联系：010-****0000',
       },
       {
         'tag': '已发货',
@@ -601,11 +601,11 @@ void main() {
 
     test('heal：本地同类时间轴假 pickedUp → transit', () {
       final pkg = Package(
-        id: 'PDD_261103-181959473543156',
-        trackingNumber: 'JT5542922044377',
+        id: 'PDD_990101-200000000000001',
+        trackingNumber: 'JT0000000000001',
         courier: CourierType.jt,
         platform: 'pdd',
-        description: '您的快件离开【东莞虎门转运中心】，正发往【邢台转运中心】',
+        description: '您的快件离开【示例南转运中心】，正发往【示例北转运中心】',
         urgency: UrgencyLevel.normal,
         status: PackageStatus.pickedUp,
         addedAt: DateTime(2026, 11, 3),

@@ -435,7 +435,7 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
   /// 驿站名择优：泛称不得覆盖具体网点名。
   ///
   /// 菜鸟接口拿不到驿站全称时会回落到泛称「菜鸟驿站」，但多数具体网点名本身就含这三个字
-  /// （如「邢台信都区绿城诚园北门店菜鸟驿站」），所以无法用「是否含菜鸟驿站」判断具体性，
+  /// （如「示例市青柠花园北门店菜鸟驿站」），所以无法用「是否含菜鸟驿站」判断具体性，
   /// 只能按「是否恰好等于某个泛称」来判定，否则具体名会被泛称覆盖掉。
   @visibleForTesting
   static String preferStationName(String current, String incoming) {

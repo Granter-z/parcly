@@ -466,7 +466,7 @@ class PddH5Connector implements PlatformConnector {
     } catch (_) {}
 
     // P44-g：共享 WebView 必须串行 enrich；maxConcurrent>1 会并行 loadRequest 串页
-    // （tip9：OrderSn mismatch + 丢 rawTraces → JT554 无 yield）。
+    // （tip9：OrderSn mismatch + 丢 rawTraces → P44 在途样例无 yield）。
     final executor = ThrottledExecutor(
       maxConcurrent: 1,
       minDelay: const Duration(milliseconds: 200),
@@ -474,7 +474,7 @@ class PddH5Connector implements PlatformConnector {
     );
 
     final enrichSucceeded = <String>{};
-    // P44-g+：逐单抓取、逐单 yield。串行下 executeAll 的批量屏障会让 JT554 的修复
+    // P44-g+：逐单抓取、逐单 yield。串行下 executeAll 的批量屏障会让 P44 在途样例的修复
     // 等到全部订单抓完才可见（12s 单腿超时内常表现为「仍已完成」）。
     for (final entry in pendingCodes.entries) {
       final orderSn = entry.key;
@@ -1020,7 +1020,7 @@ class PddH5Connector implements PlatformConnector {
 
       // 判断该包裹是否已签收/已完成。
       // tip9：列表/Hive 假 pickedUp（无用户 pickedUpAt）不得当完成短路——必须深挖轨迹页，
-      // 否则 order.html 轨迹残缺时 enrich 仍吐 pickedUp，JT554 回滚失败。
+      // 否则 order.html 轨迹残缺时 enrich 仍吐 pickedUp，P44 在途样例回滚失败。
       final localForDig = base == null ? null : _localPackageById(base.id);
       final fakePickedUp = base?.status == PackageStatus.pickedUp &&
           localForDig?.pickedUpAt == null;
@@ -2000,7 +2000,7 @@ class PddDetailResult {
 /// 假 `pickedUp`（无用户 [Package.pickedUpAt]），列表仍判完成 → 继续 skip enrich，
 /// `_resolveStatus` 自愈进不去，详情运输中来自本地旧时间轴。
 ///
-/// tip8 / `d64e12b` / #40 后仍 FAIL：闸门只挂在「本轮列表循环」内；JT554 若不在
+/// tip8 / `d64e12b` / #40 后仍 FAIL：闸门只挂在「本轮列表循环」内；P44 在途样例若不在
 /// page1+2、或 enrich/缓存又吐回 pickedUp，仍锁死。+9 补：本地活跃证据禁止 skip、
 /// 同步末扫尾假完成、深挖不得因列表假 pickedUp 短路。
 /// tip9 / `31ca14c` / #41 后仍 FAIL：Gate 命中但对共享 WebView 并发 enrich 串页 →
@@ -2071,7 +2071,7 @@ class PddFalsePickupHeal {
     final events = LogisticsStatusEngine.eventsNewestFirst(pkg.rawTimelineJson);
     if (events.isNotEmpty) {
       // P44-g+：最新节点仍活跃（在途/派送/待取）时，历史残留取件码不得把它压回「待取件」。
-      // （JT554 假完成若带着旧码，旧逻辑会 heal 成 arrived，验收要的是 transit。）
+      // （P44 在途样例假完成若带着旧码，旧逻辑会 heal 成 arrived，验收要的是 transit。）
       final newestAction = LogisticsStatusEngine.classifyNode(
         LogisticsStatusEngine.newestNodeText(events),
       );
