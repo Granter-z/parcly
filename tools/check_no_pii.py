@@ -2,6 +2,12 @@
 """Scan the public tree for real-looking phones, waybills, and pickup codes.
 
 Prints only path:line and rule names. Never prints the matched text.
+
+Synthetic exceptions are either an exact allowlist entry or a tightly
+limited demo pattern (all-same digits, leading-zero padding with a short
+suffix, wholly monotonic digits, or a very short pickup placeholder).
+Unique-digit counts and local sequential windows are not proof of a
+synthetic token.
 """
 from __future__ import annotations
 
@@ -28,11 +34,13 @@ SKIP_DIRS = {
     "android",
     "ios",
     "plugins",
+    "__pycache__",
 }
 DEFAULT_ROOTS = ("test", "docs", "lib", "README.md", "CLAUDE.md")
 
+# Optional ASCII space, hyphen, or dot between digits after the leading 13x.
 PHONE_RE = re.compile(
-    r"(^|[^0-9])(?:(?:\+|＋)?86[ -]?)?1[3-9][0-9](?:[ -]?[0-9]){8}([^0-9]|$)"
+    r"(^|[^0-9])(?:(?:\+|＋)?86[ .-]?)?1[3-9][0-9](?:[ .-]?[0-9]){8}([^0-9]|$)"
 )
 WAYBILL_PREFIXES = (
     "YTO",
@@ -46,9 +54,11 @@ WAYBILL_PREFIXES = (
     "ZT",
     "SF",
     "HT",
+    "JD",
 )
+# Prefix plus 8–18 digits, optional hyphens between prefix and digit groups.
 WAYBILL_RE = re.compile(
-    r"\b(?:%s)\d{8,18}\b" % "|".join(WAYBILL_PREFIXES),
+    r"\b(?:%s)(?:-?\d){8,18}\b" % "|".join(WAYBILL_PREFIXES),
     re.IGNORECASE,
 )
 PICKUP_RE = re.compile(r"\b\d{1,2}-\d{1,2}-\d{1,6}\b")
@@ -62,15 +72,33 @@ def load_allowlist() -> set[str]:
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
-        tokens.add(line.lower())
+        tokens.add(normalize_token(line))
     return tokens
+
+
+def normalize_token(value: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", value.lower())
 
 
 def digits_of(value: str) -> str:
     return re.sub(r"\D", "", value)
 
 
-def is_sequential(digits: str) -> bool:
+def is_all_same_digits(digits: str) -> bool:
+    return len(digits) >= 3 and len(set(digits)) == 1
+
+
+def is_leading_zero_demo(digits: str) -> bool:
+    """All zeros, or a long zero pad plus at most two final non-zero digits."""
+    return bool(re.fullmatch(r"0+[1-9]{0,2}", digits)) and len(digits) >= 3
+
+
+def is_wholly_sequential(digits: str) -> bool:
+    """The whole digit string, or the whole string after leading zeros, is ±1.
+
+    A wrap from 9 to 0 (or 0 to 9) is allowed only when it applies to the
+    entire remainder. Local sequential windows are not accepted.
+    """
     candidates = [digits]
     stripped = digits.lstrip("0")
     if stripped and stripped != digits:
@@ -78,30 +106,47 @@ def is_sequential(digits: str) -> bool:
     for text in candidates:
         if len(text) < 4:
             continue
-        if all(int(b) == int(a) + 1 for a, b in zip(text, text[1:])):
+        if all((int(a) + 1) % 10 == int(b) for a, b in zip(text, text[1:])):
             return True
-        if all(int(b) == int(a) - 1 for a, b in zip(text, text[1:])):
+        if all((int(a) - 1) % 10 == int(b) for a, b in zip(text, text[1:])):
             return True
-    # Any window of 8+ digits with a constant ±1 step.
-    if len(digits) >= 8:
-        for step in (1, -1):
-            run = 1
-            for a, b in zip(digits, digits[1:]):
-                if int(b) == int(a) + step:
-                    run += 1
-                    if run >= 8:
-                        return True
-                else:
-                    run = 1
     return False
 
 
-def is_repeat_block(digits: str) -> bool:
-    if len(digits) < 4:
+def is_short_pickup_placeholder(value: str) -> bool:
+    parts = value.split("-")
+    if len(parts) != 3:
         return False
-    for size in range(1, 5):
-        if len(digits) % size == 0 and digits == digits[:size] * (len(digits) // size):
-            return True
+    if not all(part.isdigit() for part in parts):
+        return False
+    if len(parts[-1]) != 1:
+        return False
+    if any(len(part) > 2 for part in parts):
+        return False
+    return sum(len(part) for part in parts) <= 5
+
+
+def is_clear_calendar_date(value: str) -> bool:
+    """US/EU dates where one component cannot be a month, and the year is 19xx/20xx.
+
+    Forms where both leading groups are 1–12 remain ambiguous with pickup
+    codes (e.g. 11-4-2015) and are still treated as potential pickup codes.
+    """
+    parts = value.split("-")
+    if len(parts) != 3:
+        return False
+    month_or_day, other, year_s = parts
+    if not re.fullmatch(r"(?:19|20)\d{2}", year_s):
+        return False
+    try:
+        a = int(month_or_day)
+        b = int(other)
+    except ValueError:
+        return False
+    if 1 <= a <= 12 and 13 <= b <= 31:
+        return True
+    if 13 <= a <= 31 and 1 <= b <= 12:
+        return True
     return False
 
 
@@ -109,21 +154,14 @@ def is_synthetic_waybill(value: str) -> bool:
     digits = digits_of(value)
     if not digits:
         return False
-    if len(set(digits)) <= 3:
-        return True
-    if is_sequential(digits) or is_repeat_block(digits):
-        return True
-    return False
+    return is_all_same_digits(digits) or is_leading_zero_demo(digits) or is_wholly_sequential(digits)
 
 
 def is_synthetic_pickup(value: str) -> bool:
     digits = digits_of(value)
-    parts = value.split("-")
-    if len(set(digits)) <= 2:
-        return True
-    if is_sequential(digits):
-        return True
-    if len(parts) == 3 and len(parts[-1]) <= 1 and sum(len(part) for part in parts) <= 5:
+    if not digits:
+        return False
+    if is_all_same_digits(digits) or is_wholly_sequential(digits) or is_short_pickup_placeholder(value):
         return True
     return False
 
@@ -163,7 +201,6 @@ def collect_hits(files: list[Path], allowlist: set[str]) -> list[tuple[str, int,
             lines = path.read_text(encoding="utf-8").splitlines()
         except (UnicodeDecodeError, OSError):
             continue
-        rel = path.as_posix()
         try:
             rel = path.resolve().relative_to(REPO).as_posix()
         except ValueError:
@@ -173,15 +210,16 @@ def collect_hits(files: list[Path], allowlist: set[str]) -> list[tuple[str, int,
                 hits.append((rel, lineno, "phone"))
             for match in WAYBILL_RE.finditer(line):
                 token = match.group(0)
-                if token.lower() in allowlist or is_synthetic_waybill(token):
+                if normalize_token(token) in allowlist or is_synthetic_waybill(token):
                     continue
                 hits.append((rel, lineno, "waybill"))
             for match in PICKUP_RE.finditer(line):
                 token = match.group(0)
-                if token.lower() in allowlist or is_synthetic_pickup(token):
+                if is_clear_calendar_date(token):
+                    continue
+                if normalize_token(token) in allowlist or is_synthetic_pickup(token):
                     continue
                 hits.append((rel, lineno, "pickup_code"))
-    # Stable unique rows
     seen: set[tuple[str, int, str]] = set()
     unique: list[tuple[str, int, str]] = []
     for hit in hits:

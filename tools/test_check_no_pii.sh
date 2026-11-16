@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# 门禁脚本的正反例：放行可辨识合成样例，拦截真实形态，且输出不含命中原文。
+# 门禁脚本的正反例：放行既有演示与严格合成形态，拦截真实形态和过宽启发式边界，
+# 且输出不含命中原文。
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -28,7 +29,15 @@ if [ "$fail_status" -eq 0 ]; then
   exit 1
 fi
 
-for required in "waybill" "pickup_code" "phone" "real_shaped.dart" "docs_hit.md"; do
+for required in \
+  "waybill" \
+  "pickup_code" \
+  "phone" \
+  "real_shaped.dart" \
+  "docs_hit.md" \
+  "heuristic_too_loose.dart" \
+  "p2_shapes.dart"
+do
   if ! grep -q "$required" "$fail_log"; then
     echo "FAIL：反例输出缺少 $required"
     cat "$fail_log"
@@ -36,21 +45,51 @@ for required in "waybill" "pickup_code" "phone" "real_shaped.dart" "docs_hit.md"
   fi
 done
 
-# 输出不得包含夹具里的真实形态原文
+# P1-A / P2 文件都应出现对应规则（同一文件可有多条规则）
+if ! grep -E 'heuristic_too_loose\.dart:[0-9]+  pickup_code$' "$fail_log" | grep -q .; then
+  echo "FAIL：低熵短码反例未被标为 pickup_code"
+  exit 1
+fi
+if ! grep -E 'heuristic_too_loose\.dart:[0-9]+  waybill$' "$fail_log" | grep -q .; then
+  echo "FAIL：过宽运单反例未被标为 waybill"
+  exit 1
+fi
+if ! grep -E 'p2_shapes\.dart:[0-9]+  phone$' "$fail_log" | grep -q .; then
+  echo "FAIL：点分手机号反例未被标为 phone"
+  exit 1
+fi
+if ! grep -E 'p2_shapes\.dart:[0-9]+  waybill$' "$fail_log" | grep -q .; then
+  echo "FAIL：带分隔运单或 JD 前缀反例未被标为 waybill"
+  exit 1
+fi
+
+# 输出不得包含夹具里的真实形态原文（含审查用虚构边界样例）
 leaked=0
-for secret in JT4729183057264 7-4-3185 13924681357 YD3817264590231 8-6-2471; do
+for secret in \
+  JT4729183057264 \
+  7-4-3185 \
+  13924681357 \
+  YD3817264590231 \
+  8-6-2471 \
+  12-1-1121 \
+  10-1-1001 \
+  JT8801234567890 \
+  JT1121212112121 \
+  139.2468.1357 \
+  YT-4729183057264 \
+  JD3817264590231
+do
   if grep -Fq "$secret" "$fail_log"; then
     echo "FAIL：输出泄漏了夹具标记"
     leaked=1
   fi
 done
 # 也不应把整行原文打出来（例如 const tracking = ...）
-if grep -Eq "const tracking|pickupCode =" "$fail_log"; then
+if grep -Eq "const tracking|pickupCode =|pickupLowUniq|waybillLocal|dottedPhone|hyphenWaybill" "$fail_log"; then
   echo "FAIL：输出包含命中行原文"
   leaked=1
 fi
 if [ "$leaked" -ne 0 ]; then
-  # 只展示规则行，避免复述标记
   echo "---- redacted rules ----"
   grep -E ':[0-9]+  (phone|waybill|pickup_code)$|^PII check failed$' "$fail_log" || true
   exit 1
