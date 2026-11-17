@@ -12,6 +12,7 @@ import '../../core/models/package.dart';
 import '../../core/models/package_status.dart';
 import '../../core/parser/taobao_trace_parser.dart';
 import '../../core/sanitizer/goods_name_cleaner.dart';
+import '../../core/utils/image_url.dart';
 import '../storage/platform_auth_store.dart';
 import '../sync/sync_history_manager.dart';
 import '../webview/platform_cookie.dart';
@@ -76,6 +77,10 @@ class TaobaoH5Connector implements PlatformConnector {
   @override
   Future<void> cancelSync() async {
     _cancelled = true;
+    // 递增代际号：上一轮页面迟到的接口响应会被捕获回调丢弃，不混进下一轮。
+    _captureGeneration++;
+    _capturedCainiaoJson.clear();
+    _lastInjectedCookies = null;
     _cainiaoController = null;
   }
 
@@ -90,6 +95,14 @@ class TaobaoH5Connector implements PlatformConnector {
   }
 
   WebViewController? _cainiaoController;
+
+  /// 上一次注入 WebView 的 Cookie 串；会话不变时跳过逐域写入
+  ///（每 cookie × 每域一次平台通道调用，几十条 cookie × 6 域开销可观）。
+  String? _lastInjectedCookies;
+
+  /// 捕获代际号：注入的 JS 钩子带上当时的代际，回调只接受当前代际的响应，
+  /// 避免上一轮（已取消/已超时）页面的迟到响应混进本轮解析。
+  int _captureGeneration = 0;
   final List<String> _capturedCainiaoJson = [];
 
   @override
@@ -127,7 +140,7 @@ class TaobaoH5Connector implements PlatformConnector {
           final cn = Package(
             id: 'CN_${item.trackingNumber}',
             trackingNumber: item.trackingNumber,
-            courier: _resolveCourier(item.courier),
+            courier: courierFromName(item.courier),
             goodsName: '快递包裹',
             stationName: item.stationName.isNotEmpty ? item.stationName : '菜鸟驿站',
             pickupCode: item.pickupCode,
@@ -167,7 +180,7 @@ class TaobaoH5Connector implements PlatformConnector {
         orders: withLogistics,
         localPackages: local,
         getOrderId: (order) => order.orderId,
-        getStatus: (order) => PackageStatus.transit, // 从订单列表无法准确判断状态，默认在途
+        idPrefix: 'TB_',
         recentThreshold: const Duration(hours: 24),
         force: force,
       );
@@ -221,7 +234,7 @@ class TaobaoH5Connector implements PlatformConnector {
           final tbPkg = Package(
             id: taobaoPackageId(order.orderId),
             trackingNumber: parcel.mailNo.isNotEmpty ? parcel.mailNo : order.orderId,
-            courier: _resolveCourier(parcel.cpName),
+            courier: courierFromName(parcel.cpName),
             goodsName: order.goodsName,
             goodsImageUrl: order.goodsPic,
             pickupCode: parcel.pickupCode,
@@ -261,7 +274,7 @@ class TaobaoH5Connector implements PlatformConnector {
               yield Package(
                 id: 'CN_$tn',
                 trackingNumber: tn,
-                courier: _resolveCourier(item.courier),
+                courier: courierFromName(item.courier),
                 goodsName: '快递包裹',
                 stationName: item.stationName.isNotEmpty ? item.stationName : '菜鸟驿站',
                 pickupCode: item.pickupCode,
@@ -290,7 +303,7 @@ class TaobaoH5Connector implements PlatformConnector {
             yield Package(
               id: 'CN_${item.trackingNumber}',
               trackingNumber: item.trackingNumber,
-              courier: _resolveCourier(item.courier),
+              courier: courierFromName(item.courier),
               goodsName: '快递包裹',
               stationName: item.stationName.isNotEmpty ? item.stationName : '菜鸟驿站',
               pickupCode: item.pickupCode,
@@ -394,14 +407,15 @@ class TaobaoH5Connector implements PlatformConnector {
 
   /// 注入网络拦截钩子，抓取淘宝菜鸟驿站核心接口 mtop.cainiao.pickup.plus.queryMultiStaPackages4Xy
   Future<void> _injectCainiaoNetworkHook(WebViewController controller) async {
-    const hookJs = '''
+    final generation = _captureGeneration;
+    final hookJs = '''
 (function(){
   if (window.__cnHookInstalled) return;
   window.__cnHookInstalled = true;
 
   function report(data){
     try {
-      CainiaoBridge.postMessage(typeof data === 'string' ? data : JSON.stringify(data));
+      CainiaoBridge.postMessage('$generation|' + (typeof data === 'string' ? data : JSON.stringify(data)));
     } catch(e) {}
   }
 
@@ -445,6 +459,8 @@ class TaobaoH5Connector implements PlatformConnector {
   /// 在本地安全浏览器上下文中加载淘宝官方菜鸟驿站模块，提取待取件货架码与运单号
   Future<List<_CainiaoItem>> _fetchCainiaoStationPackages(String cookies) async {
     final list = <_CainiaoItem>[];
+    // 新一轮抓取：递增代际并清空缓冲，旧页面的迟到响应不再被接受。
+    _captureGeneration++;
     _capturedCainiaoJson.clear();
 
     // ① 先在 Dart 侧发起一次轻量 mtop 调用，主动触发 _m_h5_tk 令牌轮换并落盘，
@@ -471,18 +487,21 @@ class TaobaoH5Connector implements PlatformConnector {
     } catch (_) {}
 
     try {
-      // 原生注入，保留 HttpOnly/Secure，避免把会话令牌降级为页面脚本可读
-      await injectCookieString(
-        cookies: effectiveCookies,
-        domains: const [
-          '.taobao.com',
-          'h5api.m.taobao.com',
-          'pages-fast.m.taobao.com',
-          'main.m.taobao.com',
-          '.cainiao.com',
-          'page.cainiao.com',
-        ],
-      );
+      if (_lastInjectedCookies != effectiveCookies) {
+        // 原生注入，保留 HttpOnly/Secure，避免把会话令牌降级为页面脚本可读
+        await injectCookieString(
+          cookies: effectiveCookies,
+          domains: const [
+            '.taobao.com',
+            'h5api.m.taobao.com',
+            'pages-fast.m.taobao.com',
+            'main.m.taobao.com',
+            '.cainiao.com',
+            'page.cainiao.com',
+          ],
+        );
+        _lastInjectedCookies = effectiveCookies;
+      }
 
       final WebViewController controller;
       if (_cainiaoController != null) {
@@ -496,7 +515,12 @@ class TaobaoH5Connector implements PlatformConnector {
           ..addJavaScriptChannel(
             'CainiaoBridge',
             onMessageReceived: (JavaScriptMessage msg) {
-              final text = msg.message;
+              final raw = msg.message;
+              final sep = raw.indexOf('|');
+              if (sep <= 0) return;
+              // 只接受本轮注入的钩子发来的响应
+              if (int.tryParse(raw.substring(0, sep)) != _captureGeneration) return;
+              final text = raw.substring(sep + 1);
               if (text.contains('Package') || text.contains('mailNo') || text.contains('fetchCode') || text.contains('takeCode')) {
                 _logTb('[Cainiao Hook] Captured JSON len: ${text.length}');
                 _capturedCainiaoJson.add(text);
@@ -853,7 +877,7 @@ class TaobaoH5Connector implements PlatformConnector {
               title = GoodsNameCleaner.clean(itemInfo?['title']?.toString() ?? '');
               pic = itemInfo?['pic']?.toString() ?? '';
               // 淘宝返回协议相对 URL（//img.alicdn.com/...），不补 scheme 会导致 Image.network 加载失败
-              if (pic.startsWith('//')) pic = 'https:$pic';
+              pic = normalizeImageUrl(pic);
             }
 
             orders.add(_TbOrder(
@@ -910,7 +934,6 @@ class TaobaoH5Connector implements PlatformConnector {
           isPendingShipment: _isPendingLabel(stateLabel),
           isOrderSigned: _isSignedLabel(stateLabel) || trace.lgStatus == 'SIGN',
           pickupCode: trace.pickupCode,
-          stationName: stationName,
         );
         derivedStatus = derived.status;
       } else {
@@ -1077,13 +1100,18 @@ class TaobaoH5Connector implements PlatformConnector {
         if (newTk != null || newTkEnc != null) {
           var updated = cookieStr;
           if (newTk != null) {
-            updated = updated.contains('_m_h5_tk=')
-                ? updated.replaceAll(RegExp(r'_m_h5_tk=[^;]*'), '_m_h5_tk=$newTk')
+            // 边界 (^|;\s*)：裸 `_m_h5_tk=` 会命中 `_m_h5_tk_enc=` 的前缀，污染 enc 值。
+            updated = updated.contains(RegExp(r'(^|;\s*)_m_h5_tk='))
+                ? updated.replaceAllMapped(
+                    RegExp(r'(^|;\s*)_m_h5_tk=[^;]*'),
+                    (m) => '${m[1]}_m_h5_tk=$newTk')
                 : '$updated; _m_h5_tk=$newTk';
           }
           if (newTkEnc != null) {
             updated = updated.contains('_m_h5_tk_enc=')
-                ? updated.replaceAll(RegExp(r'_m_h5_tk_enc=[^;]*'), '_m_h5_tk_enc=$newTkEnc')
+                ? updated.replaceAllMapped(
+                    RegExp(r'(^|;\s*)_m_h5_tk_enc=[^;]*'),
+                    (m) => '${m[1]}_m_h5_tk_enc=$newTkEnc')
                 : '$updated; _m_h5_tk_enc=$newTkEnc';
           }
           cookieStr = updated;
@@ -1138,21 +1166,6 @@ class TaobaoH5Connector implements PlatformConnector {
       s = s.substring(m.end, s.length - 1).trim();
     }
     return s;
-  }
-
-  CourierType _resolveCourier(String text) {
-    final lower = text.toLowerCase();
-    if (lower.contains('顺丰') || lower.contains('sf')) return CourierType.sf;
-    if (lower.contains('京东') || lower.contains('jd')) return CourierType.jd;
-    if (lower.contains('中通') || lower.contains('zto')) return CourierType.zto;
-    if (lower.contains('圆通') || lower.contains('yt')) return CourierType.yt;
-    if (lower.contains('申通') || lower.contains('sto')) return CourierType.sto;
-    if (lower.contains('韵达') || lower.contains('yd')) return CourierType.yd;
-    if (lower.contains('极兔') || lower.contains('jt')) return CourierType.jt;
-    if (lower.contains('邮政') || lower.contains('ems')) return CourierType.ems;
-    if (lower.contains('德邦') || lower.contains('db')) return CourierType.db;
-    if (lower.contains('百世') || lower.contains('best')) return CourierType.best;
-    return CourierType.other;
   }
 
   PackageStatus _resolveStatus(String stateLabel) {

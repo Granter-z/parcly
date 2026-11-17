@@ -13,14 +13,18 @@ library;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../../core/engine/timeline_view.dart';
 import '../../../../core/models/package.dart';
 import '../../../../core/models/package_status.dart';
+import '../../../../core/utils/image_url.dart';
 import '../../../components/hero_pickup_badge.dart';
 import '../../../components/platform_badge.dart';
 import '../../../components/tracking_timeline.dart';
+import '../../../providers/package_provider.dart';
 
-class TrackingTimelineSheet extends StatefulWidget {
+class TrackingTimelineSheet extends ConsumerStatefulWidget {
+  /// 打开时的快照；抽屉内会按同 id 订阅最新包裹，同步到新轨迹/取件码后实时刷新。
   final Package package;
 
   const TrackingTimelineSheet({super.key, required this.package});
@@ -36,35 +40,28 @@ class TrackingTimelineSheet extends StatefulWidget {
   }
 
   @override
-  State<TrackingTimelineSheet> createState() => _TrackingTimelineSheetState();
+  ConsumerState<TrackingTimelineSheet> createState() =>
+      _TrackingTimelineSheetState();
 }
 
-class _TrackingTimelineSheetState extends State<TrackingTimelineSheet> {
+class _TrackingTimelineSheetState extends ConsumerState<TrackingTimelineSheet> {
   bool _isAddressExpanded = false;
 
-  /// 整理好的时间轴节点（最新在前），只在包裹变化时重新计算。
-  late List<TimelineNode> _timeline;
+  /// 整理好的时间轴节点（最新在前）；仅当输入变化时重新计算。
+  List<TimelineNode> _timeline = const [];
+  String? _preparedTimelineJson;
+  String _preparedPickupCode = '';
 
   /// 从最新节点里提取的驿站/派送员电话，没有则为 null。
   String? _stationPhone;
 
-  @override
-  void initState() {
-    super.initState();
-    _prepareTimeline();
-  }
-
-  @override
-  void didUpdateWidget(covariant TrackingTimelineSheet oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.package.rawTimelineJson != widget.package.rawTimelineJson ||
-        oldWidget.package.pickupCode != widget.package.pickupCode) {
-      _prepareTimeline();
+  void _ensurePrepared(Package pkg) {
+    if (_preparedTimelineJson == pkg.rawTimelineJson &&
+        _preparedPickupCode == pkg.pickupCode) {
+      return;
     }
-  }
-
-  void _prepareTimeline() {
-    final pkg = widget.package;
+    _preparedTimelineJson = pkg.rawTimelineJson;
+    _preparedPickupCode = pkg.pickupCode;
     _timeline = timelineForDisplay(pkg.rawTimelineJson);
     _stationPhone = extractStationPhone(
       nodes: _timeline,
@@ -101,7 +98,16 @@ class _TrackingTimelineSheetState extends State<TrackingTimelineSheet> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final pkg = widget.package;
+    // 按 id 订阅最新包裹：后台同步到达新轨迹/取件码时抽屉实时刷新；
+    // 包裹已被删除时回退到打开时的快照。
+    final live = ref.watch(packageListProvider.select((list) {
+      for (final p in list) {
+        if (p.id == widget.package.id) return p;
+      }
+      return null;
+    }));
+    final pkg = live ?? widget.package;
+    _ensurePrepared(pkg);
     final courierName = pkg.effectiveCourier.displayName;
     final trackingNo = pkg.trackingNumber;
     final orderSn = pkg.displayOrderSn;
@@ -314,7 +320,7 @@ class _TrackingTimelineSheetState extends State<TrackingTimelineSheet> {
                               borderRadius: BorderRadius.circular(8),
                               // 兜底历史数据：旧 URL 可能缺协议 scheme（//img.alicdn.com/...），直接请求必然失败
                               child: Image.network(
-                                pkg.goodsImageUrl!.startsWith('//') ? 'https:${pkg.goodsImageUrl!}' : pkg.goodsImageUrl!,
+                                normalizeImageUrl(pkg.goodsImageUrl!),
                                 width: 50,
                                 height: 50,
                                 fit: BoxFit.cover,

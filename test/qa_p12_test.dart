@@ -8,6 +8,7 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pickup_app/core/engine/timeline_view.dart';
 import 'package:pickup_app/core/models/package.dart';
@@ -283,7 +284,9 @@ void main() {
       tester.view.physicalSize = const Size(1080, 2400);
       tester.view.devicePixelRatio = 3;
       addTearDown(tester.view.reset);
-      await tester.pumpWidget(MaterialApp(home: Scaffold(body: TrackingTimelineSheet(package: pkg))));
+      await tester.pumpWidget(ProviderScope(
+        child: MaterialApp(home: Scaffold(body: TrackingTimelineSheet(package: pkg))),
+      ));
       await tester.pump();
     }
 

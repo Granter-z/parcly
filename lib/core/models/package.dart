@@ -150,14 +150,7 @@ class Package {
   /// 获取展示用的有效承运商（若未指定则通过单号规则推断，如 JT 开头为极兔）
   CourierType get effectiveCourier {
     if (courier != CourierType.other) return courier;
-    final tn = trackingNumber.toUpperCase();
-    if (tn.startsWith('JT')) return CourierType.jt;
-    if (tn.startsWith('SF')) return CourierType.sf;
-    if (tn.startsWith('YT')) return CourierType.yt;
-    if (tn.startsWith('ST')) return CourierType.sto;
-    if (tn.startsWith('JD')) return CourierType.jd;
-    if (tn.startsWith('ZTO')) return CourierType.zto;
-    return courier;
+    return courierFromTrackingNumber(trackingNumber);
   }
 
   /// 获取订单原始编号（去除平台前缀）
@@ -248,17 +241,6 @@ class Package {
     return carrierName.toLowerCase().trim();
   }
 
-  /// 构建包裹指纹（带 phoneTail）
-  static String buildFingerprint({
-    required String pickupCode,
-    String? carrier,
-    String? phoneTail,
-  }) {
-    return '${pickupCode}_${carrier ?? ''}_${phoneTail ?? ''}'
-        .toLowerCase()
-        .trim();
-  }
-
   Package copyWith({
     String? id,
     String? trackingNumber,
@@ -327,34 +309,116 @@ class Package {
       throw StateError('Invalid status transition: ${status.label} → ${newStatus.label}');
     }
     
+    // 不自动写 pickedUpAt：它只表示「用户手动点过已取」，平台侧签收不算。
+    // 自动写入会让假签收被当成用户已取，永久锁死后续自愈（见 package_identity）。
     return copyWith(
       status: newStatus,
-      pickedUpAt: newStatus == PackageStatus.pickedUp ? DateTime.now() : pickedUpAt,
       archivedAt: newStatus == PackageStatus.archived ? DateTime.now() : archivedAt,
       statusHistory: [...statusHistory, transition],
     );
   }
-
-  /// 是否需要自动归档（已取件超过7天）
-  bool get shouldAutoArchive {
-    if (status != PackageStatus.pickedUp) return false;
-    if (pickedUpAt == null) return false;
-    return DateTime.now().difference(pickedUpAt!).inDays >= 7;
-  }
-
-  /// 是否与其他包裹在同一取件点
-  bool isSameLocation(Package other) {
-    if (location.isEmpty || other.location.isEmpty) return false;
-    return location == other.location;
-  }
-
-  /// 是否为同一快递（基于快递公司和运单号）
-  bool isSamePackage(Package other) {
-    return courier == other.courier && trackingNumber == other.trackingNumber;
-  }
-
-  /// 综合紧急程度评分（状态 + 紧急级别）
-  int get compositeUrgencyScore {
-    return status.urgencyScore + urgency.score * 10;
-  }
 }
+
+/// 按承运商名称/编码推断（中文名优先；英文编码按整词匹配，避免两字母子串误判）。
+CourierType courierFromName(String text) {
+  final t = text.trim();
+  if (t.isEmpty) return CourierType.other;
+
+  const names = <String, CourierType>{
+    '顺丰': CourierType.sf,
+    '京东': CourierType.jd,
+    '中通': CourierType.zto,
+    '圆通': CourierType.yt,
+    '申通': CourierType.sto,
+    '韵达': CourierType.yd,
+    '极兔': CourierType.jt,
+    '德邦': CourierType.db,
+    '百世': CourierType.best,
+  };
+  for (final e in names.entries) {
+    if (t.contains(e.key)) return e.value;
+  }
+  if (t.contains('邮政')) return CourierType.ems;
+
+  const codes = <String, CourierType>{
+    'SF': CourierType.sf,
+    'JD': CourierType.jd,
+    'ZTO': CourierType.zto,
+    'ZTE': CourierType.zto,
+    'YTO': CourierType.yt,
+    'STO': CourierType.sto,
+    'YUNDA': CourierType.yd,
+    'JT': CourierType.jt,
+    'JTSD': CourierType.jt,
+    'DB': CourierType.db,
+    'DBKD': CourierType.db,
+    'BEST': CourierType.best,
+    'EMS': CourierType.ems,
+    'POSTB': CourierType.ems,
+  };
+  for (final token in t.toUpperCase().split(RegExp(r'[^A-Z0-9]+'))) {
+    final c = codes[token];
+    if (c != null) return c;
+  }
+  return CourierType.other;
+}
+
+/// 按运单号前缀与号段推断承运商（打码单号按露出的前缀部分判断）。
+CourierType courierFromTrackingNumber(String trackingNo) {
+  final tn = trackingNo.trim().toUpperCase();
+  if (tn.isEmpty) return CourierType.other;
+
+  if (tn.startsWith('JT')) return CourierType.jt;
+  if (tn.startsWith('SF')) return CourierType.sf;
+  if (tn.startsWith('YT')) return CourierType.yt;
+  if (tn.startsWith('ST')) return CourierType.sto;
+  if (tn.startsWith('JD') || tn.startsWith('JDX') || tn.startsWith('JDD')) {
+    return CourierType.jd;
+  }
+  if (tn.startsWith('ZTO') || tn.startsWith('ZTE')) return CourierType.zto;
+  if (tn.startsWith('EA') || tn.startsWith('EB') || tn.startsWith('EY')) {
+    return CourierType.ems;
+  }
+
+  if (!RegExp(r'^\d+$').hasMatch(tn)) return CourierType.other;
+  final len = tn.length;
+
+  // 中通：14/15 位，以 73/75/76/77/78/79/68/61/63 开头
+  if ((len == 14 || len == 15) &&
+      _startsWithAny(tn, const ['73', '75', '76', '77', '78', '79', '68', '61', '63'])) {
+    return CourierType.zto;
+  }
+  // 邮政快递包裹/EMS：13 位，以 98/97/95/10/11/12 开头
+  if (len == 13 && _startsWithAny(tn, const ['98', '97', '95', '10', '11', '12'])) {
+    return CourierType.ems;
+  }
+  // 申通：12/13/15 位，以 77/55/66/33 开头
+  if ((len == 12 || len == 13 || len == 15) &&
+      (_startsWithAny(tn, const ['55', '66', '33']) || (len == 12 && tn.startsWith('77')))) {
+    return CourierType.sto;
+  }
+  // 韵达：13/15 位，以 43/46/31/39 开头
+  if ((len == 13 || len == 15) &&
+      _startsWithAny(tn, const ['43', '46', '31', '39'])) {
+    return CourierType.yd;
+  }
+  // 圆通：10/12/18 位，以 88/80/81/82/83/85 开头
+  if ((len == 10 || len == 12 || len == 18) &&
+      _startsWithAny(tn, const ['88', '80', '81', '82', '83', '85'])) {
+    return CourierType.yt;
+  }
+  // 极兔：15 位，以 66/68/88 开头
+  if (len == 15 && _startsWithAny(tn, const ['66', '68', '88'])) {
+    return CourierType.jt;
+  }
+  // 顺丰：12 位纯数字，以 01~09/10/11/12 开头
+  if (len == 12 &&
+      (tn.startsWith('0') ||
+          _startsWithAny(tn, const ['10', '11', '12']))) {
+    return CourierType.sf;
+  }
+  return CourierType.other;
+}
+
+bool _startsWithAny(String value, List<String> prefixes) =>
+    prefixes.any(value.startsWith);

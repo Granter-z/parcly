@@ -2,6 +2,7 @@
 library;
 
 import '../../core/parser/trace_time.dart';
+import '../../core/utils/image_url.dart';
 
 /// 根据订单信息构建完整京东物流详情页 URL
 String buildJdLogisticsUrl({
@@ -14,8 +15,7 @@ String buildJdLogisticsUrl({
 }) {
   final link = progressLink?.trim() ?? '';
   if (link.isNotEmpty) {
-    if (link.startsWith('//')) return 'https:$link';
-    return link;
+    return normalizeImageUrl(link);
   }
 
   if (dealState != null && dealState.isNotEmpty) {

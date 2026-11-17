@@ -10,6 +10,7 @@ library;
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../core/engine/logistics_status_engine.dart';
 import '../../core/models/package.dart';
 import '../../core/models/package_status.dart';
 import '../../ui/providers/package_provider.dart';
@@ -19,6 +20,10 @@ import '../connectors/connector_manager.dart';
 class BackgroundSyncService {
   final WidgetRef _ref;
   Timer? _syncTimer;
+
+  /// 当前定时器实际使用的周期（用于比较是否需要自适应重启；
+  /// Timer.tick 是已触发次数，不能乘出新周期）。
+  Duration? _scheduledInterval;
   AppLifecycleListener? _lifecycleListener;
   DateTime? _lastSyncTime;
   bool _isBackgroundSyncEnabled = true;
@@ -78,12 +83,14 @@ class BackgroundSyncService {
 
     if (interval.inHours >= 24) {
       debugPrint('[BackgroundSyncService] No active packages, sync paused');
+      _scheduledInterval = null;
       return;
     }
 
     debugPrint('[BackgroundSyncService] Next sync interval: ${interval.inMinutes} minutes');
 
     // 创建定时器
+    _scheduledInterval = interval;
     _syncTimer = Timer.periodic(interval, (_) async {
       if (_disposed) return;
       await _performSync();
@@ -100,6 +107,7 @@ class BackgroundSyncService {
     debugPrint('[BackgroundSyncService] Pausing background sync...');
     _syncTimer?.cancel();
     _syncTimer = null;
+    _scheduledInterval = null;
   }
 
   /// 执行同步
@@ -122,12 +130,11 @@ class BackgroundSyncService {
     if (_disposed || _syncTimer == null) return;
 
     final newInterval = _calculateNextSyncInterval();
-    final currentInterval = _syncTimer!.tick > 0
-        ? Duration(milliseconds: (_syncTimer!.tick * newInterval.inMilliseconds))
-        : newInterval;
+    final currentInterval = _scheduledInterval;
 
     // 如果间隔发生显著变化（超过 5 分钟差异），重启定时器
-    if ((newInterval.inMinutes - currentInterval.inMinutes).abs() > 5) {
+    if (currentInterval != null &&
+        (newInterval.inMinutes - currentInterval.inMinutes).abs() > 5) {
       debugPrint('[BackgroundSyncService] Interval changed, restarting timer...');
       _startBackgroundSync();
     }
@@ -161,7 +168,7 @@ class BackgroundSyncService {
     // 检查是否有今日紧急待取的包裹
     final hasUrgent = activePackages.any((p) =>
         p.status == PackageStatus.arrived &&
-        p.urgency == UrgencyLevel.urgent);
+        p.effectiveUrgency == UrgencyLevel.urgent);
     if (hasUrgent) {
       debugPrint('[BackgroundSyncService] Has urgent packages → 30min');
       return const Duration(minutes: 30);

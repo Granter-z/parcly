@@ -3,7 +3,6 @@ library;
 
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:webview_flutter/webview_flutter.dart';
@@ -12,6 +11,7 @@ import '../../core/models/package.dart';
 import '../../core/models/package_status.dart';
 import '../../core/parser/trace_time.dart';
 import '../../core/sanitizer/goods_name_cleaner.dart';
+import '../../core/utils/image_url.dart';
 import '../storage/platform_auth_store.dart';
 import 'jd_delivery_filter.dart';
 import 'jd_sync_network.dart';
@@ -19,13 +19,11 @@ import 'jd_trace_parser.dart';
 import 'platform_connector.dart';
 import 'concurrent_limiter.dart';
 import 'package:pickup_app/core/parser/pickup_point_name.dart';
+import 'package:pickup_app/core/engine/package_identity.dart';
 
+/// 调试日志只走 debugPrint；不再落盘明文文件（含订单号/运单号，且无清理机制）。
 void _logJd(String msg) {
   debugPrint(msg);
-  try {
-    final f = File('/data/data/com.example.pickup_app/app_flutter/jd_sync.log');
-    f.writeAsStringSync('[${DateTime.now().toString().substring(11, 19)}] $msg\n', mode: FileMode.append);
-  } catch (_) {}
 }
 
 class JdH5Connector implements PlatformConnector {
@@ -52,8 +50,18 @@ class JdH5Connector implements PlatformConnector {
   @override
   Future<bool> isAuthenticated() async => _authStore.isBound('jd');
 
+  bool _cancelled = false;
+
   @override
-  Future<void> cancelSync() async {}
+  Future<void> cancelSync() async {
+    _cancelled = true;
+    _capturedJsonList.clear();
+    _capturedLogisticsJson.clear();
+    final oc = _orderCapturedCompleter;
+    if (oc != null && !oc.isCompleted) oc.complete();
+    final lc = _logisticsCapturedCompleter;
+    if (lc != null && !lc.isCompleted) lc.complete();
+  }
 
   @override
   String? get lastIssue => _lastIssue;
@@ -92,6 +100,7 @@ class JdH5Connector implements PlatformConnector {
     }
 
     _lastIssue = null;
+    _cancelled = false;
     _networkGate.failed = false;
     _networkGate.issue = null;
     _networkGate.wake = null;
@@ -117,9 +126,6 @@ class JdH5Connector implements PlatformConnector {
               _capturedJsonList.add(text);
               final c = _orderCapturedCompleter;
               if (c != null && !c.isCompleted) c.complete();
-              try {
-                File('/data/data/com.example.pickup_app/app_flutter/jd_order_list.json').writeAsStringSync(text);
-              } catch (_) {}
             } else if (text.contains('tracePointVOList') || text.contains('carriageId')) {
               _logJd('[JD Hook] Captured logistics response (len: ${text.length})');
               _capturedLogisticsJson.add(text);
@@ -256,7 +262,8 @@ class JdH5Connector implements PlatformConnector {
     if (orders.isEmpty) {
       if (_networkSoftFail) return;
       final landedUrl = await _locationHref(controller);
-      _logJd('[JD] Fallback landed: $landedUrl');
+      // 只记 host：落地 URL 的 query 里可能带订单号。
+      _logJd('[JD] Fallback landed host=${Uri.tryParse(landedUrl)?.host ?? ''}');
       if (_networkSoftFail) return;
       // P42-c：网络 soft 本轮禁止因 plogin/login 误 expire
       if (jdShouldExpireOnLoginLanding(
@@ -299,11 +306,12 @@ class JdH5Connector implements PlatformConnector {
       _logJd('[JD] keep expired: orders ok but already expired before sync');
     }
 
-    if (_networkSoftFail) return;
+    if (_networkSoftFail || _cancelled) return;
 
-    // ⚡ 优化：并发拉取物流详情（限制并发数为 3）
+    // 共享 WebView 必须串行：详情页共用 _controller 与 _capturedLogisticsJson，
+    // 并发 loadRequest 会互相打断，A 单捕获的轨迹会被 B 单当成自己的（与 PDD 同因，见 pdd_connector）。
     final executor = ThrottledExecutor(
-      maxConcurrent: 3,
+      maxConcurrent: 1,
       minDelay: const Duration(milliseconds: 150),
       maxDelay: const Duration(milliseconds: 350),
     );
@@ -326,7 +334,7 @@ class JdH5Connector implements PlatformConnector {
     }
 
     for (final o in validOrders.values) {
-      if (_networkSoftFail) return;
+      if (_networkSoftFail || _cancelled) return;
       final detail = detailMap[o.orderId];
 
       final timelineJson = (detail != null && detail.timelineNodes.isNotEmpty)
@@ -339,12 +347,12 @@ class JdH5Connector implements PlatformConnector {
               isPendingShipment: o.status == PackageStatus.pendingShipment,
               isOrderSigned: o.status == PackageStatus.pickedUp,
               pickupCode: o.pickupCode,
-              stationName: o.stationName,
             ).status
           : o.status;
 
-      _logJd('[JD Yield] Order: ${o.goodsName}, id: ${o.orderId}, status: ${status.label}, '
-          'tracking=${detail?.trackingNumber ?? ''} nodes=${detail?.timelineNodes.length ?? 0}');
+      _logJd('[JD Yield] id=${packageIdForLog('JD_${o.orderId}')} status=${status.label} '
+          'hasTracking=${(detail?.trackingNumber ?? '').isNotEmpty} '
+          'nodes=${detail?.timelineNodes.length ?? 0}');
 
       yield Package(
         id: 'JD_${o.orderId}',
@@ -400,7 +408,7 @@ class JdH5Connector implements PlatformConnector {
   /// 导航到订单物流跟踪页：双轨机制（优先拦截接口，超时走 DOM 纯文本状态机兜底）
   Future<_JdLogisticsDetail?> _fetchLogisticsDetail(String orderId, String progressLink) async {
     final controller = _controller;
-    if (controller == null) return null;
+    if (controller == null || _cancelled) return null;
     _capturedLogisticsJson.clear();
     final completer = Completer<void>();
     _logisticsCapturedCompleter = completer;
@@ -425,7 +433,9 @@ class JdH5Connector implements PlatformConnector {
       if (domText.isNotEmpty) {
         final domNodes = parseJdDomTimeline(domText);
         if (domNodes.isNotEmpty) {
-          _logJd('[JD Logistics] DOM fallback parsed ${domNodes.length} nodes for $orderId');
+          _logJd('[JD Logistics] DOM fallback parsed ${domNodes.length} nodes');
+          // 页面行序不保证最新在前；引擎以 events.first 为最新节点。
+          domNodes.sort((a, b) => (b['time'] ?? '').compareTo(a['time'] ?? ''));
           return _JdLogisticsDetail(
             trackingNumber: '',
             carrier: '京东快递',
@@ -479,6 +489,8 @@ class JdH5Connector implements PlatformConnector {
         }
       }
       if (nodes.isEmpty) return null;
+      // 引擎读 events.first 作为最新节点；接口不保证顺序，统一按时间倒序。
+      nodes.sort((a, b) => (b['time'] ?? '').compareTo(a['time'] ?? ''));
       return _JdLogisticsDetail(
         trackingNumber: body['carriageId']?.toString() ?? '',
         carrier: body['carrier']?.toString() ?? '',
@@ -614,7 +626,7 @@ class JdH5Connector implements PlatformConnector {
         if (orderId.isEmpty) continue;
 
         if (!isJdCourierDelivery(item)) {
-          _logJd('[JD Filter] Not courier delivery, drop: $orderId');
+          _logJd('[JD Filter] Not courier delivery, drop: ${packageIdForLog('JD_$orderId')}');
           continue;
         }
 
@@ -637,7 +649,7 @@ class JdH5Connector implements PlatformConnector {
           final w0 = wareList[0] as Map<String, dynamic>;
           goodsName = GoodsNameCleaner.clean(w0['wareName']?.toString() ?? '');
           imageUrl = w0['imageUrl']?.toString() ?? '';
-          if (imageUrl.startsWith('//')) imageUrl = 'https:$imageUrl';
+          imageUrl = normalizeImageUrl(imageUrl);
         }
 
         // 轨迹进展与自提码
@@ -648,7 +660,7 @@ class JdH5Connector implements PlatformConnector {
 
         // P45：部分秒送单 progressId 同为 logistics，结构标记漏网时用状态文案兜底
         if (looksLikeJdInstantDeliveryText('$latestText $statusName $tip')) {
-          _logJd('[JD Filter] Instant delivery, drop: $orderId');
+          _logJd('[JD Filter] Instant delivery, drop: ${packageIdForLog('JD_$orderId')}');
           continue;
         }
         final orderDetailLink =
@@ -690,7 +702,6 @@ class JdH5Connector implements PlatformConnector {
                     statusName.contains('待出库'),
                 isOrderSigned: isCompleted,
                 pickupCode: '',
-                stationName: station,
               ).status;
 
         list.add(_JdOrder(

@@ -98,17 +98,18 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   trailing: const Icon(Icons.chevron_right_rounded, size: 20, color: Colors.grey),
                   onTap: () async {
                     HapticFeedback.lightImpact();
+                    // 先取 messenger 再 pop：pop 之后 context 已失效，
+                    // 用它弹提示会静默丢失（与下方两项保持一致）。
+                    final messenger = ScaffoldMessenger.of(context);
                     Navigator.pop(context);
                     await ref.read(connectorManagerProvider).syncAll();
-                    if (context.mounted) {
-                      final issue = ref.read(connectorManagerProvider).lastIssue;
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text(issue ?? '已同步最新物流状态'),
-                          behavior: SnackBarBehavior.floating,
-                        ),
-                      );
-                    }
+                    final issue = ref.read(connectorManagerProvider).lastIssue;
+                    messenger.showSnackBar(
+                      SnackBar(
+                        content: Text(issue ?? '已同步最新物流状态'),
+                        behavior: SnackBarBehavior.floating,
+                      ),
+                    );
                   },
                 ),
                 const Divider(height: 1, indent: 56),

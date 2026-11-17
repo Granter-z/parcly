@@ -16,9 +16,11 @@ import 'package:webview_flutter_android/webview_flutter_android.dart';
 import '../../core/models/package.dart';
 import '../../core/models/package_status.dart';
 import '../../core/engine/logistics_status_engine.dart';
+import '../../core/engine/package_identity.dart';
 import '../../core/engine/timeline_merge.dart';
 import '../../core/parser/trace_time.dart';
 import '../../core/sanitizer/goods_name_cleaner.dart';
+import '../../core/utils/image_url.dart';
 import '../storage/platform_auth_store.dart';
 import '../webview/platform_cookie.dart';
 import 'pdd_trace_parser.dart';
@@ -264,7 +266,7 @@ class PddH5Connector implements PlatformConnector {
       for (final healed in PddFalsePickupHeal.healLocalFakePickups(
         _getLocalPackages?.call() ?? const <Package>[],
       )) {
-        debugPrint('[PDD NewMode] P44 同步前本地自愈 ${healed.id} → ${healed.status.label}');
+        debugPrint('[PDD NewMode] P44 同步前本地自愈 ${packageIdForLog(healed.id)} → ${healed.status.label}');
         yield healed;
       }
 
@@ -362,7 +364,7 @@ class PddH5Connector implements PlatformConnector {
             continue;
           }
           if (cacheIsStaleFakeComplete) {
-            debugPrint('[PDD NewMode] P44 丢弃 stale pickedUp 缓存，强制 enrich: $orderSn');
+            debugPrint('[PDD NewMode] P44 丢弃 stale pickedUp 缓存，强制 enrich: ${packageIdForLog('PDD_$orderSn')}');
           }
 
           // 优先同步时间轴：在运（在途/派件）、已购买（待发货）、到货（待取件）
@@ -398,7 +400,7 @@ class PddH5Connector implements PlatformConnector {
 
           orphanPending[orderSn] = _PddOrder(pkg: local, fromList: false);
           handledOrderSns.add(orderSn);
-          debugPrint('[PDD NewMode] P44 扫尾强制 enrich: $orderSn');
+          debugPrint('[PDD NewMode] P44 扫尾强制 enrich: ${packageIdForLog('PDD_$orderSn')}');
         }
         if (orphanPending.isNotEmpty) {
           yield* _enrichPending(orphanPending);
@@ -489,7 +491,7 @@ class PddH5Connector implements PlatformConnector {
           listBase: base,
         );
         if (recovered != null) {
-          debugPrint('[PDD NewMode] P44 enrich失败本地自愈 $orderSn → ${recovered.status.label}');
+          debugPrint('[PDD NewMode] P44 enrich失败本地自愈 ${packageIdForLog('PDD_$orderSn')} → ${recovered.status.label}');
           enrichSucceeded.add(orderSn);
           yield recovered;
         }
@@ -504,13 +506,12 @@ class PddH5Connector implements PlatformConnector {
         isPendingShipment: base.status == PackageStatus.pendingShipment,
         isOrderSigned: detail.status == PackageStatus.pickedUp,
         pickupCode: detail.pickupCode.isNotEmpty ? detail.pickupCode : base.pickupCode,
-        stationName: detail.stationName.isNotEmpty ? detail.stationName : (base.stationName ?? ''),
       );
 
       final derivedStatus = derived.status;
       final syncInterval = derived.recommendedSyncInterval;
 
-      debugPrint('[PDD NewMode] 订单 $orderSn 时间轴推导完成 => '
+      debugPrint('[PDD NewMode] 订单 ${packageIdForLog('PDD_$orderSn')} 时间轴推导完成 => '
           '货物状态: 【${derivedStatus.label}】 '
           '稳定性: 【${derived.stabilityName}】 '
           '建议同步间隔: ${syncInterval.inMinutes >= 60 ? "${syncInterval.inHours}小时" : "${syncInterval.inMinutes}分钟"} '
@@ -553,10 +554,10 @@ class PddH5Connector implements PlatformConnector {
               ),
             );
       if (staleListCompletion && derivedStatus != PackageStatus.pickedUp) {
-        debugPrint('[PDD NewMode] 列表已完成且最新轨迹超 7 天，采信完成: $orderSn');
+        debugPrint('[PDD NewMode] 列表已完成且最新轨迹超 7 天，采信完成: ${packageIdForLog('PDD_$orderSn')}');
       }
       if (yieldStatus != derivedStatus) {
-        debugPrint('[PDD NewMode] P44 coerce yield $orderSn ${derivedStatus.label} → ${yieldStatus.label}');
+        debugPrint('[PDD NewMode] P44 coerce yield ${packageIdForLog('PDD_$orderSn')} ${derivedStatus.label} → ${yieldStatus.label}');
       }
 
       _timelineCache[orderSn] = _TimelineCache(
@@ -585,15 +586,6 @@ class PddH5Connector implements PlatformConnector {
     }
   }
 
-  /// 合并「订单列表官方分类」与「详情页最新轨迹」两侧状态：取生命周期更靠后的阶段，禁止倒退。
-  ///
-  /// 注意：详情页明确已签收（pickedUp）时必须采信详情，否则取件后卡片会一直停在待取件，
-  /// 到件提醒也不会被取消。
-  @visibleForTesting
-  static PackageStatus mergeStatus(PackageStatus listStatus, PackageStatus detailStatus) {
-    return _statusRank(listStatus) > _statusRank(detailStatus) ? listStatus : detailStatus;
-  }
-
   /// 合并两份时间轴节点为无损并集，避免单节点残缺数据覆盖完整轨迹
   static String? _richerTimeline(String? a, String? b) {
     return mergeTimelineJson(b, a);
@@ -606,28 +598,6 @@ class PddH5Connector implements PlatformConnector {
       return (jsonDecode(json) as List).length;
     } catch (_) {
       return 0;
-    }
-  }
-
-  /// 包裹生命周期阶段排序，用于判断哪一侧的状态更靠后
-  ///
-  /// 已拒收是终结态：即使列表接口仍返回在途文案，也不允许把它拉回在途。
-  static int _statusRank(PackageStatus s) {
-    switch (s) {
-      case PackageStatus.pendingShipment:
-        return 0;
-      case PackageStatus.transit:
-        return 1;
-      case PackageStatus.delivering:
-        return 2;
-      case PackageStatus.arrived:
-        return 3;
-      case PackageStatus.pickedUp:
-        return 4;
-      case PackageStatus.archived:
-        return 5;
-      case PackageStatus.rejected:
-        return 6;
     }
   }
 
@@ -1103,7 +1073,7 @@ class PddH5Connector implements PlatformConnector {
         fallbackCourier: courierFromName(rawShippingName),
         rawTraces: rawTraces,
       );
-      debugPrint('[PDD] Detail[$orderSn] load=${t1}ms rawPoll=${t2 - t1}ms '
+      debugPrint('[PDD] Detail[${packageIdForLog('PDD_$orderSn')}] load=${t1}ms rawPoll=${t2 - t1}ms '
           'expressPoll=${t3 - t2}ms link=${expressUrl != null} landed=$landedPath '
           'deepLen=${deep.length} deepTs=$deepTsCount rawTraces=${rawTraces?.length ?? 0} '
           'total=${sw.elapsedMilliseconds}ms');
@@ -1124,7 +1094,7 @@ class PddH5Connector implements PlatformConnector {
                 final jsonNodesStr = jsonEncode(jsonNodes);
                 final mergedJson = mergeTimelineJson(curResult?.rawTimelineJson, jsonNodesStr);
                 curResult = curResult?.copyWith(rawTimelineJson: mergedJson);
-                debugPrint('[PDD] window.name fallback enriched ${jsonNodes.length} nodes for $orderSn');
+                debugPrint('[PDD] window.name fallback enriched ${jsonNodes.length} nodes for ${packageIdForLog('PDD_$orderSn')}');
               }
             }
           }
@@ -1134,13 +1104,15 @@ class PddH5Connector implements PlatformConnector {
       }
 
       if (curResult != null) {
-        debugPrint('[PDD] Detail[$orderSn] courier=${curResult.courier.displayName} tracking=${curResult.trackingNo} '
-            'status=${curResult.status.label} code="${curResult.pickupCode}" '
+        debugPrint('[PDD] Detail[${packageIdForLog('PDD_$orderSn')}] '
+            'courier=${curResult.courier.displayName} '
+            'hasTracking=${curResult.trackingNo.isNotEmpty} '
+            'status=${curResult.status.label} hasCode=${curResult.pickupCode.isNotEmpty} '
             'timelineNodes=${_timelineNodeCount(curResult.rawTimelineJson)}');
       }
       return curResult;
     } catch (e) {
-      debugPrint('[PDD] _fetchOrderDetail error for $orderSn: $e');
+      debugPrint('[PDD] _fetchOrderDetail error for ${packageIdForLog('PDD_$orderSn')}: $e');
       return null;
     }
   }
@@ -1236,7 +1208,8 @@ class PddH5Connector implements PlatformConnector {
       if (orderSnMatch != null) {
         final extractedSn = orderSnMatch.group(1)!.trim();
         if (extractedSn.isNotEmpty && extractedSn != orderSn) {
-          debugPrint('[PDD] OrderSn mismatch: expected $orderSn, found $extractedSn. '
+          debugPrint('[PDD] OrderSn mismatch: expected ${packageIdForLog('PDD_$orderSn')}, '
+              'found ${packageIdForLog('PDD_$extractedSn')}. '
               'Ignoring cross-page dirty text'
               '${hasRawTraces ? ", keeping rawTraces=${rawTraces.length}" : ""}.');
           if (!hasRawTraces) return null;
@@ -1561,7 +1534,6 @@ class PddH5Connector implements PlatformConnector {
         // P44：订单侧宽签收交由 derive 结合最新节点否决；不再在此处锁死 pickedUp
         isOrderSigned: status == PackageStatus.pickedUp,
         pickupCode: pickupCode,
-        stationName: stationName,
       );
       // 有官方时间轴时以 derive 为准（含误标 pickedUp → 在途回滚）
       if (status != PackageStatus.pendingShipment || derived.status != PackageStatus.pendingShipment) {
@@ -1581,90 +1553,6 @@ class PddH5Connector implements PlatformConnector {
       latestText: latestText,
       rawTimelineJson: rawTimelineJson,
     );
-  }
-
-  static CourierType courierFromName(String text) {
-    if (text.contains('顺丰')) return CourierType.sf;
-    if (text.contains('京东')) return CourierType.jd;
-    if (text.contains('中通')) return CourierType.zto;
-    if (text.contains('圆通')) return CourierType.yt;
-    if (text.contains('申通')) return CourierType.sto;
-    if (text.contains('韵达')) return CourierType.yd;
-    if (text.contains('极兔')) return CourierType.jt;
-    if (text.contains('邮政') || text.contains('EMS')) return CourierType.ems;
-    if (text.contains('德邦')) return CourierType.db;
-    if (text.contains('百世')) return CourierType.best;
-    return CourierType.other;
-  }
-
-  static CourierType courierFromTrackingNumber(String trackingNo) {
-    final tn = trackingNo.trim().toUpperCase();
-    if (tn.isEmpty) return CourierType.other;
-
-    if (tn.startsWith('JT')) return CourierType.jt;
-    if (tn.startsWith('SF')) return CourierType.sf;
-    if (tn.startsWith('YT')) return CourierType.yt;
-    if (tn.startsWith('ST')) return CourierType.sto;
-    if (tn.startsWith('JD') || tn.startsWith('JDX') || tn.startsWith('JDD')) return CourierType.jd;
-    if (tn.startsWith('ZTO') || tn.startsWith('ZTE')) return CourierType.zto;
-    if (tn.startsWith('EA') || tn.startsWith('EB') || tn.startsWith('EY')) return CourierType.ems;
-
-    final isDigits = RegExp(r'^\d+$').hasMatch(tn);
-    if (isDigits) {
-      final len = tn.length;
-      // 中通：14位或15位，以 73, 75, 76, 77, 78, 79 开头，或 68, 61, 63 开头
-      if ((len == 14 || len == 15) &&
-          (tn.startsWith('73') ||
-              tn.startsWith('75') ||
-              tn.startsWith('76') ||
-              tn.startsWith('77') ||
-              tn.startsWith('78') ||
-              tn.startsWith('79') ||
-              tn.startsWith('68') ||
-              tn.startsWith('61') ||
-              tn.startsWith('63'))) {
-        return CourierType.zto;
-      }
-      // 邮政快递包裹/EMS：13位，以 98, 97, 95, 10, 11, 12 开头
-      if (len == 13 &&
-          (tn.startsWith('98') ||
-              tn.startsWith('97') ||
-              tn.startsWith('95') ||
-              tn.startsWith('10') ||
-              tn.startsWith('11') ||
-              tn.startsWith('12'))) {
-        return CourierType.ems;
-      }
-      // 申通：12位、13位或15位，以 77, 55, 66, 33 开头
-      if ((len == 12 || len == 13 || len == 15) &&
-          (tn.startsWith('55') || tn.startsWith('66') || tn.startsWith('33') || (len == 12 && tn.startsWith('77')))) {
-        return CourierType.sto;
-      }
-      // 韵达：13位或15位，以 43, 46, 31, 39, 12 开头
-      if ((len == 13 || len == 15) &&
-          (tn.startsWith('43') || tn.startsWith('46') || tn.startsWith('31') || tn.startsWith('39'))) {
-        return CourierType.yd;
-      }
-      // 圆通：10位/12位/18位，以 88, 80, 81, 82, 83, 85 开头
-      if ((len == 10 || len == 12 || len == 18) &&
-          (tn.startsWith('88') || tn.startsWith('80') || tn.startsWith('81') || tn.startsWith('82') || tn.startsWith('83') || tn.startsWith('85'))) {
-        return CourierType.yt;
-      }
-      // 极兔：15位，以 66, 68 开头
-      if (len == 15 && (tn.startsWith('66') || tn.startsWith('68') || tn.startsWith('88'))) {
-        return CourierType.jt;
-      }
-      // 顺丰：12位纯数字，以 01~09, 10, 11, 12 开头
-      if (len == 12 &&
-          (tn.startsWith('0') ||
-              tn.startsWith('10') ||
-              tn.startsWith('11') ||
-              tn.startsWith('12'))) {
-        return CourierType.sf;
-      }
-    }
-
-    return CourierType.other;
   }
 
   /// 从一行文本推断包裹状态（委托给官方状态分类器）
@@ -1728,7 +1616,7 @@ class PddH5Connector implements PlatformConnector {
     var goodsPic = _firstStringDeep(o, const [
       'goods_image_url', 'goodsImageUrl', 'image_url', 'hd_thumb_url', 'thumb_url', 'goods_thumb_url',
     ], 4);
-    if (goodsPic.startsWith('//')) goodsPic = 'https:$goodsPic';
+    goodsPic = normalizeImageUrl(goodsPic);
 
     final descText = _firstStringDeep(o, const [
       'tracking_desc', 'logistics_desc', 'bottom_left_content', 'status_desc', 'desc', 'text',
@@ -1758,7 +1646,8 @@ class PddH5Connector implements PlatformConnector {
       fullText: allText,
       pickupCode: pickupCode,
     );
-    debugPrint('[PDD LIST] sn=$orderSn status=${status.label} promptLen=${statusPrompt.length} descLen=${descText.length}');
+    debugPrint('[PDD LIST] sn=${packageIdForLog('PDD_$orderSn')} status=${status.label} '
+        'promptLen=${statusPrompt.length} descLen=${descText.length}');
 
     // 一次性输出「待收货」订单对象的字段名（仅键名，不含值），用于定位官方二级标签字段
     if (_listKeysDumpedCount < 2 && statusPrompt.contains('待收货')) {
@@ -1790,12 +1679,6 @@ class PddH5Connector implements PlatformConnector {
       addedAt: DateTime.now(),
     );
 
-    // 所有未完成的活跃订单（待取件、派送中、运输中）均需同步完整官方物流时间线与详细动态
-    final isCompleted = status == PackageStatus.pickedUp ||
-        status == PackageStatus.archived ||
-        status == PackageStatus.rejected;
-    final needsCode = !isCompleted && status != PackageStatus.pendingShipment;
-
     // 若订单已退款/关闭，但商家已发货并存在真实运单号，说明包裹仍在物理运输中，不予过滤
     final hasActiveTracking = trackingNo.isNotEmpty && trackingNo != orderSn;
     final isClosedOrRefunded = statusPrompt.contains('退款') || statusPrompt.contains('已关闭') || statusPrompt.contains('取消');
@@ -1804,7 +1687,6 @@ class PddH5Connector implements PlatformConnector {
     return _ParsedOrder(
       package: pkg,
       orderMeta: _PddOrder(pkg: pkg),
-      needsPickupCode: needsCode,
       isFiltered: isFiltered,
     );
   }
@@ -1900,13 +1782,11 @@ class PddH5Connector implements PlatformConnector {
 class _ParsedOrder {
   final Package package;
   final _PddOrder orderMeta;
-  final bool needsPickupCode;
   final bool isFiltered;
 
   _ParsedOrder({
     required this.package,
     required this.orderMeta,
-    required this.needsPickupCode,
     required this.isFiltered,
   });
 }
@@ -2163,7 +2043,6 @@ class PddFalsePickupHeal {
         pickupCode: LogisticsStatusEngine.isActiveLogisticsAction(newestAction)
             ? ''
             : pkg.pickupCode,
-        stationName: pkg.stationName ?? '',
       );
       if (!derived.status.isCompleted) {
         return pkg.copyWith(status: derived.status);

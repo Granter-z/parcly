@@ -145,6 +145,7 @@ class HivePackage {
     String? goodsImageUrl,
     String? platform,
     String? stationName,
+    String? rawTimelineJson,
     String? fingerprint,
   }) {
     return HivePackage(
@@ -168,6 +169,7 @@ class HivePackage {
       goodsImageUrl: goodsImageUrl ?? this.goodsImageUrl,
       platform: platform ?? this.platform,
       stationName: stationName ?? this.stationName,
+      rawTimelineJson: rawTimelineJson ?? this.rawTimelineJson,
       fingerprint: fingerprint ?? this.fingerprint,
     );
   }

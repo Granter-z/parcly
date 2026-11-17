@@ -71,16 +71,16 @@ class LogisticsStatusEngine {
     bool isPendingShipment = false,
     bool isOrderSigned = false,
     String pickupCode = '',
-    String stationName = '',
   }) {
-    // 0. 最新轨迹明确为拒收/退回：属于终结态，必须优先于列表侧的签收文案与取件码
-    if (events.isNotEmpty) {
-      final newest = newestNodeText(events);
-      if (isRejectionSignal(newest)) {
+    // 0. 轨迹中出现拒收/退回：属于终结态，必须优先于列表侧的签收文案与取件码。
+    //    events 最新在前，取第一条命中的拒收文案作为原因。
+    for (final node in events) {
+      final combined = '${node['tag'] ?? ''} ${node['text'] ?? ''}'.trim();
+      if (isRejectionSignal(combined)) {
         return DerivedDeliveryStatus(
           status: PackageStatus.rejected,
           hasException: true,
-          exceptionReason: events.first['text'],
+          exceptionReason: node['text'],
           confidence: 0.95,
           stability: LogisticsStability.settled,
           recommendedSyncInterval: const Duration(days: 365),
@@ -114,7 +114,9 @@ class LogisticsStatusEngine {
       );
     }
 
-    // 3. 拥有明确有效取件码（货架码/单号后五位等）且非待发货
+    // 3. 拥有明确有效取件码（货架码/单号后五位等）且非待发货。
+    //    取件码就是「货已在取件点」的强证据，优先于订单侧文案与轨迹标签（P44-c）。
+    //    例外由调用方处理：假完成自愈时若最新节点仍活跃，会显式不传取件码。
     if (pickupCode.trim().isNotEmpty && !isPendingShipment) {
       return const DerivedDeliveryStatus(
         status: PackageStatus.arrived,
@@ -136,35 +138,19 @@ class LogisticsStatusEngine {
 
       final action = classifyNode(combined);
 
-      if (action == LogisticsNodeAction.rejected) {
-        // 拒收/退回是终结态：一旦出现在轨迹中即定案，不再继续寻找基态
-        baseAction = LogisticsNodeAction.rejected;
-        exceptionText ??= text;
-        break;
-      }
-
       if (action == LogisticsNodeAction.exception) {
         exceptionText ??= text;
         continue; // 异常记录后继续向下寻找基态
       }
 
-      if (action == LogisticsNodeAction.signed) {
-        baseAction = LogisticsNodeAction.signed;
+      // 最新节点优先：扫描到第一个明确动作就定案，绝不让更旧的节点反超。
+      //（旧实现里 inTransit 不 break，会导致「新的在途 + 旧的已签收」被判成已签收。）
+      if (action == LogisticsNodeAction.signed ||
+          action == LogisticsNodeAction.waitingPickup ||
+          action == LogisticsNodeAction.outForDelivery ||
+          action == LogisticsNodeAction.inTransit) {
+        baseAction = action;
         break;
-      }
-
-      if (action == LogisticsNodeAction.waitingPickup) {
-        baseAction = LogisticsNodeAction.waitingPickup;
-        break;
-      }
-
-      if (action == LogisticsNodeAction.outForDelivery) {
-        baseAction = LogisticsNodeAction.outForDelivery;
-        break;
-      }
-
-      if (action == LogisticsNodeAction.inTransit && baseAction == null) {
-        baseAction = LogisticsNodeAction.inTransit;
       }
     }
 
@@ -440,4 +426,7 @@ extension PackagePickupDisplay on Package {
   /// 当前紧急级别（由引擎按状态和取件码推导）
   UrgencyLevel get effectiveUrgency =>
       LogisticsStatusEngine.urgencyFor(status: status, pickupCode: pickupCode, fallback: urgency);
+
+  /// 综合紧急程度评分（排序用）。读有效紧急级别，不读可能残留的历史 `urgency`。
+  int get compositeUrgencyScore => status.urgencyScore + effectiveUrgency.score * 10;
 }

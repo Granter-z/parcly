@@ -71,6 +71,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
 
     // 延迟初始化后台同步服务和保活服务（等待 ref 可用）
     WidgetsBinding.instance.addPostFrameCallback((_) async {
+      // 页面挂载时若已在同步，补上转圈。
+      _syncSpin(ref.read(syncStateProvider));
       _backgroundSyncService = BackgroundSyncService(ref);
       _backgroundSyncService!.initialize();
 
@@ -143,11 +145,42 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
           ),
         );
       }
+    }).catchError((Object e, StackTrace st) {
+      // syncAll 可能在内部 try 之前抛错（如 isAuthenticated）：whenComplete 返回的
+      // Future 会携带同一错误，不接住就是未处理异步异常。
+      debugPrint('[Home] sync failed: $e');
+      if (!refreshCompleter.isCompleted) {
+        refreshCompleter.complete();
+      }
+      return 0;
     });
 
     // 首批在途件到达即停圈，最长保护等待 3.5 秒
     final timeout = Future.delayed(const Duration(milliseconds: 3500));
     await Future.any([refreshCompleter.future, timeout]);
+  }
+
+  /// 同步转圈跟随同步状态；系统要求移除动画时不转。
+  ///
+  /// 只在状态变化回调里启停，不放在 build 里（build 不应有副作用）。
+  void _syncSpin(bool isSyncing) {
+    if (!mounted) return;
+    if (isSyncing) {
+      if (!_spinController.isAnimating && !Motion.reduce(context)) {
+        _spinController.repeat();
+      }
+    } else if (_spinController.isAnimating) {
+      _spinController.stop();
+    }
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // 同步过程中用户打开「移除动画」：立即收掉循环动画。
+    if (_spinController.isAnimating && Motion.reduce(context)) {
+      _spinController.stop();
+    }
   }
 
   /// 同步由 true 落回 false 时，闪一次完成态
@@ -174,16 +207,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
 
     ref.listen<bool>(syncStateProvider, (previous, next) {
       if (previous == true && next == false) _flashSynced();
+      _syncSpin(next);
     });
-
-    if (isSyncing) {
-      // 转圈是「正在工作」的反馈，属于有动机的循环；系统要求移除动画时不转。
-      if (!_spinController.isAnimating && !Motion.reduce(context)) {
-        _spinController.repeat();
-      }
-    } else {
-      if (_spinController.isAnimating) _spinController.stop();
-    }
 
     const weekdays = ['一', '二', '三', '四', '五', '六', '日'];
     final now = DateTime.now();

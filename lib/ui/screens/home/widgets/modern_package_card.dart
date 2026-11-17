@@ -16,6 +16,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../../core/models/package.dart';
 import '../../../../core/models/package_status.dart';
 import '../../../../core/engine/station_grouping.dart';
+import '../../../../core/utils/image_url.dart';
 import '../../../providers/package_provider.dart';
 import '../../../components/spring_card.dart';
 import '../../../components/hero_pickup_badge.dart';
@@ -429,7 +430,7 @@ class _ProductImage extends StatelessWidget {
 
     // 兜底历史数据：淘宝曾存过 //img.alicdn.com/... 这类缺协议 scheme 的 URL，
     // 直接请求必然失败。
-    final normalized = raw.startsWith('//') ? 'https:$raw' : raw;
+    final normalized = normalizeImageUrl(raw);
     return ClipRRect(
       borderRadius: AppRadius.smAll,
       child: Image.network(

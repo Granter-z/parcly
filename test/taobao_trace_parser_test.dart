@@ -123,7 +123,6 @@ void main() {
           events: t.nodes,
           isOrderSigned: t.stateLabel.contains('签收') || t.lgStatus == 'SIGN',
           pickupCode: t.pickupCode,
-          stationName: t.stationName,
         ).status);
       }
       expect(statuses.where((s) => s == PackageStatus.transit).length, 2);

@@ -1,5 +1,6 @@
 // 物流详情抽屉的收回行为测试：点击抽屉外的区域应当收起抽屉。
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pickup_app/core/models/package.dart';
 import 'package:pickup_app/core/models/package_status.dart';
@@ -15,13 +16,15 @@ Package _pkg() => Package(
       platform: 'pdd',
     );
 
-Widget _host() => MaterialApp(
-      home: Scaffold(
-        body: Builder(
-          builder: (context) => Center(
-            child: ElevatedButton(
-              onPressed: () => TrackingTimelineSheet.show(context, _pkg()),
-              child: const Text('打开物流详情'),
+Widget _host() => ProviderScope(
+      child: MaterialApp(
+        home: Scaffold(
+          body: Builder(
+            builder: (context) => Center(
+              child: ElevatedButton(
+                onPressed: () => TrackingTimelineSheet.show(context, _pkg()),
+                child: const Text('打开物流详情'),
+              ),
             ),
           ),
         ),

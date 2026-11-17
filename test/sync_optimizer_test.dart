@@ -29,7 +29,6 @@ void main() {
       expect(
         SyncOptimizer.shouldSkipDetailFetch(
           localPackage: _pkg(PackageStatus.arrived),
-          incomingStatus: PackageStatus.transit,
         ),
         isTrue,
       );
@@ -39,7 +38,6 @@ void main() {
       expect(
         SyncOptimizer.shouldSkipDetailFetch(
           localPackage: _pkg(PackageStatus.arrived),
-          incomingStatus: PackageStatus.transit,
           force: true,
         ),
         isFalse,
@@ -54,7 +52,6 @@ void main() {
             age: const Duration(days: 7),
             fetchedAge: const Duration(hours: 1),
           ),
-          incomingStatus: PackageStatus.transit,
         ),
         isTrue,
       );
@@ -68,7 +65,6 @@ void main() {
             age: const Duration(hours: 1),
             fetchedAge: const Duration(hours: 48),
           ),
-          incomingStatus: PackageStatus.transit,
         ),
         isFalse,
       );
@@ -83,8 +79,7 @@ void main() {
         expect(
           SyncOptimizer.shouldSkipDetailFetch(
             localPackage: _pkg(status),
-            incomingStatus: PackageStatus.transit,
-            force: true,
+              force: true,
           ),
           isTrue,
           reason: '${status.label} 属于已完成，force 不该把它重新拉一遍',
@@ -96,7 +91,6 @@ void main() {
       expect(
         SyncOptimizer.shouldSkipDetailFetch(
           localPackage: null,
-          incomingStatus: PackageStatus.transit,
           force: false,
         ),
         isFalse,
@@ -111,7 +105,7 @@ void main() {
             orders: orders,
             localPackages: local,
             getOrderId: (order) => order,
-            getStatus: (_) => PackageStatus.transit,
+            idPrefix: 'TB_',
             force: force,
           );
 

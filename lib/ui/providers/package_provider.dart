@@ -3,8 +3,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:hive/hive.dart';
 import '../../main.dart';
 import '../../core/debug/debug_trace.dart';
-import '../../core/debug/metrics.dart';
 import '../../core/engine/arrived_at.dart';
+import '../../core/engine/logistics_status_engine.dart';
 import '../../core/engine/station_grouping.dart';
 import 'pickup_point_alias_provider.dart';
 import '../../core/engine/package_identity.dart';
@@ -61,7 +61,7 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
           }
           // 清理存量误导入的餐饮外卖与秒送即时订单（非快递包裹）
           if (pkg.platform == 'jd' && _isFoodTakeoutPackage(pkg)) {
-            debugPrint('[PackageListNotifier] Pruning takeout/food package: ${pkg.goodsName}');
+            debugPrint('[PackageListNotifier] Pruning takeout/food package: ${packageIdForLog(pkg.id)}');
             continue;
           }
           // 保护：已取件/已完成的包裹生命周期已完结，严禁被误判为在途。
@@ -341,7 +341,18 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
       return;
     }
 
-    final updatedPackage = package.copyWith(notifiedArrived: true);
+    // 两次 await 期间用户可能已点「确认取件」或同步写入了更新：
+    // 必须基于 state 里的最新记录只改 notifiedArrived，不能拿旧快照整条覆盖
+    //（否则会清掉用户手动写入的 pickedUpAt，击穿「同步不清 pickedUpAt」铁律）。
+    Package? latest;
+    for (final p in state) {
+      if (p.id == package.id) {
+        latest = p;
+        break;
+      }
+    }
+    if (latest == null) return; // 期间已被用户删除
+    final updatedPackage = latest.copyWith(notifiedArrived: true);
     state = [
       for (final p in state)
         if (p.id == package.id) updatedPackage else p,
@@ -376,7 +387,6 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
     // 1) 包裹 ID 精确匹配（平台订单号派生的稳定标识，最可靠）
     final idIdx = state.indexWhere((p) => p.id == package.id);
     if (idIdx != -1) {
-      Metrics.inc('dedupe.hit');
       debugPrint('[PackageListNotifier] → HIT: index=$idIdx (id match)');
       return idIdx;
     }
@@ -388,8 +398,7 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
           p.trackingNumber.trim() == incomingTracking &&
           !(isMaskedTrackingNumber(incomingTracking) && isDistinctTaobaoOrder(p, package)));
       if (idx != -1) {
-        Metrics.inc('dedupe.hit');
-        debugPrint('[PackageListNotifier] → HIT: index=$idx (tracking match)');
+          debugPrint('[PackageListNotifier] → HIT: index=$idx (tracking match)');
         return idx;
       }
     }
@@ -397,7 +406,6 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
     // 2b) 打码单号 ↔ 完整单号（淘宝详情页打码、菜鸟完整）：同快递公司、露出位数达标、恰好命中一个
     final maskedIdx = findUniqueMaskedMatch(state, package);
     if (maskedIdx != -1) {
-      Metrics.inc('dedupe.hit');
       debugPrint('[PackageListNotifier] → HIT: index=$maskedIdx (masked tracking match)');
       return maskedIdx;
     }
@@ -409,13 +417,11 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
           p.pickupCode.trim() == incomingCode &&
           (p.platform ?? '') == (package.platform ?? ''));
       if (idx != -1) {
-        Metrics.inc('dedupe.hit');
-        debugPrint('[PackageListNotifier] → HIT: index=$idx (pickupCode match)');
+          debugPrint('[PackageListNotifier] → HIT: index=$idx (pickupCode match)');
         return idx;
       }
     }
 
-    Metrics.inc('dedupe.miss');
     debugPrint('[PackageListNotifier] → NO MATCH');
     return -1;
   }
@@ -520,8 +526,12 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
       if (idx == null) {
         indexByTracking[tn] = result.length;
         result.add(p);
-      } else if (isMaskedTrackingNumber(tn) && isDistinctTaobaoOrder(result[idx], p)) {
-        result.add(p); // 打码单号相同的两个淘宝订单是两个包裹
+      } else if (isMaskedTrackingNumber(tn) &&
+          (isDistinctTaobaoOrder(result[idx], p) ||
+              (result[idx].platform ?? '') != (p.platform ?? ''))) {
+        // 打码单号相同：两个不同淘宝订单、或来源平台不同，都保留为两张卡，
+        // 只有同平台且非不同订单时才合并（跨平台同号无法证明是同一包裹）。
+        result.add(p);
       } else {
         result[idx] = _mergeDuplicatePair(result[idx], p);
         mergedCount++;
@@ -724,26 +734,6 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
     _sync();
   }
   
-  /// 自动归档已取件超过7天的包裹
-  void autoArchive() {
-    state = [
-      for (final p in state)
-        p.shouldAutoArchive 
-            ? p.copyWith(
-                status: PackageStatus.archived,
-                archivedAt: DateTime.now(),
-              )
-            : p,
-    ];
-    _sync();
-  }
-
-  /// 清除所有已完成（已取件 + 已归档）的包裹
-  void clearCompleted() {
-    state = state.where((p) => !p.status.isCompleted).toList();
-    _sync();
-  }
-
   void _sync() {
     final box = _box;
     if (box == null) return;
@@ -767,50 +757,6 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
 final packageListProvider =
     StateNotifierProvider<PackageListNotifier, List<Package>>((ref) {
   return PackageListNotifier();
-});
-
-final pendingPackagesProvider = Provider<List<Package>>((ref) {
-  final pending = ref
-      .watch(packageListProvider)
-      .where((p) => p.status.isPending)
-      .toList();
-  
-  pending.sort((a, b) {
-    // 1. 待取件（已到达或已有取件码）最高置顶优先级
-    final isPickupA = a.status == PackageStatus.arrived || a.pickupCode.trim().isNotEmpty;
-    final isPickupB = b.status == PackageStatus.arrived || b.pickupCode.trim().isNotEmpty;
-    if (isPickupA != isPickupB) {
-      return isPickupA ? -1 : 1;
-    }
-
-    // 2. 派送中状态次之
-    final isDeliveringA = a.status == PackageStatus.delivering;
-    final isDeliveringB = b.status == PackageStatus.delivering;
-    if (isDeliveringA != isDeliveringB) {
-      return isDeliveringA ? -1 : 1;
-    }
-
-    // 3. 运送中状态排在待发货之前
-    final isTransitA = a.status == PackageStatus.transit;
-    final isTransitB = b.status == PackageStatus.transit;
-    if (isTransitA != isTransitB) {
-      return isTransitA ? -1 : 1;
-    }
-
-    // 4. 同等状态下，按综合紧急程度分数降序
-    final urgencyCompare = b.compositeUrgencyScore.compareTo(a.compositeUrgencyScore);
-    if (urgencyCompare != 0) return urgencyCompare;
-
-    // 5. 同等紧急度：有 arrivedAt 的按到站从早到晚；null 排最后（绝不回退 addedAt）
-    final aArr = a.arrivedAt;
-    final bArr = b.arrivedAt;
-    if (aArr == null && bArr == null) return 0;
-    if (aArr == null) return 1;
-    if (bArr == null) return -1;
-    return aArr.compareTo(bArr);
-  });
-  
-  return pending;
 });
 
 final completedPackagesProvider = Provider<List<Package>>((ref) {
@@ -863,10 +809,12 @@ String? _mergeTimelineJson(String? existingJson, String? incomingJson) {
 
 bool _isFoodTakeoutPackage(Package pkg) {
   const foodKeywords = [
-    '外卖', '秒送', '达达', '骑手', '汉堡', '堡', '螺蛳粉', '冒菜', '米线',
+    '外卖', '秒送', '达达', '骑手', '汉堡', '螺蛳粉', '冒菜', '米线',
     '奶茶', '咖啡', '快餐', '餐饮', '堂食', '烧烤', '炸鸡', '烤鸭', '麻辣烫',
     '人份', '套餐', '柠檬水', '饮品', '捞饭', '炒饭', '米饭', '鸡丁', '炸蛋', '小菜'
   ];
-  final text = '${pkg.goodsName ?? ""} ${pkg.location} ${pkg.stationName ?? ""} ${pkg.description}';
+  // 只看商品名：location 是收货地址、stationName 是驿站名（含「堡」「咖啡」的小区/店铺名很常见），
+  // description 是物流轨迹；用它们匹配会把正常快递整单误删，且每次冷启动反复误删。
+  final text = pkg.goodsName ?? '';
   return foodKeywords.any(text.contains);
 }

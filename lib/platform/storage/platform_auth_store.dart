@@ -156,11 +156,27 @@ class PlatformAuthStore {
     await setExpired(p, false);
   }
 
+  /// 令牌写回串行化：并发详情请求会同时收到 Set-Cookie 轮换，
+  /// 读-改-写不串行会互相覆盖，最后落盘的可能已是服务端作废的旧令牌。
+  static Future<void> _tokenWriteChain = Future<void>.value();
+
   /// 仅就地更新 mtop 令牌字段，不刷新「授权绑定时间」
   ///
   /// 令牌轮换是后台自动行为，不能改写代表用户登录时刻的 updated_at，
   /// 否则设置页显示的授权日期会被反复重置。
   Future<void> updateCookieTokenFields(
+    String platform, {
+    String? token,
+    String? tokenEnc,
+  }) {
+    final task = _tokenWriteChain.then(
+      (_) => _updateCookieTokenFields(platform, token: token, tokenEnc: tokenEnc),
+    );
+    _tokenWriteChain = task.catchError((_) {});
+    return task;
+  }
+
+  Future<void> _updateCookieTokenFields(
     String platform, {
     String? token,
     String? tokenEnc,
@@ -171,13 +187,18 @@ class PlatformAuthStore {
     if (stored == null || stored.isEmpty) return;
     var merged = stored;
     if (token != null) {
-      merged = merged.contains('_m_h5_tk=')
-          ? merged.replaceAll(RegExp(r'_m_h5_tk=[^;]*'), '_m_h5_tk=$token')
+      // 边界 (^|;\s*)：否则 `_m_h5_tk=` 会命中 `_m_h5_tk_enc=` 的前缀并污染 enc 值。
+      merged = merged.contains(RegExp(r'(^|;\s*)_m_h5_tk='))
+          ? merged.replaceAllMapped(
+              RegExp(r'(^|;\s*)_m_h5_tk=[^;]*'),
+              (m) => '${m[1]}_m_h5_tk=$token')
           : '$merged; _m_h5_tk=$token';
     }
     if (tokenEnc != null) {
       merged = merged.contains('_m_h5_tk_enc=')
-          ? merged.replaceAll(RegExp(r'_m_h5_tk_enc=[^;]*'), '_m_h5_tk_enc=$tokenEnc')
+          ? merged.replaceAllMapped(
+              RegExp(r'(^|;\s*)_m_h5_tk_enc=[^;]*'),
+              (m) => '${m[1]}_m_h5_tk_enc=$tokenEnc')
           : '$merged; _m_h5_tk_enc=$tokenEnc';
     }
     _plainCache[p] = merged;

@@ -21,7 +21,6 @@ class SyncOptimizer {
   /// 例如驿站名/取件码被降级后想立刻拉回正确值。
   static bool shouldSkipDetailFetch({
     required Package? localPackage,
-    required PackageStatus incomingStatus,
     Duration recentThreshold = const Duration(hours: 24),
     bool force = false,
   }) {
@@ -58,11 +57,13 @@ class SyncOptimizer {
   }
 
   /// 过滤需要拉取详情的订单列表
+  /// [idPrefix] 为平台 ID 前缀（如 `TB_`）。传入后只匹配 `前缀 + 订单号` 的精确 ID，
+  /// 避免一方订单号恰好是另一方 ID 后缀时跨平台误匹配。
   static List<T> filterNeedsFetch<T>({
     required List<T> orders,
     required List<Package> localPackages,
     required String Function(T) getOrderId,
-    required PackageStatus Function(T) getStatus,
+    String? idPrefix,
     Duration recentThreshold = const Duration(hours: 24),
     bool force = false,
   }) {
@@ -71,28 +72,22 @@ class SyncOptimizer {
 
     for (final order in orders) {
       final orderId = getOrderId(order);
-      final status = getStatus(order);
+      final expectedId = idPrefix == null ? null : '$idPrefix$orderId';
 
-      // 查找本地包裹
-      final localPackage = localPackages.firstWhere(
-        (p) => p.id.endsWith(orderId),
-        orElse: () => Package(
-          id: 'NOT_FOUND',
-          trackingNumber: '',
-          courier: CourierType.other,
-          urgency: UrgencyLevel.normal,
-          status: PackageStatus.transit,
-          addedAt: DateTime.now(),
-        ),
+      // 查找本地包裹（不用哨兵对象，避免每单构造一次 Package）
+      Package? localPackage;
+      for (final p in localPackages) {
+        if (expectedId != null ? p.id == expectedId : p.id.endsWith(orderId)) {
+          localPackage = p;
+          break;
+        }
+      }
+
+      final shouldSkip = shouldSkipDetailFetch(
+        localPackage: localPackage,
+        recentThreshold: recentThreshold,
+        force: force,
       );
-
-      final shouldSkip = localPackage.id != 'NOT_FOUND' &&
-          shouldSkipDetailFetch(
-            localPackage: localPackage,
-            incomingStatus: status,
-            recentThreshold: recentThreshold,
-            force: force,
-          );
 
       if (shouldSkip) {
         skippedCount++;
@@ -103,54 +98,5 @@ class SyncOptimizer {
 
     debugPrint('[SyncOptimizer] Total: ${orders.length}, Need fetch: ${result.length}, Skipped: $skippedCount');
     return result;
-  }
-
-  /// 判断是否应该执行同步（基于上次同步时间）
-  static bool shouldSync({
-    DateTime? lastSyncTime,
-    Duration minInterval = const Duration(minutes: 5),
-  }) {
-    if (lastSyncTime == null) return true;
-
-    final now = DateTime.now();
-    final timeSinceSync = now.difference(lastSyncTime);
-
-    if (timeSinceSync < minInterval) {
-      debugPrint('[SyncOptimizer] Skip sync: last synced ${timeSinceSync.inMinutes} min ago (min: ${minInterval.inMinutes} min)');
-      return false;
-    }
-
-    return true;
-  }
-
-  /// 计算推荐的同步间隔（基于包裹状态分布）
-  static Duration recommendedSyncInterval({
-    required int arrivedCount,
-    required int deliveringCount,
-    required int transitCount,
-    required int pendingCount,
-  }) {
-    // 有已到达待取件 → 30-45 分钟（高频）
-    if (arrivedCount > 0) {
-      return const Duration(minutes: 30);
-    }
-
-    // 有派送中 → 45-60 分钟（中频）
-    if (deliveringCount > 0) {
-      return const Duration(minutes: 45);
-    }
-
-    // 仅在途 → 1-2 小时（低频）
-    if (transitCount > 0) {
-      return const Duration(hours: 1);
-    }
-
-    // 仅待发货 → 2-4 小时（极低频）
-    if (pendingCount > 0) {
-      return const Duration(hours: 2);
-    }
-
-    // 无活跃包裹 → 暂停
-    return const Duration(hours: 24);
   }
 }

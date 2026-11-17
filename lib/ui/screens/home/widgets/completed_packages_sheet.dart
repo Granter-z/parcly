@@ -97,6 +97,7 @@ class CompletedPackagesSheet extends ConsumerWidget {
                         separatorBuilder: (_, __) =>
                             const SizedBox(height: AppSpacing.md),
                         itemBuilder: (context, index) => StaggeredEntrance(
+                          key: ValueKey(completedPackages[index].id),
                           index: index,
                           child: _CompletedPackageCard(
                             package: completedPackages[index],

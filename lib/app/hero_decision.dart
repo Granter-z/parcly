@@ -1,33 +1,16 @@
 library;
 
-import 'package:flutter/material.dart';
-import '../ui/constants/app_constants.dart';
 import '../core/models/package.dart';
 import '../core/engine/hero_card_engine.dart';
 import '../core/engine/hero_card_state.dart';
 
-export '../core/engine/hero_card_state.dart'
-    show HeroBadgeType, EmotionState, SuggestedAction, HeroEmotionState;
+export '../core/engine/hero_card_state.dart' show HeroEmotionState;
 
-class HeroBadge {
-  final String label;
-  final HeroBadgeType type;
-
-  const HeroBadge({required this.label, required this.type});
-}
-
+/// Hero 仪表盘展示数据：core 算好的计数与文案，UI 只负责摆放。
 class HeroDecision {
-  final String title;
   final String? subtitle;
-  final List<HeroBadge> badges;
-  final IconData icon;
-  final Color color;
 
-  /// 结构化计数 —— 由 core 的 [HeroCardEngine] 算好，UI 只负责摆位置。
-  ///
-  /// 这些字段原先在 `_convert` 里被丢掉了，只留下拼好的 [title] 句子，
-  /// 于是首页仪表盘只好自己用 `where(...)` 重新数了一遍：
-  /// 同一套判定在 core 和 UI 里各写了一份，且两边的「待取件」配色还互相矛盾。
+  /// 结构化计数 —— 由 core 的 [HeroCardEngine] 算好。
   final int arrivedCount;
   final int deliveringCount;
   final int transitCount;
@@ -36,24 +19,16 @@ class HeroDecision {
   /// 全部在途与待取之和。
   final int pendingCount;
 
-  final int urgencyScore;
   final HeroEmotionState heroEmotionState;
-  final SuggestedAction suggestedAction;
 
   const HeroDecision({
-    required this.title,
     this.subtitle,
-    this.badges = const [],
-    this.icon = Icons.local_shipping_outlined,
-    this.color = AppColors.primary,
     this.arrivedCount = 0,
     this.deliveringCount = 0,
     this.transitCount = 0,
     this.pendingShipmentCount = 0,
     this.pendingCount = 0,
-    this.urgencyScore = 0,
     this.heroEmotionState = HeroEmotionState.relaxed,
-    this.suggestedAction = SuggestedAction.none,
   });
 
   /// 是否有需要在途 / 待取的包裹。
@@ -74,57 +49,22 @@ class HeroDecision {
 class HeroDecisionService {
   static HeroDecision decide(List<Package> allPackages) {
     final coreState = HeroCardEngine.decide(allPackages);
-    return _convert(coreState);
-  }
-
-  static HeroDecision _convert(HeroCardState state) {
-    final badges = state.badges
-        .map((b) => HeroBadge(label: b.label, type: b.type))
-        .toList();
 
     // core 的 pendingCount 覆盖 pendingShipment / transit / delivering / arrived，
     // 待发货数由差值还原（引擎没有单独输出这一项）。
-    final pendingShipmentCount = state.pendingCount -
-        state.arrivedCount -
-        state.deliveringCount -
-        state.transitCount;
+    final pendingShipmentCount = coreState.pendingCount -
+        coreState.arrivedCount -
+        coreState.deliveringCount -
+        coreState.transitCount;
 
     return HeroDecision(
-      title: state.title,
-      subtitle: state.subtitle,
-      badges: badges,
-      icon: _icon(state.heroEmotionState),
-      color: _color(state.heroEmotionState),
-      arrivedCount: state.arrivedCount,
-      deliveringCount: state.deliveringCount,
-      transitCount: state.transitCount,
+      subtitle: coreState.subtitle,
+      arrivedCount: coreState.arrivedCount,
+      deliveringCount: coreState.deliveringCount,
+      transitCount: coreState.transitCount,
       pendingShipmentCount: pendingShipmentCount < 0 ? 0 : pendingShipmentCount,
-      pendingCount: state.pendingCount,
-      urgencyScore: state.urgencyScore,
-      heroEmotionState: state.heroEmotionState,
-      suggestedAction: state.suggestedAction,
+      pendingCount: coreState.pendingCount,
+      heroEmotionState: coreState.heroEmotionState,
     );
-  }
-
-  static Color _color(HeroEmotionState emotion) {
-    switch (emotion) {
-      case HeroEmotionState.relaxed:
-        return AppColors.success;
-      case HeroEmotionState.normal:
-        return AppColors.primary;
-      case HeroEmotionState.urgent:
-        return AppColors.urgent;
-    }
-  }
-
-  static IconData _icon(HeroEmotionState emotion) {
-    switch (emotion) {
-      case HeroEmotionState.relaxed:
-        return Icons.check_circle_outline;
-      case HeroEmotionState.normal:
-        return Icons.local_shipping_outlined;
-      case HeroEmotionState.urgent:
-        return Icons.warning_amber_rounded;
-    }
   }
 }

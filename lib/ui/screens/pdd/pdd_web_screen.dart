@@ -14,6 +14,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_flutter/webview_flutter.dart';
+import '../../../core/engine/package_identity.dart';
 import '../../../core/models/package.dart';
 import '../../../core/models/package_status.dart';
 import '../../../platform/connectors/connector_manager.dart';
@@ -555,8 +556,10 @@ class _PddWebScreenState extends ConsumerState<PddWebScreen>
         );
 
         ref.read(packageListProvider.notifier).addPackage(pkg);
-        debugPrint('[PddWeb] Sniffed package from active page: id=$id courier=${detail.courier.displayName} '
-            'tracking=$trackingNumber status=${detail.status.label} code=${detail.pickupCode}');
+        debugPrint('[PddWeb] Sniffed package from active page: id=${packageIdForLog(id)} '
+            'courier=${detail.courier.displayName} '
+            'hasTracking=${trackingNumber.isNotEmpty} status=${detail.status.label} '
+            'hasCode=${detail.pickupCode.isNotEmpty}');
       }
     } catch (e) {
       debugPrint('[PddWeb] Sniff current page error: $e');
@@ -872,6 +875,41 @@ class _PddWebScreenState extends ConsumerState<PddWebScreen>
     }
   }
 
+  /// 把其他平台已保存的会话写回 App 级 Cookie jar。
+  ///
+  /// `WebViewCookieManager().clearCookies()` 不区分域，退出拼多多时会把
+  /// 淘宝/京东/菜鸟一起清掉；登录页对此有同样的「不误伤」约定（P37-b）。
+  Future<void> _restoreOtherPlatformCookies() async {
+    final store = PlatformAuthStore();
+    final taobao = store.getCookies('taobao') ?? store.getCookies('tmall');
+    if (taobao != null && taobao.trim().isNotEmpty) {
+      await injectCookieString(
+        cookies: taobao,
+        domains: const [
+          '.taobao.com',
+          'h5api.m.taobao.com',
+          'pages-fast.m.taobao.com',
+          'main.m.taobao.com',
+          '.cainiao.com',
+          'page.cainiao.com',
+        ],
+      );
+    }
+    final jd = store.getCookies('jd');
+    if (jd != null && jd.trim().isNotEmpty) {
+      await injectCookieString(
+        cookies: jd,
+        domains: const [
+          'www.jd.com',
+          'trade.m.jd.com',
+          'wqs.jd.com',
+          'api.m.jd.com',
+          'home.m.jd.com',
+        ],
+      );
+    }
+  }
+
   /// 直接关闭并返回取件助手首页
   Future<void> _closeToHome() async {
     HapticFeedback.lightImpact();
@@ -1021,6 +1059,9 @@ class _PddWebScreenState extends ConsumerState<PddWebScreen>
                     if (confirmed == true) {
                       await PlatformAuthStore().unbind('pdd');
                       await WebViewCookieManager().clearCookies();
+                      // clearCookies 是 App 级共享 Cookie jar，会连淘宝/京东/菜鸟一起清掉；
+                      // 立即把其他平台已保存的会话写回，避免「退出拼多多」误伤无关平台。
+                      await _restoreOtherPlatformCookies();
                       await _controller.loadRequest(Uri.parse(_defaultHomeUrl));
                       if (!mounted) return;
                       messenger.showSnackBar(

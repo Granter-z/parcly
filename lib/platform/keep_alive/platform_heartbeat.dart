@@ -292,20 +292,28 @@ class JdHeartbeat implements PlatformHeartbeat {
   Future<HeartbeatResult> _probeOnce(String url, String cookies) async {
     final uri = Uri.parse(url);
     final referer = '${uri.scheme}://${uri.host}/';
-    final response = await http.get(
-      uri,
-      headers: {
-        'Cookie': cookies,
-        'User-Agent': _ua,
-        'Referer': referer,
-      },
-    ).timeout(const Duration(seconds: 10));
+    final client = http.Client();
+    try {
+      // 必须关闭自动跟随：真踢号会 302 到 plogin，跟随之后只剩登录页 200 壳，
+      // 下方「重定向到登录页 → 硬失效」分支就永远走不到（P36-b 真相源被架空）。
+      final request = http.Request('GET', uri)
+        ..followRedirects = false
+        ..headers.addAll({
+          'Cookie': cookies,
+          'User-Agent': _ua,
+          'Referer': referer,
+        });
+      final streamed = await client.send(request).timeout(const Duration(seconds: 10));
+      final response = await http.Response.fromStream(streamed);
 
-    return classifyResponse(
-      statusCode: response.statusCode,
-      body: response.body,
-      location: response.headers['location'] ?? '',
-    );
+      return classifyResponse(
+        statusCode: response.statusCode,
+        body: response.body,
+        location: response.headers['location'] ?? '',
+      );
+    } finally {
+      client.close();
+    }
   }
 
   /// 单 host 探活：网络/超时短重试 1 次；鉴权结果不重试

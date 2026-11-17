@@ -8,6 +8,8 @@
 /// 改版去掉了原先的蓝色外发光阴影与一个从未被读取的 `_morphController`。
 library;
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -34,6 +36,7 @@ class HeroPickupBadge extends StatefulWidget {
 
 class _HeroPickupBadgeState extends State<HeroPickupBadge> {
   bool _isCopied = false;
+  Timer? _resetTimer;
 
   Future<void> _handleCopy() async {
     if (!widget.enabled || widget.pickupCode.trim().isEmpty) return;
@@ -45,8 +48,17 @@ class _HeroPickupBadgeState extends State<HeroPickupBadge> {
     setState(() => _isCopied = true);
     widget.onCopied?.call();
 
-    await Future.delayed(const Duration(milliseconds: 1800));
-    if (mounted) setState(() => _isCopied = false);
+    // 连续点击时以最后一次为准：取消上一轮复位，避免旧的 delay 提前打回原形。
+    _resetTimer?.cancel();
+    _resetTimer = Timer(const Duration(milliseconds: 1800), () {
+      if (mounted) setState(() => _isCopied = false);
+    });
+  }
+
+  @override
+  void dispose() {
+    _resetTimer?.cancel();
+    super.dispose();
   }
 
   @override
