@@ -16,9 +16,8 @@ import 'package:pickup_app/platform/sync/sync_history_manager.dart';
 import 'package:pickup_app/ui/providers/package_provider.dart';
 
 class _HangConnector implements PlatformConnector {
-  _HangConnector({this.id = 'jd', this.name = '京东'});
-  final String id;
-  final String name;
+  final String id = 'jd';
+  final String name = '京东';
   bool started = false;
 
   @override
@@ -47,10 +46,10 @@ class _HangConnector implements PlatformConnector {
 }
 
 class _FastConnector implements PlatformConnector {
-  _FastConnector({required this.pkg, this.id = 'taobao', this.name = '淘宝'});
+  _FastConnector({required this.pkg});
   final Package pkg;
-  final String id;
-  final String name;
+  final String id = 'taobao';
+  final String name = '淘宝';
 
   @override
   String get platformId => id;

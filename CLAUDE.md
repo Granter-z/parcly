@@ -88,14 +88,13 @@ flutter build apk --release --split-per-abi
   - `timeline_merge.dart`: 多源轨迹时间线合并与去重
   - `timeline_view.dart`: 把轨迹模型整理为可渲染的时间轴视图模型
   - `hero_card_engine.dart`: 纯 Dart 计算 Hero 卡片的结构化决策（计数、紧急度评分、情绪状态）
-  - `hero_card_state.dart`: Hero 决策结果的数据结构（`HeroCardState`、`HeroBadgeType`、`HeroEmotionState` 等）
+  - `hero_card_state.dart`: Hero 决策结果的数据结构（`HeroCardState`、`HeroEmotionState`）
   - `keep_alive_plan.dart`: 保活调度决策（按 Cookie 年龄分档、时间可注入、可单测）
-- `parser/`: 文本提取器与词典（`extractors.dart` 提取快递公司/运单号/取件码/状态，`courier_dictionary.dart` 承运商别名，`taobao_trace_parser.dart` 淘宝轨迹，`trace_time.dart` 时间解析，`text_preprocessor.dart` 预处理）
-- `sanitizer/`: 文本归一化与清洗（噪声词典、行分类、商品名清洗）
-- `utils/`: 通用文本归一化（`text_normalizer.dart`）
-- `debug/`: 调试追踪与性能度量（`debug_trace.dart`、`metrics.dart`，不污染生产代码）
+- `parser/`: 轨迹解析（`taobao_trace_parser.dart` 淘宝 SSR 详情、`trace_time.dart` 时间规范化、`pickup_point_name.dart` 取件点名提取）
+- `sanitizer/`: 商品名清洗（`goods_name_cleaner.dart`）
+- `debug/`: 调试追踪（`debug_trace.dart`，由 `main.dart` 按 kDebugMode 开关，不污染生产代码）
 
-> `models/` 下的 `courier_type.dart` 是**未被引用的历史遗留**：实际使用的 `CourierType` / `UrgencyLevel` 枚举定义在 `models/package.dart`。新增代码不要导入 `courier_type.dart`。
+> `CourierType` / `UrgencyLevel` 枚举定义在 `models/package.dart`。
 
 **不可变模型设计**:
 ```dart
@@ -281,7 +280,6 @@ test/
 ├── timeline_view_test.dart             # 物流时间线视图
 ├── keep_alive_*_test.dart              # 保活调度、落盘、通知、历史
 ├── sync_optimizer_test.dart            # 智能跳过
-├── legacy_regression_test.dart         # 回归测试
 └── fixtures/                           # 测试输入样本（legacy 短信/通知 JSON、淘宝 SSR 详情文本）
 ```
 
@@ -293,7 +291,7 @@ flutter test test/package_identity_test.dart
 flutter test test/taobao_sync_rules_test.dart
 ```
 
-**测试覆盖**: 271 个用例全部通过（无 skip）。新增/修改核心逻辑后跑 `flutter test` 确认全绿。
+**测试覆盖**: 556 个用例全部通过（无 skip）。新增/修改核心逻辑后跑 `flutter test` 确认全绿。
 
 ## Development Workflow
 
@@ -338,7 +336,7 @@ flutter test test/taobao_sync_rules_test.dart
 4. **打码单号需特殊处理**: 菜鸟驿站查询、身份判定时需识别 `*` 标记
 5. **外卖订单需过滤**: 京东「达达」「秒送」等即时订单不是快递，需排除
 6. **并发控制**: 使用 `ThrottledExecutor` 限制并发数，避免触发平台风控
-7. **类型导入**: `CourierType` 和 `UrgencyLevel` 定义在 `core/models/package.dart`，不需要单独导入；`core/models/courier_type.dart` 是**未引用的历史遗留**，勿使用
+7. **类型导入**: `CourierType` 和 `UrgencyLevel` 定义在 `core/models/package.dart`，不需要单独导入
 
 ## Project-Specific Conventions
 

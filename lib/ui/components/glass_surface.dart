@@ -5,7 +5,6 @@
 /// - [GlassChrome]：功能层（状态条、顶栏圆钮）— 强 Frost + 厚 bevel。
 /// - [LightGlassSurface]：空态 / PDD / 已完成胶囊 — 一次可读轻玻璃。
 /// - [ContentSurface]：列表包裹卡 / Hero — 近实心，无 blur。
-/// - [GlassSurface] / [GlassListCard]：兼容转发。
 library;
 
 import 'dart:ui';
@@ -302,94 +301,6 @@ class ContentSurface extends StatelessWidget {
         ),
         child: child,
       ),
-    );
-  }
-}
-
-/// 兼容旧调用：默认走 chrome 真 blur。新代码请显式用分层组件。
-class GlassSurface extends StatelessWidget {
-  final Widget child;
-  final EdgeInsetsGeometry? padding;
-  final BorderRadius borderRadius;
-  final Color? fill;
-  final Color? borderColor;
-  final double borderWidth;
-  final double? blurSigma;
-  final List<BoxShadow>? boxShadow;
-  final Clip clipBehavior;
-
-  /// false → 内容抬升面（无 blur）；true → [GlassChrome]。
-  final bool enableBlur;
-
-  const GlassSurface({
-    super.key,
-    required this.child,
-    this.padding,
-    this.borderRadius =
-        const BorderRadius.all(Radius.circular(GlassTokens.radius)),
-    this.fill,
-    this.borderColor,
-    this.borderWidth = 1,
-    this.blurSigma,
-    this.boxShadow,
-    this.clipBehavior = Clip.antiAlias,
-    this.enableBlur = true,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    if (enableBlur) {
-      return GlassChrome(
-        padding: padding,
-        borderRadius: borderRadius,
-        fill: fill,
-        blurSigma: blurSigma,
-        boxShadow: boxShadow,
-        clipBehavior: clipBehavior,
-        child: child,
-      );
-    }
-    return ContentSurface(
-      padding: padding,
-      borderRadius: borderRadius,
-      fill: fill ?? GlassTokens.contentFill,
-      borderColor: borderColor ?? GlassTokens.contentBorder,
-      borderWidth: borderWidth,
-      boxShadow: boxShadow ?? GlassTokens.contentShadow,
-      child: child,
-    );
-  }
-}
-
-/// 列表卡快捷构造 → 内容抬升面（强制无 blur）。
-class GlassListCard extends StatelessWidget {
-  final Widget child;
-  final EdgeInsetsGeometry padding;
-  final BorderRadius borderRadius;
-  final Color? fill;
-  final Color? borderColor;
-  final double borderWidth;
-
-  const GlassListCard({
-    super.key,
-    required this.child,
-    this.padding = const EdgeInsets.all(16),
-    this.borderRadius =
-        const BorderRadius.all(Radius.circular(GlassTokens.radiusContent)),
-    this.fill,
-    this.borderColor,
-    this.borderWidth = 1,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return ContentSurface(
-      padding: padding,
-      borderRadius: borderRadius,
-      fill: fill ?? GlassTokens.contentFill,
-      borderColor: borderColor ?? GlassTokens.contentBorder,
-      borderWidth: borderWidth,
-      child: child,
     );
   }
 }

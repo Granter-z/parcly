@@ -19,6 +19,8 @@ const String kPackagesBox = 'packages';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // 调试追踪默认开启；Release 关闭，避免生产包持续输出调试横幅。
+  DebugTrace.enabled = kDebugMode;
 
   await _guard('initializeDateFormatting', () async {
     await initializeDateFormatting('zh_CN', null);
