@@ -1,7 +1,6 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:hive/hive.dart';
-import '../../main.dart';
 import '../../core/debug/debug_trace.dart';
 import '../../core/engine/arrived_at.dart';
 import '../../core/engine/logistics_status_engine.dart';
@@ -9,6 +8,7 @@ import '../../core/engine/station_grouping.dart';
 import 'pickup_point_alias_provider.dart';
 import '../../core/engine/package_identity.dart';
 import '../../core/engine/timeline_merge.dart';
+import '../../core/sanitizer/goods_name_cleaner.dart';
 import '../../platform/storage/hive_package.dart';
 import '../../app/hero_decision.dart';
 import '../../platform/notification/notification_adapter.dart';
@@ -17,6 +17,10 @@ import '../../platform/storage/platform_auth_store.dart';
 
 class PackageListNotifier extends StateNotifier<List<Package>> {
   Box<HivePackage>? _box;
+
+  /// 持久化是否可用。Hive box 打开失败时为 false：此时列表只在内存里，
+  /// 重启即丢，UI 应据此提示用户，而不是让数据「看似消失」却无任何反馈。
+  bool get persistenceAvailable => _box != null;
 
   /// 生命周期优先级：状态只能前进，不能倒退
   /// pendingShipment → transit → delivering → arrived → pickedUp → archived
@@ -59,8 +63,15 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
             debugPrint('[PackageListNotifier] Pruning phantom empty OCR package: ${packageIdForLog(pkg.id)}');
             continue;
           }
-          // 清理存量误导入的餐饮外卖与秒送即时订单（非快递包裹）
-          if (pkg.platform == 'jd' && _isFoodTakeoutPackage(pkg)) {
+          // 清理存量误导入的餐饮外卖与秒送即时订单（非快递包裹）。
+          // 只清「DOM 时代遗留的合成 id 卡」：结构化真实单即使商品名带渠道词，
+          // 也可能是正常快递（如外卖打包盒/骑手手套），不能删除。
+          // 其他条件：只认渠道词；未完成；物流文案不是活跃在途动作。
+          if (pkg.platform == 'jd' &&
+              isSyntheticJdId(pkg.id) &&
+              _isFoodTakeoutPackage(pkg) &&
+              !pkg.status.isCompleted &&
+              !LogisticsStatusEngine.isActiveLogisticsText(pkg.description)) {
             debugPrint('[PackageListNotifier] Pruning takeout/food package: ${packageIdForLog(pkg.id)}');
             continue;
           }
@@ -209,7 +220,7 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
       final updated = existing.copyWith(
         // 旧的 TB_<打码运单号> / CN_<运单号> 换成 TB_<订单号>；用户状态（已取、归档、pickedUpAt）随 existing 带过去，
         // _sync 会删掉 Hive 里的旧 key
-        id: resolveMergedPackageId(existing, package),
+        id: resolveMergedJdId(existing, package),
         // 承运商与运单号：新数据更权威时（非默认值）覆盖
         courier: package.courier != CourierType.other ? package.courier : existing.courier,
         trackingNumber: keepFullTrackingNumber(
@@ -323,6 +334,52 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
     DebugTrace.separator('ADD PACKAGE COMPLETE');
   }
   
+  /// 京东 DOM 兜底生成的合成 id。
+  ///
+  /// 新版本统一用 `JD_x<12位十六进制>` 前缀标记来源，和真实十进制订单号无歧义；
+  /// 兼容升级前的 `JD_<12位十六进制>`（md5 全数字的极少数旧卡无法识别，
+  /// 宁可漏清也不能误删真实订单号）。
+  @visibleForTesting
+  static bool isSyntheticJdId(String id) {
+    if (RegExp(r'^JD_x[0-9a-f]{12}$').hasMatch(id)) return true;
+    final m = RegExp(r'^JD_([0-9a-f]{12})$').firstMatch(id);
+    return m != null && RegExp(r'[a-f]').hasMatch(m.group(1)!);
+  }
+
+  /// 合并时把京东 DOM 伪 id 迁移到结构化真实订单号（记录、已取状态原样保留）。
+  @visibleForTesting
+  static String resolveMergedJdId(Package existing, Package incoming) {
+    if (isSyntheticJdId(existing.id) &&
+        RegExp(r'^JD_\d{6,}$').hasMatch(incoming.id)) {
+      return incoming.id;
+    }
+    return resolveMergedPackageId(existing, incoming);
+  }
+
+  /// 清理不在本轮成功同步结果里的**在途**京东伪卡片。
+  ///
+  /// 只清「pendingShipment / transit / delivering 且未手动取件」的卡：
+  /// 已到件、已取件、归档的记录代表用户资产（取件码/到件时间/历史），
+  /// 即使不在本轮待收货列表里也绝不删除。已到件/已完成的伪卡由
+  /// [_resolveMergedJdId] 在结构化真实订单号出现时迁移。
+  void pruneJdSyntheticCardsNotIn(Set<String> keepIds) {
+    bool stale(Package p) =>
+        isSyntheticJdId(p.id) &&
+        !keepIds.contains(p.id) &&
+        p.pickedUpAt == null &&
+        (p.status == PackageStatus.pendingShipment ||
+            p.status == PackageStatus.transit ||
+            p.status == PackageStatus.delivering);
+    final removed = state.where(stale).toList();
+    if (removed.isEmpty) return;
+    state = state.where((p) => !stale(p)).toList();
+    for (final p in removed) {
+      _box?.delete(p.id);
+      NotificationAdapter().cancelNotification(p.id).catchError((_) {});
+    }
+    debugPrint('[PackageListNotifier] Pruned ${removed.length} stale active JD card(s)');
+  }
+
   /// 触发到件通知
   ///
   /// 只有通知与提醒都发送成功才落盘 `notifiedArrived`；失败保持 false，
@@ -422,9 +479,56 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
       }
     }
 
+    // 3b) 京东 DOM 伪卡 ↔ 结构化真实订单号：
+    //     伪卡的运单号在未拉到时就是 x<hash>，与真实单号永远不等，只能按
+    //     清洗后的商品名兜底。必须同时满足「唯一合成卡 + 无同名真实卡」，
+    //     避免把两件同名商品误合并。
+    final jdFallbackIdx = _findUniqueSyntheticJdByGoodsName(package);
+    if (jdFallbackIdx != -1) {
+      debugPrint('[PackageListNotifier] → HIT: index=$jdFallbackIdx (jd goodsName fallback)');
+      return jdFallbackIdx;
+    }
+
     debugPrint('[PackageListNotifier] → NO MATCH');
     return -1;
   }
+
+  String _cleanedGoodsName(String? name) =>
+      GoodsNameCleaner.clean(name ?? '').trim();
+
+  /// 结构化真实京东单匹配唯一的 DOM 伪卡（按清洗后商品名）。
+  int _findUniqueSyntheticJdByGoodsName(Package incoming) {
+    if ((incoming.platform ?? '') != 'jd') return -1;
+    if (!RegExp(r'^JD_\d{6,}$').hasMatch(incoming.id)) return -1;
+    final name = _cleanedGoodsName(incoming.goodsName);
+    if (!_isSpecificGoodsName(name)) return -1;
+
+    final incomingActive = _isActiveLifecycle(incoming.status);
+    final matches = <int>[];
+    var realWithSameName = 0;
+    for (var i = 0; i < state.length; i++) {
+      final p = state[i];
+      if ((p.platform ?? '') != 'jd') continue;
+      if (_cleanedGoodsName(p.goodsName) != name) continue;
+      if (isSyntheticJdId(p.id)) {
+        // 生命周期闸门：旧卡已到件/已完成，而新单还在途 → 同一商品的不同订单，
+        // 不能合并（否则新包裹会被旧卡的已取状态和已通知标记吃掉）。
+        if (incomingActive && (p.status == PackageStatus.arrived || p.status.isCompleted)) {
+          continue;
+        }
+        matches.add(i);
+      } else if (RegExp(r'^JD_\d{6,}$').hasMatch(p.id) && p.id != incoming.id) {
+        realWithSameName++;
+      }
+    }
+    if (matches.length != 1 || realWithSameName > 0) return -1;
+    return matches.single;
+  }
+
+  static bool _isActiveLifecycle(PackageStatus s) =>
+      s == PackageStatus.pendingShipment ||
+      s == PackageStatus.transit ||
+      s == PackageStatus.delivering;
   
   UrgencyLevel _higherUrgency(UrgencyLevel a, UrgencyLevel b) {
     return a.score >= b.score ? a : b;
@@ -495,7 +599,12 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
     // 误把物流/取件说明当成商品名的脏数据不算「具体商品名」，
     // 这样它在合并时会被真实商品名或中性占位名替换掉
     if (_looksLikeLogisticsText(name)) return false;
-    return name != '快件包裹' && name != '快递包裹' && name != '拼多多包裹' && name != 'OCR';
+    const placeholders = {
+      '快件包裹', '快递包裹', '拼多多包裹', 'OCR',
+      // 京东兜底的通用占位名，占位卡之间不能当同名商品合并
+      '京东在途商品', '京东商品快件',
+    };
+    return !placeholders.contains(name);
   }
 
   /// 判断一个「商品名」是否其实是取件/物流说明文本（属于解析脏数据）
@@ -808,13 +917,13 @@ String? _mergeTimelineJson(String? existingJson, String? incomingJson) {
 }
 
 bool _isFoodTakeoutPackage(Package pkg) {
-  const foodKeywords = [
-    '外卖', '秒送', '达达', '骑手', '汉堡', '螺蛳粉', '冒菜', '米线',
-    '奶茶', '咖啡', '快餐', '餐饮', '堂食', '烧烤', '炸鸡', '烤鸭', '麻辣烫',
-    '人份', '套餐', '柠檬水', '饮品', '捞饭', '炒饭', '米饭', '鸡丁', '炸蛋', '小菜'
-  ];
+  // 只保留「即时配送渠道」词：这些词出现在商品名里基本可断定是外卖/秒送单。
+  // 食物词（咖啡/米饭/套餐/炸鸡…）一律不用——京东超市买的咖啡豆、速食米饭是
+  // 正常快递，按食物词清洗会每次冷启动误删真实订单。源头过滤交给
+  // jd_delivery_filter.dart（按订单结构判定，不看商品文本）。
+  const channelKeywords = ['外卖', '秒送', '达达', '骑手', '京东到家', '小时达', '即时配送'];
   // 只看商品名：location 是收货地址、stationName 是驿站名（含「堡」「咖啡」的小区/店铺名很常见），
   // description 是物流轨迹；用它们匹配会把正常快递整单误删，且每次冷启动反复误删。
   final text = pkg.goodsName ?? '';
-  return foodKeywords.any(text.contains);
+  return channelKeywords.any(text.contains);
 }

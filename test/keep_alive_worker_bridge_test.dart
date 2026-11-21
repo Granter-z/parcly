@@ -110,4 +110,13 @@ void main() {
 
     expect(gates['taobao'], at);
   });
+
+  test('无文件时返回可变 Map（worker 会直接写入）', () async {
+    final notifiedAt = await readWorkerNotifiedAt();
+    final gates = await readWorkerGates();
+
+    // 真机回归：曾返回 const {}，worker 成功后 remove/赋值抛 UnsupportedError
+    expect(() => notifiedAt['jd'] = DateTime(2026, 11, 20), returnsNormally);
+    expect(() => gates['jd'] = DateTime(2026, 11, 20), returnsNormally);
+  });
 }

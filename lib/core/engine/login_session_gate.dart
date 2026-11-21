@@ -119,6 +119,21 @@ bool mayCommitNewLoginSuccess({
   return true;
 }
 
+/// 采集到的 Cookie 是否允许落盘（P29-b，拼多多商城页与登录页共用口径）。
+///
+/// - 本轮是新登录会话（[canCommitNew]）→ 允许；
+/// - 浏览态（非登录意图 [popOnLoginSuccess]=false）、进入时未失效、且原本就绑定健康
+///   → 允许刷新同会话 Cookie（不冒充「新登录」）；
+/// - 其余一律拒绝：登录意图下旧会话回声、失效重登却采到旧指纹，都不能落盘。
+bool shouldPersistCollectedCookies({
+  required bool canCommitNew,
+  required bool popOnLoginSuccess,
+  required bool wasExpiredAtOpen,
+  required bool alreadyOk,
+}) {
+  return canCommitNew || (!popOnLoginSuccess && !wasExpiredAtOpen && alreadyOk);
+}
+
 /// 离开登录流且未成功时，是否应立刻把平台标回失效（P29-a）。
 bool shouldMarkExpiredOnLoginLeave({
   required bool loginCommitted,

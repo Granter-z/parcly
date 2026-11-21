@@ -68,13 +68,13 @@ void main() {
     expect(inks.every((w) => w.onTap == null), isTrue);
   });
 
-  testWidgets('同步失败（不是掉线）：显示「同步失败」，不显示需重登，也没有红底', (tester) async {
+  testWidgets('同步失败（不是掉线）：显示「失败」，不显示需重登，也没有红底', (tester) async {
     await pumpBar(tester, {
       'pdd': ok,
       'jd': ok,
       'taobao': PlatformAuthStatus.syncFailed,
     });
-    expect(find.text('淘宝 同步失败'), findsOneWidget);
+    expect(find.text('淘宝 失败'), findsOneWidget);
     expect(find.textContaining('需重登'), findsNothing);
     expect(barColor(tester), GlassTokens.fillSoft);
   });

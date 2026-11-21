@@ -13,6 +13,9 @@ import '../../core/models/package_status.dart';
 export '../../core/models/package.dart';
 export '../../core/models/package_status.dart';
 
+/// 包裹存储 Box 名称（main.dart 启动时预打开，PackageListNotifier 读写）
+const String kPackagesBox = 'packages';
+
 /// Hive持久化的Package模型
 /// 
 /// 注意：这个类主要用于Hive序列化，
@@ -66,7 +69,7 @@ class HivePackage {
     this.stationName,
     this.rawTimelineJson,
     String? fingerprint,
-  }) : this.fingerprint = fingerprint ?? Package.buildFingerprintStatic(pickupCode, courier, trackingNumber);
+  }) : fingerprint = fingerprint ?? Package.buildFingerprintStatic(pickupCode, courier, trackingNumber);
 
   /// 从核心模型创建
   factory HivePackage.fromPackage(Package package) {

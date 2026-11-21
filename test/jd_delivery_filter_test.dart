@@ -39,8 +39,38 @@ void main() {
       );
     });
 
-    test('虚拟商品没有快递跟踪字段，排除', () {
-      expect(isJdCourierDelivery({'orderId': '4'}), isFalse);
+    test('无物流结构的终态订单排除（虚拟商品/历史外卖）', () {
+      expect(
+        isJdCourierDelivery({'orderId': '4', 'orderStatusName': 'Accomplish'}),
+        isFalse,
+      );
+      expect(isJdCourierDelivery({'orderId': '4b'}), isFalse);
+    });
+
+    test('未发货的新快递保留（不能因缺 progressInfo 丢单）', () {
+      expect(
+        isJdCourierDelivery({'orderId': '5', 'orderStatusName': '待发货'}),
+        isTrue,
+      );
+      expect(
+        isJdCourierDelivery({'orderId': '6', 'orderStatusName': 'WaitDeliver'}),
+        isTrue,
+      );
+      expect(
+        isJdCourierDelivery({'orderId': '7', 'orderStatus': '待出库'}),
+        isTrue,
+      );
+    });
+
+    test('骑手文案的即时单即使状态活跃也排除', () {
+      expect(
+        isJdCourierDelivery({
+          'orderId': '8',
+          'orderStatusName': 'WaitReceive',
+          'message': '骑手已将包裹送达',
+        }),
+        isFalse,
+      );
     });
   });
 

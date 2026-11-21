@@ -73,6 +73,18 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       // 页面挂载时若已在同步，补上转圈。
       _syncSpin(ref.read(syncStateProvider));
+
+      // 持久化不可用时明确告知：列表只在内存，重启会丢，不能静默装作正常。
+      if (!ref.read(packageListProvider.notifier).persistenceAvailable) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('本地存储不可用，包裹暂存于内存，重启后可能丢失'),
+            duration: Duration(seconds: 6),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+
       _backgroundSyncService = BackgroundSyncService(ref);
       _backgroundSyncService!.initialize();
 

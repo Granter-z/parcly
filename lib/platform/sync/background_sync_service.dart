@@ -31,6 +31,14 @@ class BackgroundSyncService {
 
   BackgroundSyncService(this._ref);
 
+  /// 定时器回调入口（单测可直接驱动，验证自适应重启不额外触发同步）。
+  @visibleForTesting
+  Future<void> debugTimerTick() async {
+    if (_disposed) return;
+    await _performSync();
+    if (!_disposed) _restartWithNewInterval();
+  }
+
   /// 初始化服务并注册生命周期监听
   void initialize() {
     debugPrint('[BackgroundSyncService] Initializing...');
@@ -75,31 +83,34 @@ class BackgroundSyncService {
 
     debugPrint('[BackgroundSyncService] Starting background sync...');
 
-    // 取消现有定时器
-    _syncTimer?.cancel();
+    if (!_armTimer()) return;
 
-    // 计算同步间隔
+    // 进入后台时立即执行一次同步
+    _performSync();
+  }
+
+  /// 只重建定时器，不触发同步。
+  ///
+  /// 自适应重启（[_restartWithNewInterval]）走这里：刚跑完一轮同步，
+  /// 若再调 [_startBackgroundSync] 会背靠背多跑一轮全量同步。
+  /// 返回 false 表示无活跃包裹、定时器已停。
+  bool _armTimer() {
+    _syncTimer?.cancel();
+    _syncTimer = null;
+
     final interval = _calculateNextSyncInterval();
 
     if (interval.inHours >= 24) {
       debugPrint('[BackgroundSyncService] No active packages, sync paused');
       _scheduledInterval = null;
-      return;
+      return false;
     }
 
     debugPrint('[BackgroundSyncService] Next sync interval: ${interval.inMinutes} minutes');
 
-    // 创建定时器
     _scheduledInterval = interval;
-    _syncTimer = Timer.periodic(interval, (_) async {
-      if (_disposed) return;
-      await _performSync();
-      // 同步完成后重新计算间隔（自适应）
-      if (!_disposed) _restartWithNewInterval();
-    });
-
-    // 立即执行一次同步
-    _performSync();
+    _syncTimer = Timer.periodic(interval, (_) => debugTimerTick());
+    return true;
   }
 
   /// 暂停后台同步
@@ -125,7 +136,7 @@ class BackgroundSyncService {
     }
   }
 
-  /// 根据新的包裹状态重新启动定时器
+  /// 根据新的包裹状态重新启动定时器（只换周期，不额外触发同步）
   void _restartWithNewInterval() {
     if (_disposed || _syncTimer == null) return;
 
@@ -136,7 +147,7 @@ class BackgroundSyncService {
     if (currentInterval != null &&
         (newInterval.inMinutes - currentInterval.inMinutes).abs() > 5) {
       debugPrint('[BackgroundSyncService] Interval changed, restarting timer...');
-      _startBackgroundSync();
+      _armTimer();
     }
   }
 

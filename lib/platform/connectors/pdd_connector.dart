@@ -885,7 +885,7 @@ class PddH5Connector implements PlatformConnector {
     }
 
     try {
-      final raw = await completer.future.timeout(const Duration(seconds: 6));
+      final raw = await completer.future.timeout(const Duration(seconds: 10));
       _bridgeCompleter = null;
       return raw;
     } on TimeoutException {

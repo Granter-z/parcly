@@ -288,4 +288,40 @@ void main() {
     });
   });
 
+  group('shouldPersistCollectedCookies（P29-b 落盘门控）', () {
+    bool gate({
+      bool canCommitNew = false,
+      bool popOnLoginSuccess = false,
+      bool wasExpiredAtOpen = false,
+      bool alreadyOk = false,
+    }) =>
+        shouldPersistCollectedCookies(
+          canCommitNew: canCommitNew,
+          popOnLoginSuccess: popOnLoginSuccess,
+          wasExpiredAtOpen: wasExpiredAtOpen,
+          alreadyOk: alreadyOk,
+        );
+
+    test('新登录会话一律允许落盘', () {
+      expect(gate(canCommitNew: true), isTrue);
+      expect(gate(canCommitNew: true, popOnLoginSuccess: true), isTrue);
+      expect(gate(canCommitNew: true, wasExpiredAtOpen: true), isTrue);
+    });
+
+    test('浏览态 + 进入时健康 + 原本绑定 → 允许刷新同会话 cookie', () {
+      expect(gate(alreadyOk: true), isTrue);
+    });
+
+    test('登录意图下旧会话回声不得落盘', () {
+      expect(gate(popOnLoginSuccess: true, alreadyOk: true), isFalse);
+    });
+
+    test('进入时已失效、本轮又不是新会话 → 不得落盘', () {
+      expect(gate(wasExpiredAtOpen: true, alreadyOk: true), isFalse);
+    });
+
+    test('原本未绑定/不健康，浏览态也不落盘', () {
+      expect(gate(), isFalse);
+    });
+  });
 }

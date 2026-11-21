@@ -198,6 +198,46 @@ void main() {
     });
   });
 
+  group('JD 完成态：订单已送达（真机卡片卡在运送中的回归）', () {
+    test('「完成 · 订单已送达」判签收，不再落到兜底在途', () {
+      expect(
+        LogisticsStatusEngine.classifyNode('完成 · 订单已送达'),
+        LogisticsNodeAction.signed,
+      );
+      expect(
+        LogisticsStatusEngine.classifyNode('您的订单已送达'),
+        LogisticsNodeAction.signed,
+      );
+    });
+
+    test('derive：订单状态「完成」+ 进展「订单已送达」→ pickedUp', () {
+      final d = LogisticsStatusEngine.derive(
+        events: [
+          {'tag': '完成', 'time': '', 'text': '完成 · 订单已送达'},
+        ],
+      );
+      expect(d.status, PackageStatus.pickedUp);
+    });
+
+    test('送达驿站/快递柜是到站待取，不是签收', () {
+      expect(
+        LogisticsStatusEngine.classifyNode('快件已送达菜鸟驿站，请凭取件码取件'),
+        LogisticsNodeAction.waitingPickup,
+      );
+      expect(
+        LogisticsStatusEngine.classifyNode('您的包裹已送达快递柜'),
+        LogisticsNodeAction.waitingPickup,
+      );
+    });
+
+    test('预计送达不是已完成', () {
+      expect(
+        LogisticsStatusEngine.classifyNode('派送中，预计今日送达'),
+        isNot(LogisticsNodeAction.signed),
+      );
+    });
+  });
+
   group('P44-c PddStatusClassifier（合成样例路径）', () {
     test('① prompt「已完成」+ 最新「运输中」离开示例南站 → transit', () {
       final status = PddStatusClassifier.resolve(
@@ -337,7 +377,7 @@ void main() {
     });
 
     test('回归：拼「已取件」label 不得再让假完成 skip（旧 #38 闸门死穴）', () {
-      final poisoned = '运输中 $pddTicketLatest 已取件';
+      const poisoned = '运输中 $pddTicketLatest 已取件';
       expect(LogisticsStatusEngine.classifyNode(poisoned), LogisticsNodeAction.signed);
       // 新闸门只认用户 pickedUpAt，与 label 拼接无关
       expect(
@@ -537,7 +577,7 @@ void main() {
     }
 
     test('① mismatch + rawTraces → 仍建时间轴并 derive transit（不得 return null）', () {
-      final dirtyDom = '极兔速递: JT0000000000000\n'
+      const dirtyDom = '极兔速递: JT0000000000000\n'
           '订单编号: $dirtyOrderSn\n'
           '已签收 2026-10-02 12:00:00\n'
           '快件已签收，签收人：代收\n';
@@ -569,7 +609,7 @@ void main() {
     });
 
     test('①b mismatch 且无 rawTraces → null（失败，走 enrich 兜底）', () {
-      final dirtyDom = '订单编号: $dirtyOrderSn\n已签收 2026-10-02 12:00:00\n快件已签收\n';
+      const dirtyDom = '订单编号: $dirtyOrderSn\n已签收 2026-10-02 12:00:00\n快件已签收\n';
       final r = PddH5Connector.parseLogisticsText(
         dirtyDom,
         orderSn: orderSn,

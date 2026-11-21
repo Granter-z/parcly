@@ -628,8 +628,12 @@ class _PddWebScreenState extends ConsumerState<PddWebScreen>
 
         // P29-b：登录意图或进入时已失效 → 仅当本轮是新会话才落盘并清失效
         // 浏览态且原本健康 → 允许刷新同会话 cookie（不冒充「新登录」）
-        final allowPersist = canCommitNew ||
-            (!widget.popOnLoginSuccess && !_wasExpiredAtOpen && alreadyOk);
+        final allowPersist = shouldPersistCollectedCookies(
+          canCommitNew: canCommitNew,
+          popOnLoginSuccess: widget.popOnLoginSuccess,
+          wasExpiredAtOpen: _wasExpiredAtOpen,
+          alreadyOk: alreadyOk,
+        );
 
         if (!allowPersist) {
           debugPrint(

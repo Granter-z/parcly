@@ -16,6 +16,7 @@ import '../../core/utils/image_url.dart';
 import '../storage/platform_auth_store.dart';
 import '../sync/sync_history_manager.dart';
 import '../webview/platform_cookie.dart';
+import '../webview/webview_release.dart';
 import 'platform_connector.dart';
 import 'taobao_sync_rules.dart';
 import 'concurrent_limiter.dart';
@@ -81,6 +82,7 @@ class TaobaoH5Connector implements PlatformConnector {
     _captureGeneration++;
     _capturedCainiaoJson.clear();
     _lastInjectedCookies = null;
+    await parkWebView(_cainiaoController);
     _cainiaoController = null;
   }
 
@@ -486,6 +488,9 @@ class TaobaoH5Connector implements PlatformConnector {
       }
     } catch (_) {}
 
+    // 本轮实际使用的 controller：finally 只释放它，避免把下一轮新建的
+    // _cainiaoController 拉成 about:blank 并置空。
+    WebViewController? usedController;
     try {
       if (_lastInjectedCookies != effectiveCookies) {
         // 原生注入，保留 HttpOnly/Secure，避免把会话令牌降级为页面脚本可读
@@ -542,6 +547,7 @@ class TaobaoH5Connector implements PlatformConnector {
             ),
           );
       }
+      usedController = controller;
 
       // 淘宝官方末端菜鸟驿站前端地址（直接复刻手机淘宝首页「菜鸟驿站」模块）
       const cainiaoUrl = 'https://pages-fast.m.taobao.com/wow/z/uniapp/1100333/last-mile-fe/m-end-school-tab/home';
@@ -550,7 +556,7 @@ class TaobaoH5Connector implements PlatformConnector {
       await _injectCainiaoNetworkHook(controller);
 
       // 轮询等待页面渲染或接口返回（必须等待真实的货架取件码出现，严防骨架屏抢跑）
-      final deadline = DateTime.now().add(const Duration(seconds: 5));
+      final deadline = DateTime.now().add(const Duration(seconds: 8));
       while (DateTime.now().isBefore(deadline)) {
         if (_cancelled) break;
         await Future.delayed(const Duration(milliseconds: 150));
@@ -778,6 +784,14 @@ class TaobaoH5Connector implements PlatformConnector {
     } catch (e) {
       _logTb('[Cainiao] fetch error: ${e.runtimeType}');
       return list;
+    } finally {
+      // 只释放本轮使用的 controller；若下一轮已重建了新的 _cainiaoController，
+      // 不能把别人的 controller 拉成 about:blank 或置空。
+      await parkWebView(usedController);
+      if (identical(_cainiaoController, usedController)) {
+        _cainiaoController = null;
+      }
+      _lastInjectedCookies = null;
     }
   }
 

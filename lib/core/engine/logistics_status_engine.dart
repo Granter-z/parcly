@@ -330,6 +330,13 @@ class LogisticsStatusEngine {
             !_containsAny(t, const ['揽收', '揽件', '快递员已领取', '取件员已领取']) &&
             _containsAny(t, const [
               '快件已领取', '包裹已领取', '收件人', '驿站', '自提点', '自提柜', '快递柜', '门店',
+            ])) ||
+        // 京东等末端「订单已送达」= 投递完成（订单侧明确语义）。
+        // 只认「订单已送达」这一整体短语：裸「已送达」可能只是「已送达驿站/快递柜」，
+        // 那是到站待取，交给下方 B 区，避免把待取件误判成已完成。
+        (t.contains('订单已送达') &&
+            !_containsAny(t, const [
+              '驿站', '自提点', '自提柜', '快递柜', '代收点', '门店', '取件点', '取件码', '凭码', '出示',
             ]))) {
       return LogisticsNodeAction.signed;
     }
@@ -338,7 +345,7 @@ class LogisticsStatusEngine {
     // 注意：转运中心干线到件不属于自提点待取
     final isTransferStation = t.contains('转运中心') || t.contains('分拨中心') || t.contains('集散中心') || t.contains('分拣中心');
     final hasArrivalSignal = _containsAny(t, const [
-      '已派送至', '待取件', '待自提', '已入库', '已到站', '已到驿站', '出示单号', '取件码', '凭码取件', '凭提货码', '代收点', '自提点',
+      '已派送至', '待取件', '待自提', '已入库', '已到站', '已到驿站', '出示单号', '取件码', '凭码取件', '凭提货码', '代收点', '自提点', '自提柜', '快递柜',
     ]);
     if (hasArrivalSignal && !isTransferStation) {
       return LogisticsNodeAction.waitingPickup;

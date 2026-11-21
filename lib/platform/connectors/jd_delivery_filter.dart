@@ -10,10 +10,33 @@
 library;
 
 /// 判断京东订单是否为快递包裹（有传统物流跟踪）。
+///
+/// 判定顺序：
+/// 1. 结构/文案带即时配送标记 → 不是快递；
+/// 2. `progressInfo.progressId=logistics` → 是快递；
+/// 3. 活跃生命周期但尚未产生 progressInfo（如下单未发货、待出库）→ 先按快递保留，
+///    否则新下单未发货的包裹会在详情出现前被静默丢掉。
+/// 4. 其余（终态且无物流结构，如历史虚拟商品/已完成外卖单）→ 不是快递。
 bool isJdCourierDelivery(Map<String, dynamic> item) {
   if (hasJdInstantDeliveryMarker(item)) return false;
+  // 骑手/即时配送文案：即使没有 progressInfo 也不是快递。
+  final instantText = '${item['message'] ?? ''} ${item['messageTitle'] ?? ''}';
+  if (looksLikeJdInstantDeliveryText(instantText)) return false;
+
   final prog = item['progressInfo'] as Map<String, dynamic>?;
-  return (prog?['progressId']?.toString() ?? '') == 'logistics';
+  if ((prog?['progressId']?.toString() ?? '') == 'logistics') return true;
+
+  // 活跃生命周期：不能因为没有 progressInfo 就丢单。
+  final status = '${item['orderStatusName'] ?? ''} ${item['orderStatus'] ?? ''}';
+  const activeCn = [
+    '待发货', '等待发货', '待出库', '待收货', '运输中', '派送中', '已出库', '正在出库',
+  ];
+  if (activeCn.any(status.contains)) return true;
+  final s = status.toLowerCase();
+  return s.contains('waitdeliver') ||
+      s.contains('waitreceive') ||
+      s.contains('shipping') ||
+      s.contains('delivering');
 }
 
 /// 即时配送 / 外卖的结构标记。

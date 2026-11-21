@@ -1,6 +1,6 @@
 # 电商平台保活机制
 
-> 最后更新：2026-10-08
+> 最后更新：2026-11-21
 > 状态：前台调度 + 进程外续期 + 失效提醒闭环均已实现
 
 本文描述**当前代码的实际行为**。历史上的旧版本文档曾声称淘宝用 WebView 心跳、京东检查
@@ -19,7 +19,7 @@
 | platform | `lib/platform/keep_alive/keep_alive_service.dart` | 前台保活编排：按闸门与冷却决定发不发心跳，落盘结果 |
 | platform | `lib/platform/keep_alive/keep_alive_controller.dart` | Riverpod `Notifier`，把状态暴露为可 watch 的 `KeepAliveSnapshot` |
 | platform | `lib/platform/keep_alive/platform_heartbeat.dart` | 心跳接口 + 淘宝/京东实现 |
-| platform | `lib/platform/keep_alive/taobao_token_refresher.dart` | 淘宝 mtop `getTimeStamp` 签名请求与令牌轮换 |
+| platform | `lib/platform/keep_alive/taobao_token_refresher.dart` | 淘宝登录态探针（菜鸟包裹列表）与令牌轮换 |
 | platform | `lib/platform/keep_alive/pdd_connector_heartbeat.dart` | 拼多多心跳，委托给 `PddH5Connector` |
 | platform | `lib/platform/keep_alive/keep_alive_notifier.dart` | 失效提醒收口：去重标记 + 发送 |
 | platform | `lib/platform/keep_alive/keep_alive_worker.dart` | WorkManager 后台 isolate：App 进程被杀后仍能续期 |
@@ -36,8 +36,7 @@
 | Cookie 年龄 | 保活间隔 |
 |---|---|
 | 0-3 天 | 24 小时 |
-| 4-7 天 | 12 小时 |
-| 8-10 天 | 6 小时 |
+| 4-10 天 | 6 小时 |
 | 11 天以上 | 4 小时 |
 
 对每个平台，一轮检查按顺序判定，任一不通过就跳过该平台：
@@ -97,9 +96,14 @@ Android 13+ 必须运行时申请 `POST_NOTIFICATIONS`，否则到件通知和�
 
 | 平台 | 实现 | 判定口径 | 可后台运行 |
 |---|---|---|---|
-| 淘宝/天猫 | `TaobaoTokenRefresher`：mtop `mtop.cainiao.pickup.search.getTimeStamp` 签名请求 | `FAIL_SYS_SESSION_EXPIRED` / `FAIL_SYS_SID_INVALID` / `您需要登录才能继续访问` → 失效 | ✅ 纯 HTTP |
+| 淘宝/天猫 | `TaobaoTokenRefresher`：mtop `mtop.cainiao.pickup.plus.queryMultiStaPackages4Xy`（用户维度菜鸟包裹列表）签名请求 | `FAIL_SYS_SESSION_EXPIRED` / `FAIL_SYS_SID_INVALID` / `您需要登录才能继续访问` → 失效；无 `SUCCESS` 标记 → 网络错误（不误报成功） | ✅ 纯 HTTP |
 | 京东 | `GET https://wqs.jd.com/order/orderlist_jdm.shtml`，校验响应体 | 响应体含 `请登录` / `login.m.jd.com` / `passport.jd.com` / `"isLogin":false` / `"loginFlag":false`，或重定向到 login，或 HTTP 401/403 → 失效 | ✅ 纯 HTTP |
 | 拼多多 | 委托 `PddH5Connector.keepAliveProbe()`，复用其常驻 WebView 加载订单页 | 落地页含 `login`，或订单接口返回 `HTTPSTATUS:424` / `login.html` → 失效 | ❌ 见下 |
+
+淘宝心跳的成功口径是「菜鸟包裹列表接口返回 `SUCCESS`」：该接口是用户维度的，登录态失效时会
+明确返回 `FAIL_SYS_SESSION_EXPIRED`。此前用的 `getTimeStamp` 只需要 mtop 令牌、不要求登录，
+登录态已死时也可能返回成功，不能作为探针；现在只有见到 `SUCCESS` 才算健康，门户页/未知 retcode
+按网络错误处理，避免假阳性。
 
 淘宝心跳成功且服务端下发了新令牌时，会就地轮换 `_m_h5_tk` / `_m_h5_tk_enc` 并落盘
 （`updateCookieTokenFields` 刻意不刷新授权绑定时间）。mtop 只在服务端判定令牌过期时才下发新令牌，
@@ -179,6 +183,13 @@ work 无效，验证后台请用这个入口。
 ---
 
 ## 九、变更记录
+
+**2026-11-21**
+
+1. **淘宝心跳改为真实登录态探针**：`getTimeStamp` 只需令牌、不要求登录，会出现「心跳成功但同步
+   报 `SESSION_EXPIRED`」的假阳性；改用用户维度的菜鸟包裹列表接口，并要求响应含 `SUCCESS` 才
+   算健康，未知响应按网络错误处理。
+2. **4-7 天档保活间隔 12h → 6h**：缩小两次心跳之间的会话失效空窗。
 
 **2026-10-08**
 

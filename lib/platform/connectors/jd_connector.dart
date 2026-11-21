@@ -3,6 +3,7 @@ library;
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:webview_flutter/webview_flutter.dart';
@@ -13,11 +14,11 @@ import '../../core/parser/trace_time.dart';
 import '../../core/sanitizer/goods_name_cleaner.dart';
 import '../../core/utils/image_url.dart';
 import '../storage/platform_auth_store.dart';
+import '../webview/webview_release.dart';
 import 'jd_delivery_filter.dart';
 import 'jd_sync_network.dart';
 import 'jd_trace_parser.dart';
 import 'platform_connector.dart';
-import 'concurrent_limiter.dart';
 import 'package:pickup_app/core/parser/pickup_point_name.dart';
 import 'package:pickup_app/core/engine/package_identity.dart';
 
@@ -25,6 +26,29 @@ import 'package:pickup_app/core/engine/package_identity.dart';
 void _logJd(String msg) {
   debugPrint(msg);
 }
+
+/// 是否是京东订单列表响应。
+///
+/// 配置/埋点包里也可能出现 `orderList` 字样；真机实测订单响应带
+/// `orderId` + `wareInfoList`（旧版还有 orderStatusInfo，新版已扁平化）。
+/// 只用于提前结束 fast-path 等待，宽松收集仍走 `orderList` 匹配。
+bool isJdOrderListPayload(String text) =>
+    text.contains('orderId') && text.contains('wareInfoList');
+
+/// 京东新接口的英文终态枚举（真机：orderStatusName=Accomplish, statusId=5）。
+bool _isJdTerminalStatus(String statusLower) =>
+    statusLower == 'accomplish' ||
+    statusLower == 'complete' ||
+    statusLower == 'completed' ||
+    statusLower == 'finished';
+
+/// 详情预取是否已用完本轮时间预算（纯函数，便于单测）。
+///
+/// [deadline] 之后不再发起新的详情请求：外层 15s 硬超时量的是事件间隔，
+/// 必须保证第一个 yield 在此之前出现；预算耗尽后退回订单侧状态。
+@visibleForTesting
+bool detailBudgetExhausted(DateTime deadline, {DateTime? now}) =>
+    !(now ?? DateTime.now()).isBefore(deadline);
 
 class JdH5Connector implements PlatformConnector {
   final PlatformAuthStore _authStore;
@@ -91,8 +115,23 @@ class JdH5Connector implements PlatformConnector {
     _logJd('[JD] network soft fail: $reason');
   }
 
+  /// 本轮真正产出的包裹 ID（供上层清理旧版 DOM 伪卡片）
+  final Set<String> _lastSyncYieldedIds = <String>{};
+
+  /// 本轮是否解析到结构化订单列表（即使过滤后为空）
+  bool _sawStructuredOrderList = false;
+  bool get lastSyncSawStructuredList => _sawStructuredOrderList;
+  Set<String> get lastSyncYieldedIds => Set.unmodifiable(_lastSyncYieldedIds);
+
+  /// 本轮是否完整跑完（超时 / 取消时为 false，不能据此清理旧卡片）
+  bool _lastSyncCompleted = false;
+  bool get lastSyncCompleted => _lastSyncCompleted;
+
   @override
   Stream<Package> streamSync() async* {
+    _lastSyncYieldedIds.clear();
+    _lastSyncCompleted = false;
+    _sawStructuredOrderList = false;
     final cookies = _authStore.getCookies('jd');
     if (cookies == null || cookies.trim().isEmpty) {
       _logJd('[JD] No cookies, skip');
@@ -122,10 +161,14 @@ class JdH5Connector implements PlatformConnector {
           onMessageReceived: (JavaScriptMessage msg) {
             final text = msg.message;
             if (text.contains('orderList')) {
-              _logJd('[JD Hook] Captured order_list_m response (len: ${text.length})');
+              // 宽松收集：配置包也可能含 orderList 字样，交给解析器按结构筛选；
+              // 只有带订单对象字段的响应才提前结束 fast-path 等待。
               _capturedJsonList.add(text);
-              final c = _orderCapturedCompleter;
-              if (c != null && !c.isCompleted) c.complete();
+              if (isJdOrderListPayload(text)) {
+                _logJd('[JD Hook] Captured order_list_m response (len: ${text.length})');
+                final c = _orderCapturedCompleter;
+                if (c != null && !c.isCompleted) c.complete();
+              }
             } else if (text.contains('tracePointVOList') || text.contains('carriageId')) {
               _logJd('[JD Hook] Captured logistics response (len: ${text.length})');
               _capturedLogisticsJson.add(text);
@@ -196,6 +239,8 @@ class JdH5Connector implements PlatformConnector {
     } catch (e, stack) {
       _logJd('[JD] streamSync error: $e\n$stack');
     } finally {
+      // 只有完整跑完（未取消、未网络软失败）才允许上层用本轮 ID 清理旧伪卡片
+      _lastSyncCompleted = !_cancelled && !_networkSoftFail;
       _networkGate.wake = null;
       _orderCapturedCompleter = null;
       // P30-b ① / P30-b′：plogin / 本轮标失效 / 开始前已失效 → 绝不 persist
@@ -208,6 +253,10 @@ class JdH5Connector implements PlatformConnector {
       } else {
         await _persistJdCookiesIfHealthy(cookies);
       }
+      // 同步用 WebView 不常驻：拉 blank 停活动并丢引用，交给 GC 销毁原生层，
+      // 避免每轮同步泄漏一个原生 WebView（PDD 因心跳复用才常驻）。
+      await parkWebView(_controller);
+      _controller = null;
     }
   }
 
@@ -258,8 +307,15 @@ class JdH5Connector implements PlatformConnector {
       }
     }
 
-    // 4) 仅在未拦截到 JSON 时才执行耗时的 DOM 兜底与登录态校验
-    if (orders.isEmpty) {
+    // [临时探针] 已收集到结论：10 单全为即时配送（无运单号、轨迹含骑手）。
+
+    // 4) DOM 兜底只在「结构化订单列表不可用」时执行。
+    //    结构化源已经判定没有快递单时，绝不能用 DOM 文本重新造出包裹
+    //    （DOM 不携带渠道信息，会把外卖/虚拟单当成快递）。
+    if (orders.isEmpty && _sawStructuredOrderList) {
+      _logJd('[JD] structured order list parsed (0 courier orders); skip DOM fallback');
+    }
+    if (orders.isEmpty && !_sawStructuredOrderList) {
       if (_networkSoftFail) return;
       final landedUrl = await _locationHref(controller);
       // 只记 host：落地 URL 的 query 里可能带订单号。
@@ -310,28 +366,28 @@ class JdH5Connector implements PlatformConnector {
 
     // 共享 WebView 必须串行：详情页共用 _controller 与 _capturedLogisticsJson，
     // 并发 loadRequest 会互相打断，A 单捕获的轨迹会被 B 单当成自己的（与 PDD 同因，见 pdd_connector）。
-    final executor = ThrottledExecutor(
-      maxConcurrent: 1,
-      minDelay: const Duration(milliseconds: 150),
-      maxDelay: const Duration(milliseconds: 350),
-    );
-
-    final detailTasks = validOrders.values.where((o) => o.progressLink.isNotEmpty).map((o) {
-      return () => _fetchLogisticsDetail(o.orderId, o.progressLink).then((detail) {
-        return {'orderId': o.orderId, 'detail': detail};
-      });
-    }).toList();
-
-    final results = await executor.executeAll(detailTasks);
-    if (_networkSoftFail) return;
-
-    // 构建 orderId -> detail 的映射
+    //
+    // 详情预取必须留出时间预算：外层 15s 硬超时量的是事件间隔，若等全部详情
+    // 取完才开始 yield，多包裹用户必然超时（0 张卡 + 误报「暂时不可达」）。
+    // 预算耗尽后退回订单侧状态，卡片照常产出，只是没有轨迹详情。
     final detailMap = <String, _JdLogisticsDetail?>{};
-    for (final result in results) {
-      final orderId = result['orderId'] as String;
-      final detail = result['detail'] as _JdLogisticsDetail?;
-      detailMap[orderId] = detail;
+    final detailDeadline = DateTime.now().add(const Duration(seconds: 8));
+    final random = Random();
+    for (final o in validOrders.values) {
+      if (o.progressLink.isEmpty) continue;
+      if (_networkSoftFail || _cancelled) return;
+      if (detailBudgetExhausted(detailDeadline)) {
+        _logJd('[JD] detail budget exhausted, remaining orders use list status');
+        break;
+      }
+      detailMap[o.orderId] =
+          await _fetchLogisticsDetail(o.orderId, o.progressLink);
+      if (_networkSoftFail || _cancelled) return;
+      await Future.delayed(
+        Duration(milliseconds: 150 + random.nextInt(201)),
+      );
     }
+    if (_networkSoftFail) return;
 
     for (final o in validOrders.values) {
       if (_networkSoftFail || _cancelled) return;
@@ -354,6 +410,7 @@ class JdH5Connector implements PlatformConnector {
           'hasTracking=${(detail?.trackingNumber ?? '').isNotEmpty} '
           'nodes=${detail?.timelineNodes.length ?? 0}');
 
+      _lastSyncYieldedIds.add('JD_${o.orderId}');
       yield Package(
         id: 'JD_${o.orderId}',
         trackingNumber: (detail != null && detail.trackingNumber.isNotEmpty)
@@ -523,7 +580,9 @@ class JdH5Connector implements PlatformConnector {
         p.then(function(res) {
           try {
             res.clone().text().then(function(t) {
-              if (t.indexOf('orderList') !== -1 || t.indexOf('tracePointVOList') !== -1 || t.indexOf('carriageId') !== -1) report(t);
+              var isOrder = t.indexOf('orderList') !== -1;
+              var isLogistics = t.indexOf('tracePointVOList') !== -1 || t.indexOf('carriageId') !== -1;
+              if (isOrder || isLogistics) report(t);
             });
           } catch(e) {}
         });
@@ -536,9 +595,10 @@ class JdH5Connector implements PlatformConnector {
   XMLHttpRequest.prototype.send = function() {
     this.addEventListener('load', function() {
       try {
-        if (this.responseText && (this.responseText.indexOf('orderList') !== -1 || this.responseText.indexOf('tracePointVOList') !== -1 || this.responseText.indexOf('carriageId') !== -1)) {
-          report(this.responseText);
-        }
+        var t = this.responseText || '';
+        var isOrder = t.indexOf('orderList') !== -1;
+        var isLogistics = t.indexOf('tracePointVOList') !== -1 || t.indexOf('carriageId') !== -1;
+        if (isOrder || isLogistics) report(t);
       } catch(e) {}
     });
     return origSend.apply(this, arguments);
@@ -605,6 +665,49 @@ class JdH5Connector implements PlatformConnector {
   }
 
   /// 从拦截到的 order_list_m JSON 响应中解析
+  /// 在任意层级的响应里定位订单数组。
+  ///
+  /// 京东不同接口把列表放在 `body` / `data` / 更深包裹中（真机实测根节点是
+  /// `{code,msg,version,data,traceId}`），写死 `body.orderList` 会整包解析失败、
+  /// 退化成标题靠猜的 DOM 兜底。这里递归找第一个订单对象数组，深度上限防异常结构。
+  static List<dynamic>? _findJdOrderList(dynamic node, [int depth = 0]) {
+    if (depth > 5) return null;
+    if (node is Map) {
+      final ol = node['orderList'];
+      // 空数组不是订单列表：继续向下找，避免配置节点里的 `orderList: []`
+      // 抢占真正的订单数组。整包都没有才返回 null。
+      if (ol is List && _looksLikeJdOrderList(ol)) return ol;
+      for (final v in node.values) {
+        final found = _findJdOrderList(v, depth + 1);
+        if (found != null) return found;
+      }
+    } else if (node is List) {
+      if (_looksLikeJdOrderList(node)) return node;
+      for (final v in node) {
+        final found = _findJdOrderList(v, depth + 1);
+        if (found != null) return found;
+      }
+    }
+    return null;
+  }
+
+  static bool _looksLikeJdOrderList(List<dynamic> list) =>
+      list.isNotEmpty &&
+      list.first is Map &&
+      (list.first as Map).containsKey('orderId');
+
+  @visibleForTesting
+  static List<dynamic>? debugFindJdOrderList(dynamic node) =>
+      _findJdOrderList(node);
+
+  /// 单测入口：解析一段订单 JSON，返回是否被认定为权威结构化源。
+  @visibleForTesting
+  bool debugParseOrders(String jsonStr) {
+    _sawStructuredOrderList = false;
+    _parseOrdersFromJson(jsonStr);
+    return _sawStructuredOrderList;
+  }
+
   List<_JdOrder> _parseOrdersFromJson(String jsonStr) {
     final list = <_JdOrder>[];
     try {
@@ -613,9 +716,16 @@ class JdH5Connector implements PlatformConnector {
         s = jsonDecode(s) as String;
       }
       final root = jsonDecode(s) as Map<String, dynamic>;
-      final body = root['body'] as Map<String, dynamic>?;
-      final orderList = body?['orderList'] as List<dynamic>?;
+      // 京东不同接口/版本把订单列表放在 body / data / 更深的包裹里，
+      // 不写死层级：递归找第一个「订单对象数组」，避免整包解析失败退化成 DOM 兜底。
+      final orderList = _findJdOrderList(root);
       if (orderList == null) return list;
+      // 只有真正的订单数组（非空且首元素带 orderId）才算结构化源可用。
+      // 埋点/配置包里的空 `orderList: []` 不能当权威结论，否则一次钩子漏抓
+      // 就会跳过 DOM 兜底并触发清卡。
+      if (_looksLikeJdOrderList(orderList)) {
+        _sawStructuredOrderList = true;
+      }
 
       _logJd('[JD Hook] Found ${orderList.length} orders in JSON');
 
@@ -631,15 +741,25 @@ class JdH5Connector implements PlatformConnector {
         }
 
         final statusInfo = item['orderStatusInfo'] as Map<String, dynamic>?;
-        final statusName = statusInfo?['orderStatusName']?.toString() ?? '';
+        final statusName = statusInfo?['orderStatusName']?.toString() ??
+            item['orderStatusName']?.toString() ??
+            item['orderStatus']?.toString() ??
+            '';
+        final statusLower = statusName.toLowerCase();
 
-        // 过滤已关闭/取消
-        if (statusName.contains('取消') || statusName.contains('关闭') || statusName.contains('退款')) {
+        // 过滤已关闭/取消（兼容英文枚举 Cancel/Closed/Refund）
+        if (statusName.contains('取消') ||
+            statusName.contains('关闭') ||
+            statusName.contains('退款') ||
+            statusLower.contains('cancel') ||
+            statusLower.contains('close') ||
+            statusLower.contains('refund')) {
           continue;
         }
 
-        // P44：严格签收白名单，禁止裸「完成」宽匹配
-        final isCompleted = LogisticsStatusEngine.isStrictOrderSignedLabel(statusName);
+        // P44：严格签收白名单，禁止裸「完成」宽匹配；京东新接口用英文 Accomplish
+        final isCompleted = LogisticsStatusEngine.isStrictOrderSignedLabel(statusName) ||
+            _isJdTerminalStatus(statusLower);
 
         // 商品标题与主图
         String goodsName = '';
@@ -654,7 +774,10 @@ class JdH5Connector implements PlatformConnector {
 
         // 轨迹进展与自提码
         final prog = item['progressInfo'] as Map<String, dynamic>?;
-        final latestText = prog?['content']?.toString() ?? statusName;
+        final latestText = prog?['content']?.toString() ??
+            item['messageTitle']?.toString() ??
+            item['message']?.toString() ??
+            statusName;
         final tip = prog?['tip']?.toString() ?? '';
         final rawProgressLink = prog?['progressLink']?.toString() ?? '';
 
@@ -724,7 +847,8 @@ class JdH5Connector implements PlatformConnector {
 
   /// DOM 提取兜底脚本 - 深度提取页面中的待收货订单卡片与真实商品图片
   Future<String?> _extractWaitReceiveOrdersViaJs(WebViewController controller) async {
-    const jsCode = '''
+    // raw 字符串：JS 正则里的 \/ 是字面量，非 raw 会被 Dart 当多余转义剥掉
+    const jsCode = r'''
 (function(){
   try {
     var bodyText = document.body ? document.body.innerText : '';
@@ -863,28 +987,59 @@ class JdH5Connector implements PlatformConnector {
           }
         }
 
+        // 页面按钮/服务文案不是商品名，先剔掉
+        const uiNoise = [
+          '查看送达照片', '送达照片', '不支持7天无理由退货', '7天无理由退货',
+          '再次购买', '申请售后', '评价晒单', '查看物流', '确认收货',
+          '删除订单', '联系客服', '查看发票', '价格保护', '催单', '修改地址',
+        ];
+        if (title.isNotEmpty && uiNoise.any(title.contains)) title = '';
         if (title.isEmpty) {
-          title = progress.isNotEmpty ? progress : '京东在途商品';
+          // 进展行不是物流动作时才可能是商品名（如「【…】牛肉汉堡套餐」）
+          final progressIsStatus = progress.isEmpty ||
+              LogisticsStatusEngine.isActiveLogisticsText(progress) ||
+              progress.contains('送达') ||
+              progress.contains('签收') ||
+              progress.contains('完成') ||
+              progress.contains('运输') ||
+              progress.contains('派送');
+          title = progressIsStatus ? '京东在途商品' : progress;
         }
 
         if (seenTitles.contains(title)) continue;
         seenTitles.add(title);
 
-        // P45：DOM 兜底没有 JSON 结构，用状态/进展文案排除秒送外卖单
-        if (looksLikeJdInstantDeliveryText('$matchedStatus $progress')) {
-          _logJd('[JD Filter] Instant delivery in DOM, drop: $title');
+        // P45：DOM 兜底没有 JSON 结构，只认渠道词（骑手/达达/秒送/京东到家…），
+        // 且物流进展仍活跃时不丢。不用菜名（螺蛳粉/套餐…）判外卖——网上买的
+        // 食品也是真实快递；宁可漏清外卖，也不误删真实包裹。
+        if (!LogisticsStatusEngine.isActiveLogisticsText(progress) &&
+            looksLikeJdInstantDeliveryText('$matchedStatus $progress $title')) {
+          _logJd('[JD Filter] Instant delivery in DOM, drop');
           continue;
         }
 
-        // P44：严格签收白名单，禁止裸「完成」
-        final isCompleted = LogisticsStatusEngine.isStrictOrderSignedLabel(matchedStatus);
         final pickupCode = _pickupCodeFromText('$matchedStatus $progress $title');
         final station = _stationFromText('$shopName $progress');
+        // P44 口径：订单侧「完成」不能压过仍在途的物流节点；
+        // 但进展行没有活跃物流动作（空 / 商品名）时，「完成」就是真完成。
+        final isBareCompleted = matchedStatus == '完成' || matchedStatus == '已完成';
+        final progressActive = LogisticsStatusEngine.isActiveLogisticsText(progress);
+        final isCompleted = LogisticsStatusEngine.isStrictOrderSignedLabel(matchedStatus) ||
+            (isBareCompleted && !progressActive);
         final status = pickupCode.isNotEmpty
             ? PackageStatus.arrived
             : (isCompleted
                 ? PackageStatus.pickedUp
-                : _statusFromText(matchedStatus));
+                : LogisticsStatusEngine.derive(
+                    events: [
+                      {'tag': matchedStatus, 'time': '', 'text': progress},
+                    ],
+                    isPendingShipment: matchedStatus.contains('待发货') ||
+                        matchedStatus.contains('等待发货') ||
+                        matchedStatus.contains('待出库'),
+                    isOrderSigned: false,
+                    pickupCode: '',
+                  ).status);
         final hash = md5.convert(utf8.encode('$title$shopName')).toString().substring(0, 12);
 
         // 匹配商品图片（严格优先选取 /n1/, /n2/, /n0/, /popWareMobile/ 等商品路径）
@@ -898,10 +1053,12 @@ class JdH5Connector implements PlatformConnector {
             ? realProductImgs.first
             : (goodsImages.isNotEmpty ? goodsImages.first : '');
 
-        _logJd('[JD Found In-Transit] Title: $title, Status: ${status.label}, Progress: $progress');
+        _logJd('[JD Found In-Transit] titleLen=${title.length} '
+            'status=${status.label} progressLen=${progress.length}');
 
         list.add(_JdOrder(
-          orderId: hash,
+          // DOM 兜底的合成 id 用 x 前缀明确标记来源，避免与真实十进制订单号混淆
+          orderId: 'x$hash',
           status: status,
           statusText: progress.isNotEmpty ? '$matchedStatus · $progress' : matchedStatus,
           pickupCode: pickupCode,
@@ -913,24 +1070,6 @@ class JdH5Connector implements PlatformConnector {
     }
 
     return list;
-  }
-
-  PackageStatus _statusFromText(String block) {
-    // P44：禁止裸「已完成」；严格白名单
-    if (LogisticsStatusEngine.isStrictOrderSignedLabel(block)) {
-      return PackageStatus.pickedUp;
-    }
-    if (block.contains('待发货') || block.contains('等待发货') || block.contains('待出库')) {
-      return PackageStatus.pendingShipment;
-    }
-    if (block.contains('待取件') || block.contains('待自提') || block.contains('已到达') ||
-        block.contains('已存入')) {
-      return PackageStatus.arrived;
-    }
-    if (block.contains('派送中') || block.contains('派件') || block.contains('送货中')) {
-      return PackageStatus.delivering;
-    }
-    return PackageStatus.transit;
   }
 
   String _pickupCodeFromText(String block) {

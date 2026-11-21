@@ -33,6 +33,13 @@ class _KeepAliveStatusScreenState extends ConsumerState<KeepAliveStatusScreen>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _loadBatteryStatus();
+    // 同步可能已写入登录失效，但保活快照只在保活服务自身变化时推送。
+    // 进页时补一次刷新，避免设置页显示「已失效」而这里仍显示「良好」。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        ref.read(keepAliveControllerProvider.notifier).refresh();
+      }
+    });
   }
 
   @override
@@ -211,7 +218,7 @@ class _KeepAliveStatusScreenState extends ConsumerState<KeepAliveStatusScreen>
           const SizedBox(width: 12),
           Expanded(
             child: Text(
-              '保活机制定期访问平台保持登录态有效，减少重新登录次数',
+              '定期检查登录态并轮换令牌；健康度按 Cookie 年龄分档',
               style: TextStyle(
                 fontSize: 13,
                 color: Colors.grey.shade700,
@@ -586,8 +593,7 @@ class _KeepAliveStatusScreenState extends ConsumerState<KeepAliveStatusScreen>
             const Text(
               '当前使用智能模式，根据 Cookie 年龄自动调整：\n\n'
               '• 0-3 天：每 24 小时\n'
-              '• 4-7 天：每 12 小时\n'
-              '• 8-10 天：每 6 小时\n'
+              '• 4-10 天：每 6 小时\n'
               '• 11+ 天：每 4 小时',
             ),
             if (current != null) ...[

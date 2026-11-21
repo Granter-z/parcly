@@ -7,6 +7,7 @@ import 'package:timezone/data/latest.dart' as tz;
 import '../../core/models/package.dart';
 import '../../core/models/platform_ids.dart';
 import '../../core/debug/debug_trace.dart';
+import '../../core/utils/stable_hash.dart';
 
 /// 登录状态提醒使用独立通知渠道
 ///
@@ -28,13 +29,40 @@ class NotificationAdapter {
   /// 保活相关通知独立号段，避开包裹通知的两段大区间
   static const int _keepAliveBaseId = 30000;
 
-  /// 包裹通知 id：用完整 hash 的大区间，避免 10000 桶的生日碰撞误伤
-  static int _packageNotificationId(String packageId, int base) =>
+  /// 包裹通知 id：FNV-1a 稳定哈希 + 大区间，避免 10000 桶的生日碰撞误伤。
+  ///
+  /// 不用 `String.hashCode`：它不保证跨进程稳定，冷启动后取消/提醒会算出不同 id。
+  /// 可见性放开供单测直接断言稳定性。
+  @visibleForTesting
+  static int packageNotificationId(String packageId, int base) =>
+      base + stableHash32(packageId);
+
+  /// 旧版 10000 桶 id（hashCode 口径），升级后仍需取消，避免残留通知。
+  /// 注意：这里必须沿用旧算法，否则取消不到历史版本发出的通知。
+  @visibleForTesting
+  static int legacyPackageNotificationId(String packageId, int base) =>
+      base + packageId.hashCode.abs() % 10000;
+
+  /// 上一版（+21～+30）口径：`base + (hashCode & 0x07FFFFFF)`。
+  ///
+  /// 本 PR 换成稳定哈希后，上一版发出的通知两种旧口径都不是；取消时必须一并
+  /// 兼容，否则升级后旧的到件通知取件了也消不掉。
+  @visibleForTesting
+  static int previousPackageNotificationId(String packageId, int base) =>
       base + (packageId.hashCode & 0x07FFFFFF);
 
-  /// 旧版 10000 桶 id，升级后仍需取消，避免残留通知
-  static int _legacyPackageNotificationId(String packageId, int base) =>
-      base + packageId.hashCode.abs() % 10000;
+  /// 取消一个包裹时需要尝试的全部 id（三套口径 × 到件/提醒）。
+  ///
+  /// 取消不存在的 id 是 no-op，多算几个是安全的。
+  @visibleForTesting
+  static List<int> notificationIdsToCancel(String packageId) => [
+        packageNotificationId(packageId, _arrivedBaseId),
+        packageNotificationId(packageId, _reminderBaseId),
+        previousPackageNotificationId(packageId, _arrivedBaseId),
+        previousPackageNotificationId(packageId, _reminderBaseId),
+        legacyPackageNotificationId(packageId, _arrivedBaseId),
+        legacyPackageNotificationId(packageId, _reminderBaseId),
+      ];
 
   /// 登录失效提醒的点击跳转 payload 前缀
   static const String keepAliveExpiredPrefix = 'keep_alive_expired:';
@@ -175,10 +203,10 @@ class NotificationAdapter {
 
     final title = _buildArrivedTitle(package);
     final body = _buildArrivedBody(package);
-    final notificationId = _packageNotificationId(package.id, _arrivedBaseId);
+    final notificationId = packageNotificationId(package.id, _arrivedBaseId);
     try {
       await _plugin.cancel(
-          _legacyPackageNotificationId(package.id, _arrivedBaseId));
+          legacyPackageNotificationId(package.id, _arrivedBaseId));
     } catch (_) {}
 
     await _showNotification(
@@ -231,12 +259,12 @@ class NotificationAdapter {
     DebugTrace.separator('SCHEDULE REMINDER NOTIFICATION');
     debugPrint('[Notify] reminder courier=${package.courier.shortName}');
 
-    final title = '快递还在等你';
+    const title = '快递还在等你';
     final body = '${package.courier.shortName} 已等待超过 24 小时';
-    final notificationId = _packageNotificationId(package.id, _reminderBaseId);
+    final notificationId = packageNotificationId(package.id, _reminderBaseId);
     try {
       await _plugin.cancel(
-          _legacyPackageNotificationId(package.id, _reminderBaseId));
+          legacyPackageNotificationId(package.id, _reminderBaseId));
     } catch (_) {}
 
     await _scheduleNotification(
@@ -252,18 +280,12 @@ class NotificationAdapter {
     DebugTrace.separator('CANCEL NOTIFICATION');
     debugPrint('[Notify] cancel');
 
-    final arrivedId = _packageNotificationId(packageId, _arrivedBaseId);
-    final reminderId = _packageNotificationId(packageId, _reminderBaseId);
-    final legacyArrivedId =
-        _legacyPackageNotificationId(packageId, _arrivedBaseId);
-    final legacyReminderId =
-        _legacyPackageNotificationId(packageId, _reminderBaseId);
-
     try {
-      await _plugin.cancel(arrivedId);
-      await _plugin.cancel(reminderId);
-      await _plugin.cancel(legacyArrivedId);
-      await _plugin.cancel(legacyReminderId);
+      // 三套 id 口径都取消：新版稳定哈希、上一版 hashCode 大区间、
+      // 更早的 10000 桶。取消不存在的 id 是 no-op。
+      for (final id in notificationIdsToCancel(packageId)) {
+        await _plugin.cancel(id);
+      }
     } catch (_) {}
   }
 

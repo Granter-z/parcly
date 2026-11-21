@@ -149,8 +149,19 @@ class KeepAliveService {
   ///
   /// [force] 为 true 时绕过「下次保活时间」闸门与冷却规则（手动保活按钮语义）。
   Future<void> _performKeepAlive({bool force = false}) async {
-    if (!_enabled) return;
+    if (!_enabled || _checking) return;
+    _checking = true;
+    try {
+      await _performKeepAliveInner(force: force);
+    } finally {
+      _checking = false;
+    }
+  }
 
+  /// 重入保护：周期检查与手动保活撞车时，同一平台不得并发发两次心跳、并发写闸门。
+  bool _checking = false;
+
+  Future<void> _performKeepAliveInner({bool force = false}) async {
     debugPrint('[KeepAliveService] Performing keep-alive check...');
     final now = DateTime.now();
 

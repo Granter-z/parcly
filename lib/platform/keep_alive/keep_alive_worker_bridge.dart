@@ -225,16 +225,17 @@ Future<List<WorkerHeartbeatResult>> readAndClearWorkerResults() async {
 Future<Map<String, DateTime>> readWorkerNotifiedAt() async {
   try {
     final file = await _file(_notifyFile);
-    if (!await file.exists()) return const {};
+    // 必须返回可变 Map：worker 会直接增删去重标记
+    if (!await file.exists()) return <String, DateTime>{};
     final map = _decodeMap(await file.readAsString());
-    if (map == null) return const {};
+    if (map == null) return <String, DateTime>{};
     return {
       for (final entry in map.entries)
         if (entry.value is int)
           entry.key: DateTime.fromMillisecondsSinceEpoch(entry.value as int),
     };
   } catch (_) {
-    return const {};
+    return <String, DateTime>{};
   }
 }
 
@@ -269,16 +270,17 @@ Future<void> clearWorkerNotifiedAt(String platform) async {
 Future<Map<String, DateTime>> readWorkerGates() async {
   try {
     final file = await _file(_gateFile);
-    if (!await file.exists()) return const {};
+    // 必须返回可变 Map：worker 会写入本轮算出的下一次保活时间
+    if (!await file.exists()) return <String, DateTime>{};
     final map = _decodeMap(await file.readAsString());
-    if (map == null) return const {};
+    if (map == null) return <String, DateTime>{};
     return {
       for (final entry in map.entries)
         if (entry.value is int)
           entry.key: DateTime.fromMillisecondsSinceEpoch(entry.value as int),
     };
   } catch (_) {
-    return const {};
+    return <String, DateTime>{};
   }
 }
 
