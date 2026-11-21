@@ -24,6 +24,33 @@ void main() {
     });
   });
 
+  group('debugParseOrders（结构化源权威判定）', () {
+    test('空 orderList 不当作权威（防一次钩子漏抓就清卡）', () {
+      final connector = JdH5Connector();
+      expect(connector.debugParseOrders('{"data":{"orderList":[]}}'), isFalse);
+    });
+
+    test('配置/埋点包不是权威', () {
+      final connector = JdH5Connector();
+      expect(
+        connector.debugParseOrders(
+          '{"data":{"navigation":{"orderListConfig":{}}}}',
+        ),
+        isFalse,
+      );
+    });
+
+    test('真实订单数组（非空且带 orderId）才是权威', () {
+      final connector = JdH5Connector();
+      expect(
+        connector.debugParseOrders(
+          '{"data":{"orderList":[{"orderId":"1","wareInfoList":[]}]}}',
+        ),
+        isTrue,
+      );
+    });
+  });
+
   group('debugFindJdOrderList', () {
     test('订单列表在 data 下（真机结构）', () {
       final root = {

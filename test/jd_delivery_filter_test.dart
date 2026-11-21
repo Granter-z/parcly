@@ -39,8 +39,38 @@ void main() {
       );
     });
 
-    test('虚拟商品没有快递跟踪字段，排除', () {
-      expect(isJdCourierDelivery({'orderId': '4'}), isFalse);
+    test('无物流结构的终态订单排除（虚拟商品/历史外卖）', () {
+      expect(
+        isJdCourierDelivery({'orderId': '4', 'orderStatusName': 'Accomplish'}),
+        isFalse,
+      );
+      expect(isJdCourierDelivery({'orderId': '4b'}), isFalse);
+    });
+
+    test('未发货的新快递保留（不能因缺 progressInfo 丢单）', () {
+      expect(
+        isJdCourierDelivery({'orderId': '5', 'orderStatusName': '待发货'}),
+        isTrue,
+      );
+      expect(
+        isJdCourierDelivery({'orderId': '6', 'orderStatusName': 'WaitDeliver'}),
+        isTrue,
+      );
+      expect(
+        isJdCourierDelivery({'orderId': '7', 'orderStatus': '待出库'}),
+        isTrue,
+      );
+    });
+
+    test('骑手文案的即时单即使状态活跃也排除', () {
+      expect(
+        isJdCourierDelivery({
+          'orderId': '8',
+          'orderStatusName': 'WaitReceive',
+          'message': '骑手已将包裹送达',
+        }),
+        isFalse,
+      );
     });
   });
 
@@ -55,29 +85,6 @@ void main() {
       expect(looksLikeJdInstantDeliveryText('快件已到达菜鸟驿站'), isFalse);
       expect(looksLikeJdInstantDeliveryText('预计明天送达'), isFalse);
       expect(looksLikeJdInstantDeliveryText('派件中'), isFalse);
-    });
-  });
-
-  group('looksLikeJdMealText（外卖餐品强特征）', () {
-    test('真机三张外卖卡的标题都能识别', () {
-      expect(
-        looksLikeJdMealText('福利6选 1 单人餐｜闭眼点不亏标准单人餐'),
-        isTrue,
-      );
-      expect(
-        looksLikeJdMealText('【性价之王】牛肉大汉堡单人6件爆款套餐 1人份'),
-        isTrue,
-      );
-      expect(
-        looksLikeJdMealText('招牌炸蛋螺蛳粉+撒尿肉丸2个 一人份'),
-        isTrue,
-      );
-    });
-
-    test('普通快递商品不误伤', () {
-      expect(looksLikeJdMealText('蓝月亮洗衣液 3kg 家庭装'), isFalse);
-      expect(looksLikeJdMealText('iPhone 15 手机壳'), isFalse);
-      expect(looksLikeJdMealText('京东在途商品'), isFalse);
     });
   });
 }

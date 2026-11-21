@@ -690,6 +690,14 @@ class JdH5Connector implements PlatformConnector {
   static List<dynamic>? debugFindJdOrderList(dynamic node) =>
       _findJdOrderList(node);
 
+  /// 单测入口：解析一段订单 JSON，返回是否被认定为权威结构化源。
+  @visibleForTesting
+  bool debugParseOrders(String jsonStr) {
+    _sawStructuredOrderList = false;
+    _parseOrdersFromJson(jsonStr);
+    return _sawStructuredOrderList;
+  }
+
   List<_JdOrder> _parseOrdersFromJson(String jsonStr) {
     final list = <_JdOrder>[];
     try {
@@ -702,8 +710,12 @@ class JdH5Connector implements PlatformConnector {
       // 不写死层级：递归找第一个「订单对象数组」，避免整包解析失败退化成 DOM 兜底。
       final orderList = _findJdOrderList(root);
       if (orderList == null) return list;
-      // 结构化源可用（即使过滤后为空）：记录后，调用方不再回退 DOM
-      _sawStructuredOrderList = true;
+      // 只有真正的订单数组（非空且首元素带 orderId）才算结构化源可用。
+      // 埋点/配置包里的空 `orderList: []` 不能当权威结论，否则一次钩子漏抓
+      // 就会跳过 DOM 兜底并触发清卡。
+      if (_looksLikeJdOrderList(orderList)) {
+        _sawStructuredOrderList = true;
+      }
 
       _logJd('[JD Hook] Found ${orderList.length} orders in JSON');
 
@@ -987,17 +999,12 @@ class JdH5Connector implements PlatformConnector {
         if (seenTitles.contains(title)) continue;
         seenTitles.add(title);
 
-        // P45：DOM 兜底没有 JSON 结构，用状态/进展文案排除秒送外卖单
-        if (looksLikeJdInstantDeliveryText('$matchedStatus $progress')) {
-          _logJd('[JD Filter] Instant delivery in DOM, drop');
-          continue;
-        }
-
-        // 外卖餐品：页面没有渠道字段，按商品名强特征丢弃；
-        // 最新进展仍是活跃物流动作时保留，避免误删在途的食品快递。
+        // P45：DOM 兜底没有 JSON 结构，只认渠道词（骑手/达达/秒送/京东到家…），
+        // 且物流进展仍活跃时不丢。不用菜名（螺蛳粉/套餐…）判外卖——网上买的
+        // 食品也是真实快递；宁可漏清外卖，也不误删真实包裹。
         if (!LogisticsStatusEngine.isActiveLogisticsText(progress) &&
-            looksLikeJdMealText('$title $progress')) {
-          _logJd('[JD Filter] Meal in DOM, drop');
+            looksLikeJdInstantDeliveryText('$matchedStatus $progress $title')) {
+          _logJd('[JD Filter] Instant delivery in DOM, drop');
           continue;
         }
 
@@ -1017,6 +1024,9 @@ class JdH5Connector implements PlatformConnector {
                     events: [
                       {'tag': matchedStatus, 'time': '', 'text': progress},
                     ],
+                    isPendingShipment: matchedStatus.contains('待发货') ||
+                        matchedStatus.contains('等待发货') ||
+                        matchedStatus.contains('待出库'),
                     isOrderSigned: false,
                     pickupCode: '',
                   ).status);
@@ -1037,7 +1047,8 @@ class JdH5Connector implements PlatformConnector {
             'status=${status.label} progressLen=${progress.length}');
 
         list.add(_JdOrder(
-          orderId: hash,
+          // DOM 兜底的合成 id 用 x 前缀明确标记来源，避免与真实十进制订单号混淆
+          orderId: 'x$hash',
           status: status,
           statusText: progress.isNotEmpty ? '$matchedStatus · $progress' : matchedStatus,
           pickupCode: pickupCode,

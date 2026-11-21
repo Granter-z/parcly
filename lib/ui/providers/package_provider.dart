@@ -12,7 +12,6 @@ import '../../platform/storage/hive_package.dart';
 import '../../app/hero_decision.dart';
 import '../../platform/notification/notification_adapter.dart';
 import '../../platform/connectors/pdd_connector.dart';
-import '../../platform/connectors/jd_delivery_filter.dart';
 import '../../platform/storage/platform_auth_store.dart';
 
 class PackageListNotifier extends StateNotifier<List<Package>> {
@@ -63,10 +62,14 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
             debugPrint('[PackageListNotifier] Pruning phantom empty OCR package: ${packageIdForLog(pkg.id)}');
             continue;
           }
-          // 清理存量误导入的餐饮外卖与秒送即时订单（非快递包裹）
+          // 清理存量误导入的餐饮外卖与秒送即时订单（非快递包裹）。
+          // 只认渠道词（外卖/秒送/达达/骑手…），且必须同时满足：
+          // - 未完成（已完成/已取件/归档的记录绝不因商品名删除）
+          // - 物流文案不是活跃在途动作（买的外卖词食品快递仍在途时保留）
           if (pkg.platform == 'jd' &&
-              (_isFoodTakeoutPackage(pkg) ||
-                  looksLikeJdMealText(pkg.goodsName ?? ''))) {
+              _isFoodTakeoutPackage(pkg) &&
+              !pkg.status.isCompleted &&
+              !LogisticsStatusEngine.isActiveLogisticsText(pkg.description)) {
             debugPrint('[PackageListNotifier] Pruning takeout/food package: ${packageIdForLog(pkg.id)}');
             continue;
           }
@@ -215,7 +218,7 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
       final updated = existing.copyWith(
         // 旧的 TB_<打码运单号> / CN_<运单号> 换成 TB_<订单号>；用户状态（已取、归档、pickedUpAt）随 existing 带过去，
         // _sync 会删掉 Hive 里的旧 key
-        id: resolveMergedPackageId(existing, package),
+        id: resolveMergedJdId(existing, package),
         // 承运商与运单号：新数据更权威时（非默认值）覆盖
         courier: package.courier != CourierType.other ? package.courier : existing.courier,
         trackingNumber: keepFullTrackingNumber(
@@ -329,22 +332,42 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
     DebugTrace.separator('ADD PACKAGE COMPLETE');
   }
   
-  /// 京东 DOM 兜底用 md5(标题+店铺) 生成的 12 位十六进制伪订单号。
+  /// 京东 DOM 兜底生成的合成 id。
   ///
-  /// 真实京东订单号是十进制数字；伪 id 至少含一个 a-f 字母才判定为合成，
-  /// 避免误删恰好 12 位的真实订单号。
+  /// 新版本统一用 `JD_x<12位十六进制>` 前缀标记来源，和真实十进制订单号无歧义；
+  /// 兼容升级前的 `JD_<12位十六进制>`（md5 全数字的极少数旧卡无法识别，
+  /// 宁可漏清也不能误删真实订单号）。
   @visibleForTesting
   static bool isSyntheticJdId(String id) {
+    if (RegExp(r'^JD_x[0-9a-f]{12}$').hasMatch(id)) return true;
     final m = RegExp(r'^JD_([0-9a-f]{12})$').firstMatch(id);
     return m != null && RegExp(r'[a-f]').hasMatch(m.group(1)!);
   }
 
-  /// 清理不在本轮成功同步结果里的京东伪卡片。
+  /// 合并时把京东 DOM 伪 id 迁移到结构化真实订单号（记录、已取状态原样保留）。
+  @visibleForTesting
+  static String resolveMergedJdId(Package existing, Package incoming) {
+    if (isSyntheticJdId(existing.id) &&
+        RegExp(r'^JD_\d{6,}$').hasMatch(incoming.id)) {
+      return incoming.id;
+    }
+    return resolveMergedPackageId(existing, incoming);
+  }
+
+  /// 清理不在本轮成功同步结果里的**在途**京东伪卡片。
   ///
-  /// 标题变化会让同一包裹的伪 id 变化，旧卡片不会自动消失；这里按本轮
-  /// 真正产出的 ID 保留、其余合成 ID 删除。只应在 JD 完整同步成功时调用。
+  /// 只清「pendingShipment / transit / delivering 且未手动取件」的卡：
+  /// 已到件、已取件、归档的记录代表用户资产（取件码/到件时间/历史），
+  /// 即使不在本轮待收货列表里也绝不删除。已到件/已完成的伪卡由
+  /// [_resolveMergedJdId] 在结构化真实订单号出现时迁移。
   void pruneJdSyntheticCardsNotIn(Set<String> keepIds) {
-    bool stale(Package p) => isSyntheticJdId(p.id) && !keepIds.contains(p.id);
+    bool stale(Package p) =>
+        isSyntheticJdId(p.id) &&
+        !keepIds.contains(p.id) &&
+        p.pickedUpAt == null &&
+        (p.status == PackageStatus.pendingShipment ||
+            p.status == PackageStatus.transit ||
+            p.status == PackageStatus.delivering);
     final removed = state.where(stale).toList();
     if (removed.isEmpty) return;
     state = state.where((p) => !stale(p)).toList();
@@ -352,7 +375,7 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
       _box?.delete(p.id);
       NotificationAdapter().cancelNotification(p.id).catchError((_) {});
     }
-    debugPrint('[PackageListNotifier] Pruned ${removed.length} stale JD card(s)');
+    debugPrint('[PackageListNotifier] Pruned ${removed.length} stale active JD card(s)');
   }
 
   /// 触发到件通知
