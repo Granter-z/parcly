@@ -488,6 +488,9 @@ class TaobaoH5Connector implements PlatformConnector {
       }
     } catch (_) {}
 
+    // 本轮实际使用的 controller：finally 只释放它，避免把下一轮新建的
+    // _cainiaoController 拉成 about:blank 并置空。
+    WebViewController? usedController;
     try {
       if (_lastInjectedCookies != effectiveCookies) {
         // 原生注入，保留 HttpOnly/Secure，避免把会话令牌降级为页面脚本可读
@@ -544,6 +547,7 @@ class TaobaoH5Connector implements PlatformConnector {
             ),
           );
       }
+      usedController = controller;
 
       // 淘宝官方末端菜鸟驿站前端地址（直接复刻手机淘宝首页「菜鸟驿站」模块）
       const cainiaoUrl = 'https://pages-fast.m.taobao.com/wow/z/uniapp/1100333/last-mile-fe/m-end-school-tab/home';
@@ -781,10 +785,12 @@ class TaobaoH5Connector implements PlatformConnector {
       _logTb('[Cainiao] fetch error: ${e.runtimeType}');
       return list;
     } finally {
-      // 菜鸟 WebView 不常驻：拉 blank 停活动并丢引用，交给 GC 销毁原生层。
-      // Cookie 注入是全局 CookieManager，控制器销毁后下一轮重新注入即可。
-      await parkWebView(_cainiaoController);
-      _cainiaoController = null;
+      // 只释放本轮使用的 controller；若下一轮已重建了新的 _cainiaoController，
+      // 不能把别人的 controller 拉成 about:blank 或置空。
+      await parkWebView(usedController);
+      if (identical(_cainiaoController, usedController)) {
+        _cainiaoController = null;
+      }
       _lastInjectedCookies = null;
     }
   }

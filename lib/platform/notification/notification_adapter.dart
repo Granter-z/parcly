@@ -39,8 +39,30 @@ class NotificationAdapter {
 
   /// 旧版 10000 桶 id（hashCode 口径），升级后仍需取消，避免残留通知。
   /// 注意：这里必须沿用旧算法，否则取消不到历史版本发出的通知。
-  static int _legacyPackageNotificationId(String packageId, int base) =>
+  @visibleForTesting
+  static int legacyPackageNotificationId(String packageId, int base) =>
       base + packageId.hashCode.abs() % 10000;
+
+  /// 上一版（+21～+30）口径：`base + (hashCode & 0x07FFFFFF)`。
+  ///
+  /// 本 PR 换成稳定哈希后，上一版发出的通知两种旧口径都不是；取消时必须一并
+  /// 兼容，否则升级后旧的到件通知取件了也消不掉。
+  @visibleForTesting
+  static int previousPackageNotificationId(String packageId, int base) =>
+      base + (packageId.hashCode & 0x07FFFFFF);
+
+  /// 取消一个包裹时需要尝试的全部 id（三套口径 × 到件/提醒）。
+  ///
+  /// 取消不存在的 id 是 no-op，多算几个是安全的。
+  @visibleForTesting
+  static List<int> notificationIdsToCancel(String packageId) => [
+        packageNotificationId(packageId, _arrivedBaseId),
+        packageNotificationId(packageId, _reminderBaseId),
+        previousPackageNotificationId(packageId, _arrivedBaseId),
+        previousPackageNotificationId(packageId, _reminderBaseId),
+        legacyPackageNotificationId(packageId, _arrivedBaseId),
+        legacyPackageNotificationId(packageId, _reminderBaseId),
+      ];
 
   /// 登录失效提醒的点击跳转 payload 前缀
   static const String keepAliveExpiredPrefix = 'keep_alive_expired:';
@@ -184,7 +206,7 @@ class NotificationAdapter {
     final notificationId = packageNotificationId(package.id, _arrivedBaseId);
     try {
       await _plugin.cancel(
-          _legacyPackageNotificationId(package.id, _arrivedBaseId));
+          legacyPackageNotificationId(package.id, _arrivedBaseId));
     } catch (_) {}
 
     await _showNotification(
@@ -242,7 +264,7 @@ class NotificationAdapter {
     final notificationId = packageNotificationId(package.id, _reminderBaseId);
     try {
       await _plugin.cancel(
-          _legacyPackageNotificationId(package.id, _reminderBaseId));
+          legacyPackageNotificationId(package.id, _reminderBaseId));
     } catch (_) {}
 
     await _scheduleNotification(
@@ -258,18 +280,12 @@ class NotificationAdapter {
     DebugTrace.separator('CANCEL NOTIFICATION');
     debugPrint('[Notify] cancel');
 
-    final arrivedId = packageNotificationId(packageId, _arrivedBaseId);
-    final reminderId = packageNotificationId(packageId, _reminderBaseId);
-    final legacyArrivedId =
-        _legacyPackageNotificationId(packageId, _arrivedBaseId);
-    final legacyReminderId =
-        _legacyPackageNotificationId(packageId, _reminderBaseId);
-
     try {
-      await _plugin.cancel(arrivedId);
-      await _plugin.cancel(reminderId);
-      await _plugin.cancel(legacyArrivedId);
-      await _plugin.cancel(legacyReminderId);
+      // 三套 id 口径都取消：新版稳定哈希、上一版 hashCode 大区间、
+      // 更早的 10000 桶。取消不存在的 id 是 no-op。
+      for (final id in notificationIdsToCancel(packageId)) {
+        await _plugin.cancel(id);
+      }
     } catch (_) {}
   }
 

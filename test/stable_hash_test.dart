@@ -54,4 +54,32 @@ void main() {
       expect(reminder, greaterThanOrEqualTo(200000000));
     });
   });
+
+  group('通知 id 历史口径兼容', () {
+    const id = 'PDD_240101123456';
+
+    test('上一版口径 = base + (hashCode & 0x07FFFFFF)', () {
+      expect(
+        NotificationAdapter.previousPackageNotificationId(id, 1000000),
+        1000000 + (id.hashCode & 0x07FFFFFF),
+      );
+    });
+
+    test('更早的 10000 桶口径保持不变', () {
+      expect(
+        NotificationAdapter.legacyPackageNotificationId(id, 200000000),
+        200000000 + id.hashCode.abs() % 10000,
+      );
+    });
+
+    test('取消覆盖三套口径 × 到件/提醒', () {
+      final ids = NotificationAdapter.notificationIdsToCancel(id);
+      expect(ids, hasLength(6));
+      for (final base in [1000000, 200000000]) {
+        expect(ids, contains(NotificationAdapter.packageNotificationId(id, base)));
+        expect(ids, contains(NotificationAdapter.previousPackageNotificationId(id, base)));
+        expect(ids, contains(NotificationAdapter.legacyPackageNotificationId(id, base)));
+      }
+    });
+  });
 }
