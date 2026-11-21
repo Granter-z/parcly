@@ -666,7 +666,9 @@ class JdH5Connector implements PlatformConnector {
     if (depth > 5) return null;
     if (node is Map) {
       final ol = node['orderList'];
-      if (ol is List && (ol.isEmpty || _looksLikeJdOrderList(ol))) return ol;
+      // 空数组不是订单列表：继续向下找，避免配置节点里的 `orderList: []`
+      // 抢占真正的订单数组。整包都没有才返回 null。
+      if (ol is List && _looksLikeJdOrderList(ol)) return ol;
       for (final v in node.values) {
         final found = _findJdOrderList(v, depth + 1);
         if (found != null) return found;

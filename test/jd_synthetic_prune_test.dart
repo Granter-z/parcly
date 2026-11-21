@@ -47,6 +47,30 @@ Package _arrived({
       platform: 'jd',
     );
 
+Package _jdCard({
+  required String id,
+  required String trackingNumber,
+  required String goodsName,
+  PackageStatus status = PackageStatus.arrived,
+  bool notifiedArrived = false,
+  DateTime? pickedUpAt,
+  DateTime? arrivedAt,
+}) =>
+    Package(
+      id: id,
+      trackingNumber: trackingNumber,
+      courier: CourierType.jd,
+      urgency: UrgencyLevel.normal,
+      status: status,
+      addedAt: DateTime(2026, 11, 20),
+      arrivedAt: arrivedAt,
+      pickupCode: '',
+      goodsName: goodsName,
+      notifiedArrived: notifiedArrived,
+      pickedUpAt: pickedUpAt,
+      platform: 'jd',
+    );
+
 void main() {
   group('isSyntheticJdId', () {
     test('新前缀 JD_x + 12 位十六进制是伪 id（全数字也可识别）', () {
@@ -151,6 +175,92 @@ void main() {
       expect(merged.pickupCode, '1-2-3001');
       expect(merged.arrivedAt, existing.arrivedAt);
       expect(merged.notifiedArrived, isTrue);
+    });
+
+    test('生产路径：伪卡无运单号/取件码，真实单靠商品名兜底合并到一张', () {
+      final pickedAt = DateTime(2026, 11, 19);
+      final arrivedAt = DateTime(2026, 11, 18);
+      final existing = _jdCard(
+        id: 'JD_x0123456789ab',
+        trackingNumber: 'x0123456789ab', // DOM 未拉到运单号时的兜底
+        goodsName: '测试洗衣液',
+        notifiedArrived: true,
+        pickedUpAt: pickedAt,
+        arrivedAt: arrivedAt,
+      );
+      final incoming = _jdCard(
+        id: 'JD_123456789012',
+        trackingNumber: 'YT9999999999',
+        goodsName: '测试洗衣液',
+        notifiedArrived: false,
+        arrivedAt: arrivedAt,
+      );
+      final list = _FakeList([existing]);
+
+      list.addPackage(incoming);
+
+      expect(list.state, hasLength(1), reason: '同一包裹不得出现两张卡');
+      final merged = list.state.single;
+      expect(merged.id, 'JD_123456789012');
+      expect(merged.trackingNumber, 'YT9999999999');
+      expect(merged.status, PackageStatus.arrived);
+      expect(merged.pickedUpAt, pickedAt);
+      expect(merged.arrivedAt, arrivedAt);
+      expect(merged.notifiedArrived, isTrue, reason: '不得重新触达到件通知');
+    });
+
+    test('两张同名伪卡时不走商品名兜底（避免误合并）', () {
+      final list = _FakeList([
+        _jdCard(
+          id: 'JD_xaaaaaaaaaaaa',
+          trackingNumber: 'xa',
+          goodsName: '同名商品',
+          status: PackageStatus.transit,
+        ),
+        _jdCard(
+          id: 'JD_xbbbbbbbbbbbb',
+          trackingNumber: 'xb',
+          goodsName: '同名商品',
+          status: PackageStatus.transit,
+        ),
+      ]);
+      list.addPackage(_jdCard(
+        id: 'JD_123456789012',
+        trackingNumber: 'YT1',
+        goodsName: '同名商品',
+        status: PackageStatus.transit,
+      ));
+
+      expect(list.state, hasLength(3));
+      expect(list.state.map((p) => p.id), contains('JD_123456789012'));
+      expect(list.state.map((p) => p.id), contains('JD_xaaaaaaaaaaaa'));
+      expect(list.state.map((p) => p.id), contains('JD_xbbbbbbbbbbbb'));
+    });
+
+    test('已有同名真实卡时不走商品名兜底', () {
+      final list = _FakeList([
+        _jdCard(
+          id: 'JD_xcccccccccccc',
+          trackingNumber: 'xc',
+          goodsName: '同名商品',
+          status: PackageStatus.transit,
+        ),
+        _jdCard(
+          id: 'JD_222222222222',
+          trackingNumber: 'YT2',
+          goodsName: '同名商品',
+          status: PackageStatus.transit,
+        ),
+      ]);
+      list.addPackage(_jdCard(
+        id: 'JD_123456789012',
+        trackingNumber: 'YT3',
+        goodsName: '同名商品',
+        status: PackageStatus.transit,
+      ));
+
+      expect(list.state, hasLength(3));
+      expect(list.state.map((p) => p.id), contains('JD_123456789012'));
     });
   });
 }

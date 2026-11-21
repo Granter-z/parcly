@@ -49,6 +49,17 @@ void main() {
         isTrue,
       );
     });
+
+    test('配置节点里的空 orderList 不能抢占真实订单数组', () {
+      final connector = JdH5Connector();
+      expect(
+        connector.debugParseOrders(
+          '{"config":{"orderList":[]},'
+          '"data":{"orderList":[{"orderId":"1","wareInfoList":[]}]}}',
+        ),
+        isTrue,
+      );
+    });
   });
 
   group('debugFindJdOrderList', () {
@@ -83,13 +94,25 @@ void main() {
       expect((list!.first as Map)['orderId'], '2');
     });
 
-    test('空订单列表是合法的「无订单」，不继续误找', () {
-      final root = {
-        'data': {'orderList': <dynamic>[]},
-      };
-      final list = JdH5Connector.debugFindJdOrderList(root);
-      expect(list, isNotNull);
-      expect(list, isEmpty);
+    test('空 orderList 不命中，继续找真正的订单数组', () {
+      expect(
+        JdH5Connector.debugFindJdOrderList({
+          'config': {'orderList': <dynamic>[]},
+          'data': {
+            'orderList': [
+              {'orderId': '1', 'wareInfoList': <dynamic>[]},
+            ],
+          },
+        }),
+        isNotNull,
+      );
+      // 整包只有空数组 → 视为没有结构化订单列表
+      expect(
+        JdH5Connector.debugFindJdOrderList({
+          'data': {'orderList': <dynamic>[]},
+        }),
+        isNull,
+      );
     });
 
     test('没有订单数组时返回 null', () {

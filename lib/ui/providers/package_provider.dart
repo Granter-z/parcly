@@ -8,6 +8,7 @@ import '../../core/engine/station_grouping.dart';
 import 'pickup_point_alias_provider.dart';
 import '../../core/engine/package_identity.dart';
 import '../../core/engine/timeline_merge.dart';
+import '../../core/sanitizer/goods_name_cleaner.dart';
 import '../../platform/storage/hive_package.dart';
 import '../../app/hero_decision.dart';
 import '../../platform/notification/notification_adapter.dart';
@@ -477,8 +478,44 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
       }
     }
 
+    // 3b) 京东 DOM 伪卡 ↔ 结构化真实订单号：
+    //     伪卡的运单号在未拉到时就是 x<hash>，与真实单号永远不等，只能按
+    //     清洗后的商品名兜底。必须同时满足「唯一合成卡 + 无同名真实卡」，
+    //     避免把两件同名商品误合并。
+    final jdFallbackIdx = _findUniqueSyntheticJdByGoodsName(package);
+    if (jdFallbackIdx != -1) {
+      debugPrint('[PackageListNotifier] → HIT: index=$jdFallbackIdx (jd goodsName fallback)');
+      return jdFallbackIdx;
+    }
+
     debugPrint('[PackageListNotifier] → NO MATCH');
     return -1;
+  }
+
+  String _cleanedGoodsName(String? name) =>
+      GoodsNameCleaner.clean(name ?? '').trim();
+
+  /// 结构化真实京东单匹配唯一的 DOM 伪卡（按清洗后商品名）。
+  int _findUniqueSyntheticJdByGoodsName(Package incoming) {
+    if ((incoming.platform ?? '') != 'jd') return -1;
+    if (!RegExp(r'^JD_\d{6,}$').hasMatch(incoming.id)) return -1;
+    final name = _cleanedGoodsName(incoming.goodsName);
+    if (!_isSpecificGoodsName(name)) return -1;
+
+    final matches = <int>[];
+    var realWithSameName = 0;
+    for (var i = 0; i < state.length; i++) {
+      final p = state[i];
+      if ((p.platform ?? '') != 'jd') continue;
+      if (_cleanedGoodsName(p.goodsName) != name) continue;
+      if (isSyntheticJdId(p.id)) {
+        matches.add(i);
+      } else if (RegExp(r'^JD_\d{6,}$').hasMatch(p.id) && p.id != incoming.id) {
+        realWithSameName++;
+      }
+    }
+    if (matches.length != 1 || realWithSameName > 0) return -1;
+    return matches.single;
   }
   
   UrgencyLevel _higherUrgency(UrgencyLevel a, UrgencyLevel b) {
