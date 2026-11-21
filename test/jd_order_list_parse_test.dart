@@ -24,6 +24,31 @@ void main() {
     });
   });
 
+  group('detailBudgetExhausted（详情预取时间预算）', () {
+    final deadline = DateTime(2026, 11, 22, 12);
+
+    test('未到 deadline：继续预取', () {
+      expect(
+        detailBudgetExhausted(
+          deadline,
+          now: deadline.subtract(const Duration(milliseconds: 1)),
+        ),
+        isFalse,
+      );
+    });
+
+    test('到达或超过 deadline：跳过，退回订单侧状态', () {
+      expect(detailBudgetExhausted(deadline, now: deadline), isTrue);
+      expect(
+        detailBudgetExhausted(
+          deadline,
+          now: deadline.add(const Duration(seconds: 1)),
+        ),
+        isTrue,
+      );
+    });
+  });
+
   group('debugParseOrders（结构化源权威判定）', () {
     test('空 orderList 不当作权威（防一次钩子漏抓就清卡）', () {
       final connector = JdH5Connector();

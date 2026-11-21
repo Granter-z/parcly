@@ -3,6 +3,7 @@ library;
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:webview_flutter/webview_flutter.dart';
@@ -18,7 +19,6 @@ import 'jd_delivery_filter.dart';
 import 'jd_sync_network.dart';
 import 'jd_trace_parser.dart';
 import 'platform_connector.dart';
-import 'concurrent_limiter.dart';
 import 'package:pickup_app/core/parser/pickup_point_name.dart';
 import 'package:pickup_app/core/engine/package_identity.dart';
 
@@ -41,6 +41,14 @@ bool _isJdTerminalStatus(String statusLower) =>
     statusLower == 'complete' ||
     statusLower == 'completed' ||
     statusLower == 'finished';
+
+/// 详情预取是否已用完本轮时间预算（纯函数，便于单测）。
+///
+/// [deadline] 之后不再发起新的详情请求：外层 15s 硬超时量的是事件间隔，
+/// 必须保证第一个 yield 在此之前出现；预算耗尽后退回订单侧状态。
+@visibleForTesting
+bool detailBudgetExhausted(DateTime deadline, {DateTime? now}) =>
+    !(now ?? DateTime.now()).isBefore(deadline);
 
 class JdH5Connector implements PlatformConnector {
   final PlatformAuthStore _authStore;
@@ -358,28 +366,28 @@ class JdH5Connector implements PlatformConnector {
 
     // 共享 WebView 必须串行：详情页共用 _controller 与 _capturedLogisticsJson，
     // 并发 loadRequest 会互相打断，A 单捕获的轨迹会被 B 单当成自己的（与 PDD 同因，见 pdd_connector）。
-    final executor = ThrottledExecutor(
-      maxConcurrent: 1,
-      minDelay: const Duration(milliseconds: 150),
-      maxDelay: const Duration(milliseconds: 350),
-    );
-
-    final detailTasks = validOrders.values.where((o) => o.progressLink.isNotEmpty).map((o) {
-      return () => _fetchLogisticsDetail(o.orderId, o.progressLink).then((detail) {
-        return {'orderId': o.orderId, 'detail': detail};
-      });
-    }).toList();
-
-    final results = await executor.executeAll(detailTasks);
-    if (_networkSoftFail) return;
-
-    // 构建 orderId -> detail 的映射
+    //
+    // 详情预取必须留出时间预算：外层 15s 硬超时量的是事件间隔，若等全部详情
+    // 取完才开始 yield，多包裹用户必然超时（0 张卡 + 误报「暂时不可达」）。
+    // 预算耗尽后退回订单侧状态，卡片照常产出，只是没有轨迹详情。
     final detailMap = <String, _JdLogisticsDetail?>{};
-    for (final result in results) {
-      final orderId = result['orderId'] as String;
-      final detail = result['detail'] as _JdLogisticsDetail?;
-      detailMap[orderId] = detail;
+    final detailDeadline = DateTime.now().add(const Duration(seconds: 8));
+    final random = Random();
+    for (final o in validOrders.values) {
+      if (o.progressLink.isEmpty) continue;
+      if (_networkSoftFail || _cancelled) return;
+      if (detailBudgetExhausted(detailDeadline)) {
+        _logJd('[JD] detail budget exhausted, remaining orders use list status');
+        break;
+      }
+      detailMap[o.orderId] =
+          await _fetchLogisticsDetail(o.orderId, o.progressLink);
+      if (_networkSoftFail || _cancelled) return;
+      await Future.delayed(
+        Duration(milliseconds: 150 + random.nextInt(201)),
+      );
     }
+    if (_networkSoftFail) return;
 
     for (final o in validOrders.values) {
       if (_networkSoftFail || _cancelled) return;
