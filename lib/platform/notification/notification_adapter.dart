@@ -7,6 +7,7 @@ import 'package:timezone/data/latest.dart' as tz;
 import '../../core/models/package.dart';
 import '../../core/models/platform_ids.dart';
 import '../../core/debug/debug_trace.dart';
+import '../../core/utils/stable_hash.dart';
 
 /// 登录状态提醒使用独立通知渠道
 ///
@@ -28,11 +29,16 @@ class NotificationAdapter {
   /// 保活相关通知独立号段，避开包裹通知的两段大区间
   static const int _keepAliveBaseId = 30000;
 
-  /// 包裹通知 id：用完整 hash 的大区间，避免 10000 桶的生日碰撞误伤
-  static int _packageNotificationId(String packageId, int base) =>
-      base + (packageId.hashCode & 0x07FFFFFF);
+  /// 包裹通知 id：FNV-1a 稳定哈希 + 大区间，避免 10000 桶的生日碰撞误伤。
+  ///
+  /// 不用 `String.hashCode`：它不保证跨进程稳定，冷启动后取消/提醒会算出不同 id。
+  /// 可见性放开供单测直接断言稳定性。
+  @visibleForTesting
+  static int packageNotificationId(String packageId, int base) =>
+      base + stableHash32(packageId);
 
-  /// 旧版 10000 桶 id，升级后仍需取消，避免残留通知
+  /// 旧版 10000 桶 id（hashCode 口径），升级后仍需取消，避免残留通知。
+  /// 注意：这里必须沿用旧算法，否则取消不到历史版本发出的通知。
   static int _legacyPackageNotificationId(String packageId, int base) =>
       base + packageId.hashCode.abs() % 10000;
 
@@ -175,7 +181,7 @@ class NotificationAdapter {
 
     final title = _buildArrivedTitle(package);
     final body = _buildArrivedBody(package);
-    final notificationId = _packageNotificationId(package.id, _arrivedBaseId);
+    final notificationId = packageNotificationId(package.id, _arrivedBaseId);
     try {
       await _plugin.cancel(
           _legacyPackageNotificationId(package.id, _arrivedBaseId));
@@ -231,9 +237,9 @@ class NotificationAdapter {
     DebugTrace.separator('SCHEDULE REMINDER NOTIFICATION');
     debugPrint('[Notify] reminder courier=${package.courier.shortName}');
 
-    final title = '快递还在等你';
+    const title = '快递还在等你';
     final body = '${package.courier.shortName} 已等待超过 24 小时';
-    final notificationId = _packageNotificationId(package.id, _reminderBaseId);
+    final notificationId = packageNotificationId(package.id, _reminderBaseId);
     try {
       await _plugin.cancel(
           _legacyPackageNotificationId(package.id, _reminderBaseId));
@@ -252,8 +258,8 @@ class NotificationAdapter {
     DebugTrace.separator('CANCEL NOTIFICATION');
     debugPrint('[Notify] cancel');
 
-    final arrivedId = _packageNotificationId(packageId, _arrivedBaseId);
-    final reminderId = _packageNotificationId(packageId, _reminderBaseId);
+    final arrivedId = packageNotificationId(packageId, _arrivedBaseId);
+    final reminderId = packageNotificationId(packageId, _reminderBaseId);
     final legacyArrivedId =
         _legacyPackageNotificationId(packageId, _arrivedBaseId);
     final legacyReminderId =

@@ -3,7 +3,6 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hive/hive.dart';
-import 'package:pickup_app/main.dart' show kPackagesBox;
 import 'package:pickup_app/platform/storage/hive_adapters.dart';
 import 'package:pickup_app/platform/storage/hive_package.dart';
 import 'package:pickup_app/platform/storage/platform_auth_store.dart';

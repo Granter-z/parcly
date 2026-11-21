@@ -20,8 +20,11 @@ final connectorManagerProvider = Provider<ConnectorManager>((ref) {
 
 final syncStateProvider = StateProvider<bool>((ref) => false);
 
-/// P42-b：每平台同步腿硬超时（≥ 京东 streamSync 8s）。
-const Duration kConnectorPerPlatformTimeout = Duration(seconds: 12);
+/// P42-b：每平台同步腿硬超时（> 京东 streamSync 15s）。
+///
+/// 真机日志：三平台并行冷启动 WebView 时，京东 13.7s、拼多多 17s 才返回首包，
+/// 12s 会把已经拿到的数据误杀成「同步失败」。
+const Duration kConnectorPerPlatformTimeout = Duration(seconds: 20);
 
 class ConnectorManager {
   final Ref _ref;
@@ -193,6 +196,15 @@ class ConnectorManager {
           // 只记录真正完成的同步：超时/异常若也记，会误让保活跳过 6 小时心跳
           if (completed) {
             await SyncHistoryManager().recordPlatformSync(connector.platformId);
+          }
+          // 京东 DOM 兜底的伪 id 会随标题变化，清掉本轮没再产出的旧卡；
+          // 结构化订单列表成功解析时（即使过滤后 0 单）也清理：
+          // 结构化源已判定没有快递时，DOM 伪卡不应继续留在列表里。
+          if (completed &&
+              connector is JdH5Connector &&
+              connector.lastSyncCompleted &&
+              connector.lastSyncSawStructuredList) {
+            notifier.pruneJdSyntheticCardsNotIn(connector.lastSyncYieldedIds);
           }
           final issue = connector.lastIssue;
           if (issue != null && (_lastIssue == null || !_lastIssue!.contains(issue))) {

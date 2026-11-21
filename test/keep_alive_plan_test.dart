@@ -14,9 +14,9 @@ void main() {
       expect(intervalDays(3), const Duration(hours: 24));
     });
 
-    test('4-7 天 → 12 小时', () {
-      expect(intervalDays(4), const Duration(hours: 12));
-      expect(intervalDays(7), const Duration(hours: 12));
+    test('4-7 天 → 6 小时', () {
+      expect(intervalDays(4), const Duration(hours: 6));
+      expect(intervalDays(7), const Duration(hours: 6));
     });
 
     test('8-10 天 → 6 小时', () {

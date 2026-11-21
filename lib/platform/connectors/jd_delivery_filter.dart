@@ -45,6 +45,22 @@ bool looksLikeJdInstantDeliveryText(String text) {
   return RegExp(r'预计\s*\d+\s*分钟|分钟送达|分钟达').hasMatch(text);
 }
 
+/// 外卖/餐品的强特征（商品名或进展里出现明确的餐品词）。
+///
+/// 与 [looksLikeJdInstantDeliveryText] 分开：后者看渠道结构/文案，本函数看
+/// 商品文本，用在京东 DOM 兜底（页面没有渠道字段）与存量数据清理。
+///
+/// 取舍：已完成的食品类快递（如网上买的螺蛳粉）也可能被误删；调用方应先用
+/// 物流进展排除「仍在途」的包裹，只清明显是餐品的卡片。这是为过滤外卖接受的代价。
+bool looksLikeJdMealText(String text) {
+  const signals = [
+    '单人餐', '双人餐', '套餐', '人份', '汉堡', '螺蛳粉', '炸蛋', '肉丸',
+    '奶茶', '炸鸡', '快餐', '盖饭', '炒饭', '捞饭', '麻辣烫', '烧烤',
+    '烤串', '外卖', '秒送', '骑手', '柠檬水', '饮品',
+  ];
+  return signals.any(text.contains);
+}
+
 bool _isTruthy(Object? value) {
   if (value is bool) return value;
   final s = value?.toString().toLowerCase() ?? '';

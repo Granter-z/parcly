@@ -57,4 +57,27 @@ void main() {
       expect(looksLikeJdInstantDeliveryText('派件中'), isFalse);
     });
   });
+
+  group('looksLikeJdMealText（外卖餐品强特征）', () {
+    test('真机三张外卖卡的标题都能识别', () {
+      expect(
+        looksLikeJdMealText('福利6选 1 单人餐｜闭眼点不亏标准单人餐'),
+        isTrue,
+      );
+      expect(
+        looksLikeJdMealText('【性价之王】牛肉大汉堡单人6件爆款套餐 1人份'),
+        isTrue,
+      );
+      expect(
+        looksLikeJdMealText('招牌炸蛋螺蛳粉+撒尿肉丸2个 一人份'),
+        isTrue,
+      );
+    });
+
+    test('普通快递商品不误伤', () {
+      expect(looksLikeJdMealText('蓝月亮洗衣液 3kg 家庭装'), isFalse);
+      expect(looksLikeJdMealText('iPhone 15 手机壳'), isFalse);
+      expect(looksLikeJdMealText('京东在途商品'), isFalse);
+    });
+  });
 }

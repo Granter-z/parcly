@@ -19,7 +19,7 @@ import '../screens/login/platform_login_flow.dart';
 /// - 有平台需重登：淡红底，不能关；点那个平台直接进登录页。
 /// - 全部正常：透明玻璃条 + 实心字芯片，不抢待取件的位置。
 /// - 未绑定：灰色「去绑定」。
-/// - 同步失败：橙色「同步失败」，点开可单平台重试；不跟「需重登」混。
+/// - 同步失败：橙色「失败」（受列宽限制，缩短自「同步失败」），点开可单平台重试；不跟「需重登」混。
 /// - 同步中：圆点换成转圈，不响应点击。
 class PlatformStatusBar extends ConsumerWidget {
   const PlatformStatusBar({super.key});
@@ -173,7 +173,7 @@ class _PlatformChip extends ConsumerWidget {
                 ),
               )
             : _dot(AppColors.statusDelivering);
-        label = '${info.shortName} 同步失败';
+        label = '${info.shortName} 失败';
         textColor = AppColors.statusDelivering;
       case PlatformAuthStatus.ok:
         dot = syncing

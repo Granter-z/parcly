@@ -6,7 +6,7 @@ void main() {
     const original = 'pt_key=KEY_A; pt_pin=user; a=1; b=2; c=3; d=4; e=5';
 
     test('相同 pt_key + 长度够 → healthy', () {
-      final refreshed = '$original; extra=1';
+      const refreshed = '$original; extra=1';
       expect(isJdCookieHealthy(original, refreshed), isTrue);
     });
 

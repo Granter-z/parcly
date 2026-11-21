@@ -1,7 +1,6 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:hive/hive.dart';
-import '../../main.dart';
 import '../../core/debug/debug_trace.dart';
 import '../../core/engine/arrived_at.dart';
 import '../../core/engine/logistics_status_engine.dart';
@@ -13,10 +12,15 @@ import '../../platform/storage/hive_package.dart';
 import '../../app/hero_decision.dart';
 import '../../platform/notification/notification_adapter.dart';
 import '../../platform/connectors/pdd_connector.dart';
+import '../../platform/connectors/jd_delivery_filter.dart';
 import '../../platform/storage/platform_auth_store.dart';
 
 class PackageListNotifier extends StateNotifier<List<Package>> {
   Box<HivePackage>? _box;
+
+  /// 持久化是否可用。Hive box 打开失败时为 false：此时列表只在内存里，
+  /// 重启即丢，UI 应据此提示用户，而不是让数据「看似消失」却无任何反馈。
+  bool get persistenceAvailable => _box != null;
 
   /// 生命周期优先级：状态只能前进，不能倒退
   /// pendingShipment → transit → delivering → arrived → pickedUp → archived
@@ -60,7 +64,9 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
             continue;
           }
           // 清理存量误导入的餐饮外卖与秒送即时订单（非快递包裹）
-          if (pkg.platform == 'jd' && _isFoodTakeoutPackage(pkg)) {
+          if (pkg.platform == 'jd' &&
+              (_isFoodTakeoutPackage(pkg) ||
+                  looksLikeJdMealText(pkg.goodsName ?? ''))) {
             debugPrint('[PackageListNotifier] Pruning takeout/food package: ${packageIdForLog(pkg.id)}');
             continue;
           }
@@ -323,6 +329,32 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
     DebugTrace.separator('ADD PACKAGE COMPLETE');
   }
   
+  /// 京东 DOM 兜底用 md5(标题+店铺) 生成的 12 位十六进制伪订单号。
+  ///
+  /// 真实京东订单号是十进制数字；伪 id 至少含一个 a-f 字母才判定为合成，
+  /// 避免误删恰好 12 位的真实订单号。
+  @visibleForTesting
+  static bool isSyntheticJdId(String id) {
+    final m = RegExp(r'^JD_([0-9a-f]{12})$').firstMatch(id);
+    return m != null && RegExp(r'[a-f]').hasMatch(m.group(1)!);
+  }
+
+  /// 清理不在本轮成功同步结果里的京东伪卡片。
+  ///
+  /// 标题变化会让同一包裹的伪 id 变化，旧卡片不会自动消失；这里按本轮
+  /// 真正产出的 ID 保留、其余合成 ID 删除。只应在 JD 完整同步成功时调用。
+  void pruneJdSyntheticCardsNotIn(Set<String> keepIds) {
+    bool stale(Package p) => isSyntheticJdId(p.id) && !keepIds.contains(p.id);
+    final removed = state.where(stale).toList();
+    if (removed.isEmpty) return;
+    state = state.where((p) => !stale(p)).toList();
+    for (final p in removed) {
+      _box?.delete(p.id);
+      NotificationAdapter().cancelNotification(p.id).catchError((_) {});
+    }
+    debugPrint('[PackageListNotifier] Pruned ${removed.length} stale JD card(s)');
+  }
+
   /// 触发到件通知
   ///
   /// 只有通知与提醒都发送成功才落盘 `notifiedArrived`；失败保持 false，
@@ -808,13 +840,13 @@ String? _mergeTimelineJson(String? existingJson, String? incomingJson) {
 }
 
 bool _isFoodTakeoutPackage(Package pkg) {
-  const foodKeywords = [
-    '外卖', '秒送', '达达', '骑手', '汉堡', '螺蛳粉', '冒菜', '米线',
-    '奶茶', '咖啡', '快餐', '餐饮', '堂食', '烧烤', '炸鸡', '烤鸭', '麻辣烫',
-    '人份', '套餐', '柠檬水', '饮品', '捞饭', '炒饭', '米饭', '鸡丁', '炸蛋', '小菜'
-  ];
+  // 只保留「即时配送渠道」词：这些词出现在商品名里基本可断定是外卖/秒送单。
+  // 食物词（咖啡/米饭/套餐/炸鸡…）一律不用——京东超市买的咖啡豆、速食米饭是
+  // 正常快递，按食物词清洗会每次冷启动误删真实订单。源头过滤交给
+  // jd_delivery_filter.dart（按订单结构判定，不看商品文本）。
+  const channelKeywords = ['外卖', '秒送', '达达', '骑手', '京东到家', '小时达', '即时配送'];
   // 只看商品名：location 是收货地址、stationName 是驿站名（含「堡」「咖啡」的小区/店铺名很常见），
   // description 是物流轨迹；用它们匹配会把正常快递整单误删，且每次冷启动反复误删。
   final text = pkg.goodsName ?? '';
-  return foodKeywords.any(text.contains);
+  return channelKeywords.any(text.contains);
 }

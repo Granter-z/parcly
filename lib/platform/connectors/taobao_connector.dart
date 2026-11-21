@@ -16,6 +16,7 @@ import '../../core/utils/image_url.dart';
 import '../storage/platform_auth_store.dart';
 import '../sync/sync_history_manager.dart';
 import '../webview/platform_cookie.dart';
+import '../webview/webview_release.dart';
 import 'platform_connector.dart';
 import 'taobao_sync_rules.dart';
 import 'concurrent_limiter.dart';
@@ -81,6 +82,7 @@ class TaobaoH5Connector implements PlatformConnector {
     _captureGeneration++;
     _capturedCainiaoJson.clear();
     _lastInjectedCookies = null;
+    await parkWebView(_cainiaoController);
     _cainiaoController = null;
   }
 
@@ -550,7 +552,7 @@ class TaobaoH5Connector implements PlatformConnector {
       await _injectCainiaoNetworkHook(controller);
 
       // 轮询等待页面渲染或接口返回（必须等待真实的货架取件码出现，严防骨架屏抢跑）
-      final deadline = DateTime.now().add(const Duration(seconds: 5));
+      final deadline = DateTime.now().add(const Duration(seconds: 8));
       while (DateTime.now().isBefore(deadline)) {
         if (_cancelled) break;
         await Future.delayed(const Duration(milliseconds: 150));
@@ -778,6 +780,12 @@ class TaobaoH5Connector implements PlatformConnector {
     } catch (e) {
       _logTb('[Cainiao] fetch error: ${e.runtimeType}');
       return list;
+    } finally {
+      // 菜鸟 WebView 不常驻：拉 blank 停活动并丢引用，交给 GC 销毁原生层。
+      // Cookie 注入是全局 CookieManager，控制器销毁后下一轮重新注入即可。
+      await parkWebView(_cainiaoController);
+      _cainiaoController = null;
+      _lastInjectedCookies = null;
     }
   }
 

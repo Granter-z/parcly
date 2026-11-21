@@ -1,8 +1,12 @@
-/// 淘宝 mtop 令牌轮换器（纯 Dart，前后台通用）
+/// 淘宝登录态探针 + mtop 令牌轮换器（纯 Dart，前后台通用）
 ///
 /// 从 `taobao_connector.dart` 的 `_mtopCall` 抽取的轻量续期逻辑：
-/// 发起一次菜鸟 `getTimeStamp` 请求，轮换 `_m_h5_tk` / `_m_h5_tk_enc` 令牌，
+/// 请求菜鸟驿站「多站点包裹列表」接口，轮换 `_m_h5_tk` / `_m_h5_tk_enc` 令牌，
 /// 并判断登录态是否失效。前台心跳与后台 Worker 共用，不依赖连接器状态。
+///
+/// 不用 `getTimeStamp` 做探针：它只需要 mtop 令牌、不要求登录，登录态已死时也可能
+/// 返回成功。菜鸟包裹列表是用户维度的接口，真机上失效时会明确返回
+/// `FAIL_SYS_SESSION_EXPIRED`，因此「成功」才代表登录态真的可用。
 library;
 
 import 'dart:convert';
@@ -58,6 +62,8 @@ enum MtopBodyKind {
   sessionExpired,
   /// 令牌空/过期，可重试一次
   tokenRetryable,
+  /// 没有会话失效信号，但也没有明确成功（HTML 门户页、未知 retcode 等）
+  unknown,
 }
 
 MtopBodyKind classifyMtopBody(String body) {
@@ -70,7 +76,9 @@ MtopBodyKind classifyMtopBody(String body) {
       body.contains('FAIL_SYS_TOKEN_EXPIRED')) {
     return MtopBodyKind.tokenRetryable;
   }
-  return MtopBodyKind.ok;
+  // 必须见到明确成功标记才判健康：否则风控页/未知错误会被当成「登录有效」
+  if (body.contains('SUCCESS')) return MtopBodyKind.ok;
+  return MtopBodyKind.unknown;
 }
 
 class TaobaoTokenRefresher {
@@ -78,7 +86,11 @@ class TaobaoTokenRefresher {
   static const _ua =
       'Mozilla/5.0 (Linux; Android 14; 25102RKBEC Build/UP1A.231005.007) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36';
 
-  /// 发起轻量 mtop 请求并轮换令牌。
+  /// 用户维度的菜鸟包裹列表接口；登录态失效时返回 FAIL_SYS_SESSION_EXPIRED。
+  static const probeApi = 'mtop.cainiao.pickup.plus.queryMultiStaPackages4Xy';
+  static const _probeVersion = '1.0';
+
+  /// 发起一次登录态探活并轮换令牌。
   ///
   /// [cookies] 为当前存储的完整 Cookie 串。返回结果由调用方负责落盘：
   /// - `newToken`/`newTokenEnc` 非空时用 `PlatformAuthStore.updateCookieTokenFields` 更新，
@@ -97,13 +109,19 @@ class TaobaoTokenRefresher {
         final tokenMatch = RegExp(r'_m_h5_tk=([^;]+)').firstMatch(cookieStr);
         final token = tokenMatch?.group(1)?.split('_').first ?? '';
 
-        const dataRaw = '{"stationType":"XY"}';
+        final dataRaw = jsonEncode({
+          'stationType': 'XY',
+          'source': '',
+          'traceId': '${DateTime.now().millisecondsSinceEpoch}-hb',
+          'pageNo': 1,
+          'pageSize': 30,
+        });
         final t = DateTime.now().millisecondsSinceEpoch.toString();
         final signSource = '$token&$t&$_appKey&$dataRaw';
         final sign = md5.convert(utf8.encode(signSource)).toString();
 
         final url =
-            'https://h5api.m.taobao.com/h5/mtop.cainiao.pickup.search.getTimeStamp/1.0/?jsv=2.3.18&appKey=$_appKey&t=$t&sign=$sign&type=jsonp&dataType=jsonp&data=${Uri.encodeComponent(dataRaw)}';
+            'https://h5api.m.taobao.com/h5/$probeApi/$_probeVersion/?jsv=2.3.18&appKey=$_appKey&t=$t&sign=$sign&type=jsonp&dataType=jsonp&data=${Uri.encodeComponent(dataRaw)}';
 
         final resp = await c.get(
           Uri.parse(url),
@@ -145,6 +163,10 @@ class TaobaoTokenRefresher {
               continue;
             }
             return MtopRefreshResult.expired();
+          case MtopBodyKind.unknown:
+            return MtopRefreshResult.network(
+              '接口返回无法识别（${resp.body.length} 字节）',
+            );
           case MtopBodyKind.ok:
             return MtopRefreshResult.ok(newToken: newTk, newTokenEnc: newTkEnc);
         }

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -344,4 +345,47 @@ void main() {
       expect(snap.expiredPlatforms.map((p) => p.platform), contains('taobao'));
     });
   });
+
+  group('重入保护', () {
+    test('一轮未结束时再次触发，不会并发发第二次心跳', () async {
+      final gate = Completer<void>();
+      // 用挂起的心跳占住第一轮
+      final slowHb = _SlowHeartbeat('taobao', gate);
+      final slowService = buildService(heartbeats: {'taobao': slowHb});
+      addTearDown(slowService.dispose);
+
+      final first = slowService.performManualKeepAlive();
+      await Future<void>.delayed(Duration.zero); // 让第一轮进入心跳
+      expect(slowHb.calls, 1);
+
+      // 第一轮还在跑：再触发应被重入闸挡下，不产生第二次心跳
+      await slowService.performManualKeepAlive();
+      expect(slowHb.calls, 1);
+
+      gate.complete();
+      await first;
+      expect(slowHb.calls, 1);
+
+      // 第一轮结束后再触发，正常放行
+      await slowService.performManualKeepAlive();
+      expect(slowHb.calls, 2);
+    });
+  });
+}
+
+/// 心跳挂起到 [gate] 完成才返回，用于制造「一轮未结束」的窗口
+class _SlowHeartbeat implements PlatformHeartbeat {
+  _SlowHeartbeat(this.platformId, this.gate);
+
+  @override
+  final String platformId;
+  final Completer<void> gate;
+  int calls = 0;
+
+  @override
+  Future<HeartbeatResult> performHeartbeat(String cookies) async {
+    calls++;
+    if (calls == 1) await gate.future;
+    return HeartbeatResult.success();
+  }
 }

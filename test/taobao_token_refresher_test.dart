@@ -25,8 +25,14 @@ void main() {
       expect(classifyMtopBody('FAIL_SYS_TOKEN_EMPTY'), MtopBodyKind.tokenRetryable);
     });
 
-    test('正常体', () {
-      expect(classifyMtopBody('{"data":{"t":1}}'), MtopBodyKind.ok);
+    test('明确成功才算 ok', () {
+      expect(
+        classifyMtopBody('{"ret":["SUCCESS::调用成功"],"data":{}}'),
+        MtopBodyKind.ok,
+      );
+      // 无失效信号但没有成功标记（门户页/未知 retcode）不能当成登录有效
+      expect(classifyMtopBody('{"data":{"t":1}}'), MtopBodyKind.unknown);
+      expect(classifyMtopBody('<html>登录页</html>'), MtopBodyKind.unknown);
     });
   });
 
@@ -90,6 +96,54 @@ void main() {
       expect(result.networkError, isFalse, reason: '${result.sessionExpired}/${result.networkError}');
       expect(result.sessionExpired, isFalse);
       expect(result.newToken, 'newtok_99');
+    });
+
+    test('探活走用户维度的菜鸟包裹列表接口', () async {
+      Uri? requested;
+      final client = MockClient((request) async {
+        requested = request.url;
+        return http.Response('{"ret":["SUCCESS::OK"],"data":{}}', 200);
+      });
+      await TaobaoTokenRefresher.refresh('k=v', client: client);
+
+      expect(
+        requested!.path,
+        '/h5/${TaobaoTokenRefresher.probeApi}/1.0/',
+      );
+      expect(requested!.queryParameters['data'], contains('pageSize'));
+    });
+
+    test('无法识别的响应按网络错误处理，不误报 success', () async {
+      final client = MockClient((request) async {
+        return http.Response('<html>wifi login</html>', 200);
+      });
+      final result = await TaobaoTokenRefresher.refresh('k=v', client: client);
+      expect(result.networkError, isTrue);
+      expect(result.sessionExpired, isFalse);
+      expect(result.errorDetail, contains('无法识别'));
+    });
+
+    test('TOKEN_EMPTY 时用 Set-Cookie 下发的新令牌重试成功', () async {
+      var calls = 0;
+      String? retryCookie;
+      final client = MockClient((request) async {
+        calls++;
+        if (calls == 1) {
+          return http.Response(
+            'FAIL_SYS_TOKEN_EMPTY',
+            200,
+            headers: {'set-cookie': '_m_h5_tk=tok1_1; Path=/'},
+          );
+        }
+        retryCookie = request.headers['Cookie'];
+        return http.Response('{"ret":["SUCCESS::OK"],"data":{}}', 200);
+      });
+      final result = await TaobaoTokenRefresher.refresh('k=v', client: client);
+
+      expect(calls, 2);
+      expect(result.sessionExpired, isFalse);
+      expect(result.networkError, isFalse);
+      expect(retryCookie, contains('tok1'));
     });
 
     test('TOKEN_EXPIRED 重试仍失败 → sessionExpired', () async {

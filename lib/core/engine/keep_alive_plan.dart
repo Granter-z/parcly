@@ -23,7 +23,7 @@ class KeepAlivePlan {
     final days = cookieAge.inDays;
 
     if (days <= 3) return const Duration(hours: 24); // 新鲜期，低频维护
-    if (days <= 7) return const Duration(hours: 12); // 中期，适度保活
+    if (days <= 7) return const Duration(hours: 6); // 中期，缩小会话失效空窗
     if (days <= 10) return const Duration(hours: 6); // 临期，积极保活
     return const Duration(hours: 4); // 危险期，高频保活
   }

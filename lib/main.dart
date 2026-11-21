@@ -15,8 +15,6 @@ import 'platform/notification/notification_adapter.dart';
 import 'platform/keep_alive/keep_alive_worker.dart';
 import 'ui/app.dart';
 
-const String kPackagesBox = 'packages';
-
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   // 调试追踪默认开启；Release 关闭，避免生产包持续输出调试横幅。

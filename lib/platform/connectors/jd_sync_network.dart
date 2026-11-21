@@ -7,7 +7,10 @@ import 'dart:async';
 const String kJdNetworkSoftIssue = '京东暂时不可达，请稍后重试';
 
 /// 京东 `streamSync` 外层硬超时（§P42-a）。
-const Duration kJdStreamSyncHardTimeout = Duration(seconds: 8);
+///
+/// 真机冷启动时 hook 常在 6-14s 才拿到 order_list_m，8s 会先判「不可达」，
+/// 而 Manager 的 20s 仍兜底。
+const Duration kJdStreamSyncHardTimeout = Duration(seconds: 15);
 
 /// Chromium 主文档网络硬失败（至少覆盖真机 P23 的 -6 / ERR_CONNECTION_REFUSED）。
 bool jdIsNetworkHardFailure({
