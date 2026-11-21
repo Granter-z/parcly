@@ -64,10 +64,11 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
             continue;
           }
           // 清理存量误导入的餐饮外卖与秒送即时订单（非快递包裹）。
-          // 只认渠道词（外卖/秒送/达达/骑手…），且必须同时满足：
-          // - 未完成（已完成/已取件/归档的记录绝不因商品名删除）
-          // - 物流文案不是活跃在途动作（买的外卖词食品快递仍在途时保留）
+          // 只清「DOM 时代遗留的合成 id 卡」：结构化真实单即使商品名带渠道词，
+          // 也可能是正常快递（如外卖打包盒/骑手手套），不能删除。
+          // 其他条件：只认渠道词；未完成；物流文案不是活跃在途动作。
           if (pkg.platform == 'jd' &&
+              isSyntheticJdId(pkg.id) &&
               _isFoodTakeoutPackage(pkg) &&
               !pkg.status.isCompleted &&
               !LogisticsStatusEngine.isActiveLogisticsText(pkg.description)) {
