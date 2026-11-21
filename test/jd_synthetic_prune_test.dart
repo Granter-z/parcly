@@ -262,5 +262,76 @@ void main() {
       expect(list.state, hasLength(3));
       expect(list.state.map((p) => p.id), contains('JD_123456789012'));
     });
+
+    test('旧卡已取 + 同款新单在途 → 不合并，新单仍可通知', () {
+      final old = _jdCard(
+        id: 'JD_xaaaaaaaaaaaa',
+        trackingNumber: 'xaaaaaaaaaaaa',
+        goodsName: '同款商品',
+        status: PackageStatus.pickedUp,
+        pickedUpAt: DateTime(2026, 11, 18),
+        notifiedArrived: true,
+        arrivedAt: DateTime(2026, 11, 17),
+      );
+      final fresh = _jdCard(
+        id: 'JD_123456789012',
+        trackingNumber: 'YT999',
+        goodsName: '同款商品',
+        status: PackageStatus.transit,
+      );
+      final list = _FakeList([old]);
+
+      list.addPackage(fresh);
+
+      expect(list.state, hasLength(2), reason: '同款不同订单不能合并');
+      final newCard =
+          list.state.firstWhere((p) => p.id == 'JD_123456789012');
+      expect(newCard.status, PackageStatus.transit);
+      expect(newCard.notifiedArrived, isFalse);
+      expect(list.state.map((p) => p.id), contains(old.id));
+    });
+
+    test('旧卡在途 + 真实单已到件 → 合并（不算倒退）', () {
+      final old = _jdCard(
+        id: 'JD_xbbbbbbbbbbbb',
+        trackingNumber: 'xbbbbbbbbbbbb',
+        goodsName: '同款商品',
+        status: PackageStatus.transit,
+        notifiedArrived: true,
+      );
+      final incoming = _jdCard(
+        id: 'JD_123456789012',
+        trackingNumber: 'YT999',
+        goodsName: '同款商品',
+        status: PackageStatus.arrived,
+      );
+      final list = _FakeList([old]);
+
+      list.addPackage(incoming);
+
+      expect(list.state, hasLength(1));
+      expect(list.state.single.id, 'JD_123456789012');
+      expect(list.state.single.status, PackageStatus.arrived);
+    });
+
+    test('占位名「京东在途商品」不参与商品名兜底', () {
+      final list = _FakeList([
+        _jdCard(
+          id: 'JD_xcccccccccccc',
+          trackingNumber: 'xcccccccccccc',
+          goodsName: '京东在途商品',
+          status: PackageStatus.transit,
+        ),
+      ]);
+
+      list.addPackage(_jdCard(
+        id: 'JD_123456789012',
+        trackingNumber: 'YT1',
+        goodsName: '京东在途商品',
+        status: PackageStatus.transit,
+      ));
+
+      expect(list.state, hasLength(2));
+    });
   });
 }

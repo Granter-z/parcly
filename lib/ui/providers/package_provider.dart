@@ -502,6 +502,7 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
     final name = _cleanedGoodsName(incoming.goodsName);
     if (!_isSpecificGoodsName(name)) return -1;
 
+    final incomingActive = _isActiveLifecycle(incoming.status);
     final matches = <int>[];
     var realWithSameName = 0;
     for (var i = 0; i < state.length; i++) {
@@ -509,6 +510,11 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
       if ((p.platform ?? '') != 'jd') continue;
       if (_cleanedGoodsName(p.goodsName) != name) continue;
       if (isSyntheticJdId(p.id)) {
+        // 生命周期闸门：旧卡已到件/已完成，而新单还在途 → 同一商品的不同订单，
+        // 不能合并（否则新包裹会被旧卡的已取状态和已通知标记吃掉）。
+        if (incomingActive && (p.status == PackageStatus.arrived || p.status.isCompleted)) {
+          continue;
+        }
         matches.add(i);
       } else if (RegExp(r'^JD_\d{6,}$').hasMatch(p.id) && p.id != incoming.id) {
         realWithSameName++;
@@ -517,6 +523,11 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
     if (matches.length != 1 || realWithSameName > 0) return -1;
     return matches.single;
   }
+
+  static bool _isActiveLifecycle(PackageStatus s) =>
+      s == PackageStatus.pendingShipment ||
+      s == PackageStatus.transit ||
+      s == PackageStatus.delivering;
   
   UrgencyLevel _higherUrgency(UrgencyLevel a, UrgencyLevel b) {
     return a.score >= b.score ? a : b;
@@ -587,7 +598,12 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
     // 误把物流/取件说明当成商品名的脏数据不算「具体商品名」，
     // 这样它在合并时会被真实商品名或中性占位名替换掉
     if (_looksLikeLogisticsText(name)) return false;
-    return name != '快件包裹' && name != '快递包裹' && name != '拼多多包裹' && name != 'OCR';
+    const placeholders = {
+      '快件包裹', '快递包裹', '拼多多包裹', 'OCR',
+      // 京东兜底的通用占位名，占位卡之间不能当同名商品合并
+      '京东在途商品', '京东商品快件',
+    };
+    return !placeholders.contains(name);
   }
 
   /// 判断一个「商品名」是否其实是取件/物流说明文本（属于解析脏数据）
