@@ -7,7 +7,7 @@ This file provides guidance to Codex (claude.ai/code) when working with code in 
 现代化中文快递包裹追踪与聚合管理 Android 应用，使用 Flutter 构建。聚合拼多多、京东、淘宝等多电商平台真实物流，结合在途优先 UI 与官方级物流时间轴，解决包裹分散、双端登录互踢、取件码格式不一等痛点。
 
 - **语言**: Dart 3.6+, Flutter 3.6+
-- **平台**: Android (Min SDK 24, Target SDK 34)
+- **平台**: Android (Min SDK 24, Target SDK 36；Target 由 `flutter.targetSdkVersion` 决定，本机 Flutter 3.41.9)
 - **状态管理**: Riverpod
 - **存储**: Hive (NoSQL)
 - **网络**: http + webview_flutter (电商平台容器与 Cookie 捕获)
@@ -103,7 +103,7 @@ class Package {
   final String trackingNumber; // 运单号（可能为打码单号如 YT12*******5678）
   final CourierType courier;
   final PackageStatus status;
-  final String? pickupCode;    // 取件码
+  final String pickupCode;    // 取件码（非空，默认空串）
   final String? stationName;   // 自提点/驿站名
   final String? goodsName;
   final String? goodsImageUrl;
@@ -123,7 +123,7 @@ class Package {
   - `taobao_connector.dart`: 淘宝/天猫 (MTOP API + 菜鸟驿站)
   - `connector_manager.dart`: 多平台同步调度器
   - `taobao_sync_rules.dart`: 淘宝同步策略（打码单号合并、已签收订单跳过请求）
-  - `*_trace_parser.dart`: 各平台物流轨迹 JSON 解析器（pdd / jd / taobao）
+  - `*_trace_parser.dart`: 各平台物流轨迹 JSON 解析器（pdd / jd 在 `connectors/`，taobao 在 `lib/core/parser/`）
   - `jd_delivery_filter.dart`: 过滤京东外卖/秒送等即时订单
   - `concurrent_limiter.dart`: 并发控制工具（ThrottledExecutor，限制并发数与随机延迟）
   - `sync_optimizer.dart`: 智能跳过已同步订单（24 小时内、已完成状态）
@@ -153,7 +153,7 @@ class Package {
 **关键设计**:
 - 每个 `PlatformConnector` 通过 `Stream<Package> streamSync()` 流式产出包裹数据
 - `taobao_connector.dart` 包含打码单号补全与菜鸟优先级逻辑（P11-b 后续）
-- 三个平台同步已实现并发优化（3 并发，100-400ms 随机延迟，防风控）
+- 三个平台同步已实现并发优化（淘宝 3 并发、100-300ms；拼多多 1 并发、200-400ms；京东串行、150-350ms）
 
 #### 3. `lib/ui/` — Presentation Layer
 
@@ -164,7 +164,7 @@ class Package {
   - `home/`: 在途优先主页 (`home_screen.dart`)，子组件在 `widgets/`（`hero_stats_dashboard.dart` 仪表盘、`animated_package_list.dart` 列表增删重排动画、`modern_package_card.dart` 卡片、`completed_packages_sheet.dart` 已完成归档抽屉、`tracking_timeline_sheet.dart` 物流时间轴抽屉）
   - `pdd/`: 拼多多内置移动端商城容器 (`PddWebScreen`)
   - `login/`: 平台账号授权与 Cookie 捕获
-  - `settings/`: 平台绑定管理、保活状态 (`keep_alive_status_screen.dart`)、诊断 (`diagnostics_screen.dart`)、后台同步测试工具 (`background_sync_test_screen.dart`，`kDebugMode` 门控，Release 被 tree-shaking 移除)
+  - `settings/`: 平台绑定管理、保活状态 (`keep_alive_status_screen.dart`)、诊断 (`lib/platform/connectors/sync_diagnostics.dart`)、后台同步测试工具 (`background_sync_test_screen.dart`，`kDebugMode` 门控，Release 被 tree-shaking 移除)
 - `theme/`: 主题与动效（`app_theme.dart`、`motion.dart` 全局动效令牌、`status_extension.dart` 状态配色）
 - `components/`: 通用组件（弹簧卡片 `spring_card.dart`、平台徽章、`hero_pickup_badge.dart` 取件码徽章、`tracking_timeline.dart`、`status_pill.dart`、`staggered_entrance.dart`）
 
@@ -244,7 +244,7 @@ pendingShipment → transit → delivering → arrived → pickedUp → archived
 
 **保活机制**:
 - 调度决策在 `lib/core/engine/keep_alive_plan.dart`（纯 Dart、时间可注入、可单测）
-- 间隔按 Cookie 年龄分档：0-3 天 24h、4-7 天 12h、8-10 天 6h、11+ 天 4h
+- 间隔按 Cookie 年龄分档：≤3 天 24h、≤7 天 6h、≤10 天 6h、11+ 天 4h
 - **`next_keep_alive_at` 已落盘**（box `keep_alive_state`），冷启动时闸门依然生效，不会重发心跳
 - 用户同步后 6 小时内、或刚保活 2 小时内跳过；最近同步时间来自 `SyncHistoryManager`
 - 心跳失败累计 3 次或明确判定失效 → 写 `setExpired` + 本地通知提醒（点击直达设置页）
@@ -291,7 +291,7 @@ flutter test test/package_identity_test.dart
 flutter test test/taobao_sync_rules_test.dart
 ```
 
-**测试覆盖**: 556 个用例全部通过（无 skip）。新增/修改核心逻辑后跑 `flutter test` 确认全绿。
+**测试覆盖**: 613 个用例全部通过（flutter test 实测数，随版本会变；无 skip）。新增/修改核心逻辑后跑 `flutter test` 确认全绿。
 
 ## Development Workflow
 
@@ -323,7 +323,7 @@ flutter test test/taobao_sync_rules_test.dart
 ### When Optimizing Sync Performance
 
 1. **并发拉取**: 使用 `ThrottledExecutor` 限制并发数（建议 3 并发）
-2. **随机延迟**: 设置 `minDelay` 和 `maxDelay` 防止风控（淘宝/京东 100-300ms，拼多多 200-400ms）
+2. **随机延迟**: 设置 `minDelay` 和 `maxDelay` 防止风控（淘宝 100-300ms、京东 150-350ms，拼多多 200-400ms）
 3. **智能跳过**: 使用 `SyncOptimizer.filterNeedsFetch()` 过滤已同步订单
 4. **流式返回**: 使用 `Stream<Package>` 逐个产出，不等全部完成
 5. **验证测试**: 运行 `flutter test` 确保全部用例通过
@@ -346,7 +346,7 @@ flutter test test/taobao_sync_rules_test.dart
 - **包裹 ID 格式**: `<平台前缀>_<平台订单号>` (如 `PDD_240101123456`, `TB_1000000000000000001`, `CN_YT1234567890123`)
 - **Cookie 管理**: 各平台凭据存 `PlatformAuthStore`，WebView 捕获后持久化
 - **并发限制**: 订单详情拉取最多 3 并发，随机延迟 100-400ms 防风控
-- **静态检查**: `analysis_options.yaml` 基于 `flutter_lints`，额外强制 `prefer_const_constructors` / `prefer_const_declarations` / `avoid_print`。生产代码用 `debugPrint` / `DebugTrace`，勿新增 `print`（`main.dart` 中残留的 `print` 属历史遗留）
+- **静态检查**: `analysis_options.yaml` 基于 `flutter_lints`，额外强制 `prefer_const_constructors` / `prefer_const_declarations` / `avoid_print`。生产代码用 `debugPrint` / `DebugTrace`，勿新增 `print`（`main.dart` 已清理，无 `print`）
 - **本地插件**: `plugins/secure_store`（path 依赖）封装 Android 安全存储，供凭据持久化使用
 
 ## Recent Optimizations (已完成)
