@@ -1,14 +1,18 @@
 /// 设置与多平台账号管理界面
 library;
 
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/models/platform_ids.dart';
+import '../../../platform/keep_alive/keep_alive_controller.dart';
 import '../../../platform/storage/platform_auth_store.dart';
 import '../../../platform/connectors/connector_manager.dart';
 import '../../components/platform_meta.dart';
+import '../../constants/app_constants.dart';
 import '../../providers/package_provider.dart';
 import '../../providers/platform_auth_status_provider.dart';
 import '../login/platform_login_flow.dart';
@@ -31,7 +35,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     // 监听同步状态：后台同步结束（如检测到登录失效）后立即刷新卡片标签
     ref.watch(syncStateProvider);
     return Scaffold(
-      backgroundColor: const Color(0xFFF6F7F9),
+      backgroundColor: AppColors.background,
       appBar: AppBar(
         title: const Text(
           '设置与平台绑定',
@@ -98,12 +102,13 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   trailing: const Icon(Icons.chevron_right_rounded, size: 20, color: Colors.grey),
                   onTap: () async {
                     HapticFeedback.lightImpact();
-                    // 先取 messenger 再 pop：pop 之后 context 已失效，
-                    // 用它弹提示会静默丢失（与下方两项保持一致）。
+                    // 先取 messenger 与 manager 再 pop：pop 之后 context 与 ref 已失效，
+                    // 跨过 await 间隙读取会抛异常或静默丢失提示。
                     final messenger = ScaffoldMessenger.of(context);
+                    final manager = ref.read(connectorManagerProvider);
                     Navigator.pop(context);
-                    await ref.read(connectorManagerProvider).syncAll();
-                    final issue = ref.read(connectorManagerProvider).lastIssue;
+                    await manager.syncAll();
+                    final issue = manager.lastIssue;
                     messenger.showSnackBar(
                       SnackBar(
                         content: Text(issue ?? '已同步最新物流状态'),
@@ -116,7 +121,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 ListTile(
                   leading: const Icon(Icons.refresh_rounded, color: Color(0xFFFF9500)),
                   title: const Text('强制重拉订单详情', style: TextStyle(fontSize: 14.5, fontWeight: FontWeight.w600)),
-                  subtitle: const Text('忽略 24 小时同步跳过，重新拉取全部订单', style: TextStyle(fontSize: 12)),
+                  subtitle: const Text('忽略 24 小时与已签收跳过，重新拉取全部订单', style: TextStyle(fontSize: 12)),
                   trailing: const Icon(Icons.chevron_right_rounded, size: 20, color: Colors.grey),
                   onTap: () async {
                     HapticFeedback.lightImpact();
@@ -125,7 +130,10 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                     // 而 pop 之后 context 已失效，用它弹提示会静默失败
                     final messenger = ScaffoldMessenger.of(context);
                     Navigator.pop(context);
-                    final count = await manager.syncAll(force: true);
+                    final count = await manager.syncAll(
+                      force: true,
+                      forceSignedDetail: true,
+                    );
                     messenger.showSnackBar(
                       SnackBar(
                         content: Text(manager.lastIssue ?? '已强制重拉订单详情（$count 条）'),
@@ -174,7 +182,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                         ],
                       ),
                     );
-                    if (confirmed != true) return;
+                    if (confirmed != true || !mounted) return;
 
                     store.clearBlacklist();
                     navigator.pop();
@@ -225,6 +233,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   subtitle: const Text('清理本地数据库中的所有包裹', style: TextStyle(fontSize: 12)),
                   onTap: () async {
                     HapticFeedback.mediumImpact();
+                    final messenger = ScaffoldMessenger.of(context);
                     final confirmed = await showDialog<bool>(
                       context: context,
                       builder: (ctx) => AlertDialog(
@@ -241,10 +250,11 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                       ),
                     );
                     if (confirmed == true) {
+                      if (!mounted) return;
                       ref.read(packageListProvider.notifier).clearAll();
-                      if (context.mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已清空所有包裹数据')));
-                      }
+                      messenger.showSnackBar(
+                        const SnackBar(content: Text('已清空所有包裹数据')),
+                      );
                     }
                   },
                 ),
@@ -480,24 +490,24 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       await _openLogin(platform: platform, displayName: displayName, brandColor: brandColor);
     } else if (val == 'unbind') {
       await _authStore.unbind(platform);
+      if (!mounted) return;
       ref.invalidate(platformAuthStatusProvider);
-      if (mounted) {
-        setState(() {});
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('已解除 $displayName 绑定')),
-        );
-      }
+      unawaited(ref.read(keepAliveControllerProvider.notifier).refresh());
+      setState(() {});
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('已解除 $displayName 绑定')),
+      );
     }
   }
 
 
-  /// 平台登录入口：走共用 openPlatformLogin（成功后清 issue + 只同步该平台）。
+  /// 平台登录入口：走共用 openPlatformLogin（成功后清 issue + 只同步该平台，并统一提示）。
   Future<void> _openLogin({
     required String platform,
     required String displayName,
     required Color brandColor,
   }) async {
-    final ok = await openPlatformLogin(
+    await openPlatformLogin(
       context,
       ref,
       platform: platform,
@@ -505,15 +515,6 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       brandColor: brandColor,
     );
     if (mounted) setState(() {});
-    if (ok && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('$displayName 已登录，正在同步'),
-          behavior: SnackBarBehavior.floating,
-          persist: false,
-        ),
-      );
-    }
   }
 
   // _issueKeyword 已由 resolvePlatformAuthStatus / platformIssueKeyword 取代

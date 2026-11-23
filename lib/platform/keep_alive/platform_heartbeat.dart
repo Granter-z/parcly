@@ -154,6 +154,16 @@ class JdHeartbeat implements PlatformHeartbeat {
   static const _ua =
       'Mozilla/5.0 (Linux; Android 14; 25102RKBEC Build/UP1A.231005.007) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36';
 
+  /// 单测可注入各 host 探活替身，生产默认走 [_probeHost]
+  final Future<HeartbeatResult> Function(String url, String cookies, String hostTag)?
+      _probeHostOverride;
+
+  JdHeartbeat({
+    @visibleForTesting
+    Future<HeartbeatResult> Function(String url, String cookies, String hostTag)?
+        probeHostOverride,
+  }) : _probeHostOverride = probeHostOverride;
+
   @override
   String get platformId => 'jd';
 
@@ -364,26 +374,35 @@ class JdHeartbeat implements PlatformHeartbeat {
     }
   }
 
+  Future<HeartbeatResult> _runProbe(String url, String cookies, String hostTag) {
+    final override = _probeHostOverride;
+    if (override != null) return override(url, cookies, hostTag);
+    return _probeHost(url, cookies, hostTag);
+  }
+
   @override
   Future<HeartbeatResult> performHeartbeat(String cookies) async {
-    debugPrint('[KeepAlive] JD heartbeat starting (dual probe wqs+trade)...');
-    final wqs = await _probeHost(probeUrl, cookies, 'wqs');
-    final trade = await _probeHost(tradeProbeUrl, cookies, 'trade');
+    debugPrint('[KeepAlive] JD heartbeat starting (trade first, wqs fallback)...');
+    final trade = await _runProbe(tradeProbeUrl, cookies, 'trade');
+
+    if (trade.success) {
+      debugPrint('[KeepAlive] JD heartbeat success (trade OK; skipped wqs)');
+      return HeartbeatResult.success();
+    }
+    if (trade.isAuthFailure) {
+      debugPrint('[KeepAlive] JD heartbeat failed: login required (host=trade; skipped wqs)');
+      return HeartbeatResult.failure('登录态已失效（trade 要求登录）', isAuthFailure: true);
+    }
+
+    // 仅当 trade 软失败 / 不确定 / 网络抖动时才补探 wqs 兜底合并
+    final wqs = await _runProbe(probeUrl, cookies, 'wqs');
     final combined = combineDualProbe(wqs: wqs, trade: trade);
 
     if (combined.success) {
-      if (wqs.isAuthFailure) {
-        debugPrint(
-          '[KeepAlive] JD heartbeat success (trade OK; ignored wqs login-like)',
-        );
-      } else if (!trade.success) {
-        // §P36-b″：wqs OK，忽略 trade soft/uncertain/网络抖
-        debugPrint(
-          '[KeepAlive] JD heartbeat success (wqs OK; ignored trade soft/uncertain)',
-        );
-      } else {
-        debugPrint('[KeepAlive] JD heartbeat success');
-      }
+      // §P36-b″：wqs OK，忽略 trade soft/uncertain/网络抖
+      debugPrint(
+        '[KeepAlive] JD heartbeat success (wqs OK; ignored trade soft/uncertain)',
+      );
     } else if (combined.isAuthFailure) {
       debugPrint(
         '[KeepAlive] JD heartbeat failed: login required (host=trade)',

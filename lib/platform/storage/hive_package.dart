@@ -21,7 +21,7 @@ const String kPackagesBox = 'packages';
 /// 注意：这个类主要用于Hive序列化，
 /// 业务逻辑应该使用核心模型
 /// 
-/// 适配器在 adapters/hive_adapters.dart 中定义
+/// 适配器在 hive_adapters.dart 中定义
 class HivePackage {
   final String id;
   final String trackingNumber;
@@ -38,13 +38,15 @@ class HivePackage {
   final DateTime? arrivedAt;
   final bool notifiedArrived;
   final DateTime? archivedAt;
-  final String? transitFingerprint;  // transit 阶段的弱身份标识
+  /// 历史遗留字段，不再参与核心匹配判定，仅保留以兼容旧版 Hive 字段槽位。
+  final String? transitFingerprint;
   final String? goodsName;
   final String? goodsImageUrl;
   final String? platform;
   final String? stationName;
   final String? rawTimelineJson;
-  final String fingerprint;  // 包裹唯一识别指纹
+  /// 历史遗留字段，不再参与核心匹配判定，仅保留以兼容旧版 Hive 字段槽位。
+  final String fingerprint;
 
   HivePackage({
     required this.id,

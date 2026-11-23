@@ -5,17 +5,15 @@
 library;
 
 import 'package:flutter/foundation.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:hive/hive.dart';
+import 'package:secure_store/secure_store.dart';
 
+import '../keep_alive/keep_alive_worker_bridge.dart';
 import 'keep_alive_store.dart';
 
 /// 平台凭据存储 Box 名称（在 main.dart 启动时预先打开）
 const String kPlatformAuthBox = 'platform_auth_box';
-
-const MethodChannel _secureStoreChannel =
-    MethodChannel('com.example.pickup_app/secure_store');
 
 /// 加密值前缀：用于区分历史明文数据并触发自动迁移
 const String _encryptedPrefix = 'enc:v1:';
@@ -32,12 +30,19 @@ class PlatformAuthStore {
   /// 解密后的凭据内存缓存（platform -> cookies），避免同步读取路径需要 await
   static final Map<String, String> _plainCache = {};
   static bool _preloaded = false;
+  static Future<void>? _preloadFuture;
+
+  static final RegExp _mtopTkHasReg = RegExp(r'(^|;\s*)_m_h5_tk=');
+  static final RegExp _mtopTkReplaceReg = RegExp(r'(^|;\s*)_m_h5_tk=[^;]*');
+  static final RegExp _mtopTkEncHasReg = RegExp(r'(^|;\s*)_m_h5_tk_enc=');
+  static final RegExp _mtopTkEncReplaceReg =
+      RegExp(r'(^|;\s*)_m_h5_tk_enc=[^;]*');
 
   static String _cookieKey(String platform) => '${platform.toLowerCase()}_cookies';
 
   static Future<String> _encrypt(String plain) async {
     try {
-      final encoded = await _secureStoreChannel
+      final encoded = await secureStoreChannel
           .invokeMethod<String>('encrypt', {'value': plain});
       if (encoded != null && encoded.isNotEmpty) {
         return '$_encryptedPrefix$encoded';
@@ -52,7 +57,7 @@ class PlatformAuthStore {
   static Future<String?> _decrypt(String stored) async {
     if (!stored.startsWith(_encryptedPrefix)) return stored;
     try {
-      final plain = await _secureStoreChannel.invokeMethod<String>(
+      final plain = await secureStoreChannel.invokeMethod<String>(
         'decrypt',
         {'value': stored.substring(_encryptedPrefix.length)},
       );
@@ -63,8 +68,21 @@ class PlatformAuthStore {
     }
   }
 
-  /// 预加载并解密全部平台凭据；顺带把历史明文重新加密落盘
-  static Future<void> _preload() async {
+  /// 预加载并解密全部平台凭据；顺带把历史明文重新加密落盘（单飞并发收敛）
+  static Future<void> _preload() {
+    if (_preloaded) return Future<void>.value();
+    final existing = _preloadFuture;
+    if (existing != null) return existing;
+    final task = _doPreload().whenComplete(() {
+      if (identical(_preloadFuture, existing)) {
+        _preloadFuture = null;
+      }
+    });
+    _preloadFuture = task;
+    return task.whenComplete(() => _preloadFuture = null);
+  }
+
+  static Future<void> _doPreload() async {
     if (_preloaded) return;
     try {
       final box = Hive.isBoxOpen(_boxName) ? Hive.box(_boxName) : null;
@@ -122,10 +140,14 @@ class PlatformAuthStore {
       await _preload();
       return;
     }
-    _box = Hive.isBoxOpen(_boxName)
-        ? Hive.box(_boxName)
-        : await Hive.openBox(_boxName, crashRecovery: !_readOnly);
-    await _preload();
+    try {
+      _box = Hive.isBoxOpen(_boxName)
+          ? Hive.box(_boxName)
+          : await Hive.openBox(_boxName, crashRecovery: !_readOnly);
+      await _preload();
+    } catch (e) {
+      debugPrint('[AuthStore] ensureInit failed: $e');
+    }
   }
 
   /// 启动时预打开存储并解密凭据（在 main.dart 中调用，确保重启后凭据可读）
@@ -138,6 +160,11 @@ class PlatformAuthStore {
   static Future<void> initialize({bool readOnly = false}) async {
     _readOnly = readOnly;
     if (!Hive.isBoxOpen(_boxName)) {
+      _preloaded = false;
+      _preloadFuture = null;
+      _plainCache.clear();
+      _blacklistLoaded = false;
+      _blacklistCache.clear();
       await Hive.openBox(_boxName, crashRecovery: !readOnly);
     }
     await _preload();
@@ -145,15 +172,36 @@ class PlatformAuthStore {
 
   Future<void> saveCookies(String platform, String cookies) async {
     await _ensureInit();
+    final box = _safeBox;
+    if (box == null) return;
     final p = platform.toLowerCase();
     _plainCache[p] = cookies;
-    await _box!.put(_cookieKey(p), await _encrypt(cookies));
-    await _box!.put(
+    await box.put(_cookieKey(p), await _encrypt(cookies));
+    await box.put(
       '${p}_updated_at',
       DateTime.now().millisecondsSinceEpoch,
     );
-    // 重新绑定时清除旧的失效标记
+    // 重新绑定时清除旧的失效标记与保活失败/去重/闸门状态
     await setExpired(p, false);
+    final keepAlive = KeepAliveStore();
+    await keepAlive.setNext(p, null);
+    await keepAlive.setFailureCount(p, 0);
+    await keepAlive.setLastNotifiedAt(p, null);
+    await clearWorkerNotifiedAt(p);
+    await clearWorkerGate(p);
+  }
+
+  /// 同步成功后就地刷新完整 Cookie 串，不改写「授权绑定时间」与失效标记。
+  ///
+  /// 供京东/拼多多同步结束回写轮换 Cookie 使用；避免用 [saveCookies]
+  /// 误重置 `updated_at`（导致 Cookie 年龄归零）或把已失效标记冲回 false。
+  Future<void> refreshCookiesInPlace(String platform, String cookies) async {
+    await _ensureInit();
+    final box = _safeBox;
+    if (box == null) return;
+    final p = platform.toLowerCase();
+    _plainCache[p] = cookies;
+    await box.put(_cookieKey(p), await _encrypt(cookies));
   }
 
   /// 令牌写回串行化：并发详情请求会同时收到 Set-Cookie 轮换，
@@ -182,37 +230,41 @@ class PlatformAuthStore {
     String? tokenEnc,
   }) async {
     await _ensureInit();
+    final box = _safeBox;
+    if (box == null) return;
     final p = platform.toLowerCase();
     final stored = getCookies(p);
     if (stored == null || stored.isEmpty) return;
     var merged = stored;
     if (token != null) {
       // 边界 (^|;\s*)：否则 `_m_h5_tk=` 会命中 `_m_h5_tk_enc=` 的前缀并污染 enc 值。
-      merged = merged.contains(RegExp(r'(^|;\s*)_m_h5_tk='))
+      merged = merged.contains(_mtopTkHasReg)
           ? merged.replaceAllMapped(
-              RegExp(r'(^|;\s*)_m_h5_tk=[^;]*'),
+              _mtopTkReplaceReg,
               (m) => '${m[1]}_m_h5_tk=$token')
           : '$merged; _m_h5_tk=$token';
     }
     if (tokenEnc != null) {
-      merged = merged.contains('_m_h5_tk_enc=')
+      merged = merged.contains(_mtopTkEncHasReg)
           ? merged.replaceAllMapped(
-              RegExp(r'(^|;\s*)_m_h5_tk_enc=[^;]*'),
+              _mtopTkEncReplaceReg,
               (m) => '${m[1]}_m_h5_tk_enc=$tokenEnc')
           : '$merged; _m_h5_tk_enc=$tokenEnc';
     }
     _plainCache[p] = merged;
-    await _box!.put(_cookieKey(p), await _encrypt(merged));
+    await box.put(_cookieKey(p), await _encrypt(merged));
   }
 
   /// 标记/清除登录失效状态（以时间戳形式存储，避免布尔标记被其它写入路径覆盖）
   Future<void> setExpired(String platform, bool expired) async {
     await _ensureInit();
+    final box = _safeBox;
+    if (box == null) return;
     final key = '${platform.toLowerCase()}_expired_at';
     if (expired) {
-      await _box!.put(key, DateTime.now().millisecondsSinceEpoch);
+      await box.put(key, DateTime.now().millisecondsSinceEpoch);
     } else {
-      await _box!.delete(key);
+      await box.delete(key);
     }
   }
 
@@ -242,26 +294,31 @@ class PlatformAuthStore {
 
   Future<void> unbind(String platform) async {
     await _ensureInit();
+    final box = _safeBox;
     final p = platform.toLowerCase();
     _plainCache.remove(p);
-    await _box!.delete(_cookieKey(p));
-    await _box!.delete('${p}_updated_at');
-    await _box!.delete('${p}_entry_url');
-    await _box!.delete('${p}_expired_at');
-    // 同时清掉保活调度状态，避免重新绑定时继承旧的闸门与失败计数
+    if (box != null) {
+      await box.delete(_cookieKey(p));
+      await box.delete('${p}_updated_at');
+      await box.delete('${p}_entry_url');
+      await box.delete('${p}_expired_at');
+    }
+    // 同时清掉保活调度状态与 worker 标记，避免重新绑定时继承旧的闸门与失败计数
     final keepAlive = KeepAliveStore();
     await keepAlive.setNext(p, null);
     await keepAlive.setFailureCount(p, 0);
     await keepAlive.setLastNotifiedAt(p, null);
+    await clearWorkerNotifiedAt(p);
+    await clearWorkerGate(p);
     // 压缩日志，抹掉磁盘上残留的凭据帧
-    await _box!.compact();
+    await box?.compact();
   }
 
   /// 记录用户登录后实际停留的页面地址，供连接器复用（避免猜测各平台的订单页 URL）
   Future<void> saveEntryUrl(String platform, String url) async {
     if (url.trim().isEmpty) return;
     await _ensureInit();
-    await _box!.put('${platform.toLowerCase()}_entry_url', url.trim());
+    await _safeBox?.put('${platform.toLowerCase()}_entry_url', url.trim());
   }
 
   String? getEntryUrl(String platform) {

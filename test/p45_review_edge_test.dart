@@ -20,6 +20,7 @@ void main() {
         addTearDown(() => t.binding.defaultBinaryMessenger
             .setMockMethodCallHandler(SystemChannels.platform, null));
         final h = Harness();
+        addTearDown(h.dispose);
         await h.mount(t, [pkg('A')], notifier: fake);
         await t.longPress(spring('A'));
         await t.pumpAndSettle();
@@ -48,6 +49,7 @@ void main() {
   testWidgets('review: zero-progress insertion removed immediately is safe',
       (t) async {
     final h = Harness();
+    addTearDown(h.dispose);
     await h.mount(t, []);
     await h.update(t, [pkg('A')]);
     await h.update(t, []);

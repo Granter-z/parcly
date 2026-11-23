@@ -83,7 +83,9 @@ void main() {
 
   tearDown(() async {
     await Hive.close();
-    await _dir.delete(recursive: true);
+    if (_dir.existsSync()) {
+      await _dir.delete(recursive: true);
+    }
   });
 
   group('旧 ID TB_<打码运单号> 迁移', () {
@@ -93,6 +95,7 @@ void main() {
         _tb('', _mask1, PackageStatus.pickedUp).copyWith(id: 'TB_$_mask1', pickedUpAt: pickedAt),
       ]);
       final n = PackageListNotifier();
+      addTearDown(n.dispose);
       expect(_box.keys, ['TB_$_mask1']);
 
       for (var i = 0; i < 2; i++) {
@@ -113,6 +116,7 @@ void main() {
             .copyWith(id: 'TB_$_mask1', pickedUpAt: DateTime(2026, 9, 28), archivedAt: archivedAt),
       ]);
       final n = PackageListNotifier();
+      addTearDown(n.dispose);
       _sync(n, cainiao: [_cn()], taobao: [_tb(_order1, _mask1, PackageStatus.pickedUp)]);
       final p = _only(n);
       expect(p.id, 'TB_$_order1');
@@ -125,6 +129,7 @@ void main() {
   group('菜鸟完整单号 ↔ 淘宝打码单号合并', () {
     test('连续两次同步：包裹数不变、一包一卡、Hive 无旧 key，ID 为 TB_<订单号>、单号为完整单号', () async {
       final n = PackageListNotifier();
+      addTearDown(n.dispose);
       for (var i = 0; i < 2; i++) {
         _sync(n, cainiao: [_cn()], taobao: [
           _tb(_order1, _mask1, PackageStatus.arrived),
@@ -148,6 +153,7 @@ void main() {
         _tb(_order2, _mask1, PackageStatus.transit),
       ]);
       final n = PackageListNotifier();
+      addTearDown(n.dispose);
       _sync(n, cainiao: [_cn()]);
       expect(n.state, hasLength(3));
       expect(n.state.where((p) => p.id == 'CN_$_full1'), hasLength(1));
@@ -157,6 +163,7 @@ void main() {
     test('快递公司不同 → 不合并', () async {
       await _seed([_tb(_order1, _mask1, PackageStatus.transit).copyWith(courier: CourierType.zto)]);
       final n = PackageListNotifier();
+      addTearDown(n.dispose);
       _sync(n, cainiao: [_cn()]);
       expect(n.state, hasLength(2));
     });
@@ -166,6 +173,7 @@ void main() {
     test('平台签收（pickedUpAt 为空）→ 改回待取件并显示取件码；同步两次不变', () async {
       await _seed([_tb(_order1, _mask1, PackageStatus.pickedUp)]);
       final n = PackageListNotifier();
+      addTearDown(n.dispose);
       for (var i = 0; i < 2; i++) {
         _sync(n, cainiao: [_cn()], taobao: [_tb(_order1, _mask1, PackageStatus.pickedUp)]);
         final p = _only(n);
@@ -180,6 +188,7 @@ void main() {
     test('用户点已取 → 同步两次 → pickedUpAt 还在，状态没被菜鸟改回', () async {
       await _seed([_tb(_order1, _mask1, PackageStatus.arrived)]);
       final n = PackageListNotifier();
+      addTearDown(n.dispose);
       n.markPickedUp('TB_$_order1');
       final pickedAt = n.state.single.pickedUpAt;
       expect(pickedAt, isNotNull);
@@ -198,6 +207,7 @@ void main() {
         _tb(_order1, _mask1, PackageStatus.archived).copyWith(archivedAt: DateTime(2026, 10, 6)),
       ]);
       final n = PackageListNotifier();
+      addTearDown(n.dispose);
       _sync(n, cainiao: [_cn()], taobao: [_tb(_order1, _mask1, PackageStatus.pickedUp)]);
       expect(_only(n).status, PackageStatus.archived);
     });
@@ -208,6 +218,7 @@ void main() {
         _tb(_order1, _mask1, PackageStatus.pickedUp).copyWith(pickedUpAt: DateTime(2026, 10, 6, 21)),
       ]);
       var n = PackageListNotifier();
+      addTearDown(() => n.dispose());
       _sync(n, cainiao: [_cn()]);
       expect(_only(n).status, PackageStatus.pickedUp);
       // 撤销：已取状态保留但 pickedUpAt 清空（#9 restorePackage 的效果，直接写进 Hive）
@@ -251,6 +262,7 @@ void main() {
 
     test('具体名本身含「菜鸟驿站」时，不被菜鸟接口回落的泛称覆盖', () {
       final n = PackageListNotifier();
+      addTearDown(n.dispose);
       n.addPackage(arrived('示例市青柠花园北门店菜鸟驿站'));
       n.addPackage(arrived('菜鸟驿站', pickupCode: _code));
       final p = _only(n);
@@ -261,6 +273,7 @@ void main() {
 
     test('具体名不含「菜鸟驿站」时，泛称补成前缀而不是覆盖', () {
       final n = PackageListNotifier();
+      addTearDown(n.dispose);
       n.addPackage(arrived('青柠花园北门对面大院驿站'));
       n.addPackage(arrived('菜鸟驿站'));
       expect(_only(n).stationName, '菜鸟驿站 · 青柠花园北门对面大院驿站');
@@ -268,6 +281,7 @@ void main() {
 
     test('已有泛称时，更具体的网点名可以覆盖', () {
       final n = PackageListNotifier();
+      addTearDown(n.dispose);
       n.addPackage(arrived('菜鸟驿站'));
       n.addPackage(arrived('示例市青柠花园北门店菜鸟驿站'));
       expect(_only(n).stationName, '示例市青柠花园北门店菜鸟驿站');
@@ -275,6 +289,7 @@ void main() {
 
     test('新数据没带驿站名时不覆盖已有网点名', () {
       final n = PackageListNotifier();
+      addTearDown(n.dispose);
       n.addPackage(arrived('示例市青柠花园北门店菜鸟驿站'));
       n.addPackage(arrived(''));
       expect(_only(n).stationName, '示例市青柠花园北门店菜鸟驿站');

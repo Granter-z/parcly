@@ -10,13 +10,11 @@ library;
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import '../../core/engine/logistics_status_engine.dart';
-import '../../core/models/package.dart';
 import '../../core/models/package_status.dart';
 import '../../ui/providers/package_provider.dart';
 import '../connectors/connector_manager.dart';
 
-/// 后台同步服务单例
+/// 后台自动同步服务（由首页生命周期持有，仅在 App 进入后台时执行）
 class BackgroundSyncService {
   final WidgetRef _ref;
   Timer? _syncTimer;
@@ -25,8 +23,8 @@ class BackgroundSyncService {
   /// Timer.tick 是已触发次数，不能乘出新周期）。
   Duration? _scheduledInterval;
   AppLifecycleListener? _lifecycleListener;
-  DateTime? _lastSyncTime;
-  bool _isBackgroundSyncEnabled = true;
+  bool _inBackground = false;
+  bool _isSyncing = false;
   bool _disposed = false;
 
   BackgroundSyncService(this._ref);
@@ -50,37 +48,32 @@ class BackgroundSyncService {
     debugPrint('[BackgroundSyncService] Lifecycle listener registered');
   }
 
-  /// App 生命周期变化处理
+  /// App 生命周期变化处理：仅在 `paused` 进入后台时启动，
+  /// `inactive`/`hidden`（权限弹窗、下拉通知栏、切回前台过渡态）不触发后台同步。
   void _onAppLifecycleChanged(AppLifecycleState state) {
     debugPrint('[BackgroundSyncService] Lifecycle changed: $state');
 
     switch (state) {
       case AppLifecycleState.resumed:
-        // App 回到前台，暂停后台同步
+      case AppLifecycleState.detached:
+        _inBackground = false;
         _pauseBackgroundSync();
         break;
 
-      case AppLifecycleState.inactive:
       case AppLifecycleState.paused:
-        // App 进入后台，启动后台同步
+        if (_inBackground) break;
+        _inBackground = true;
         _startBackgroundSync();
         break;
 
-      case AppLifecycleState.detached:
+      case AppLifecycleState.inactive:
       case AppLifecycleState.hidden:
-        // App 即将退出或被隐藏
-        _pauseBackgroundSync();
         break;
     }
   }
 
   /// 启动后台自动同步
   void _startBackgroundSync() {
-    if (!_isBackgroundSyncEnabled) {
-      debugPrint('[BackgroundSyncService] Background sync is disabled');
-      return;
-    }
-
     debugPrint('[BackgroundSyncService] Starting background sync...');
 
     if (!_armTimer()) return;
@@ -121,11 +114,11 @@ class BackgroundSyncService {
     _scheduledInterval = null;
   }
 
-  /// 执行同步
+  /// 执行同步（带重入保护）
   Future<void> _performSync() async {
-    if (_disposed) return;
+    if (_disposed || _isSyncing) return;
+    _isSyncing = true;
     debugPrint('[BackgroundSyncService] Performing sync...');
-    _lastSyncTime = DateTime.now();
 
     try {
       final manager = _ref.read(connectorManagerProvider);
@@ -133,6 +126,8 @@ class BackgroundSyncService {
       debugPrint('[BackgroundSyncService] Sync completed: $count packages');
     } catch (e, stack) {
       debugPrint('[BackgroundSyncService] Sync error: $e\n$stack');
+    } finally {
+      _isSyncing = false;
     }
   }
 
@@ -176,44 +171,16 @@ class BackgroundSyncService {
       return const Duration(minutes: 15);
     }
 
-    // 检查是否有今日紧急待取的包裹
-    final hasUrgent = activePackages.any((p) =>
-        p.status == PackageStatus.arrived &&
-        p.effectiveUrgency == UrgencyLevel.urgent);
-    if (hasUrgent) {
-      debugPrint('[BackgroundSyncService] Has urgent packages → 30min');
+    // 检查是否有待取件包裹（含无码待取，统一为 30 分钟档位）
+    final hasArrived = activePackages.any((p) => p.status == PackageStatus.arrived);
+    if (hasArrived) {
+      debugPrint('[BackgroundSyncService] Has arrived packages → 30min');
       return const Duration(minutes: 30);
     }
 
-    // 检查是否有待取的包裹（非紧急）
-    final hasArrived = activePackages.any((p) => p.status == PackageStatus.arrived);
-    if (hasArrived) {
-      debugPrint('[BackgroundSyncService] Has arrived packages → 45min');
-      return const Duration(minutes: 45);
-    }
-
-    // 只有在途包裹
-    debugPrint('[BackgroundSyncService] Only transit packages → 1hour');
+    // 仅剩在途或待发货包裹
+    debugPrint('[BackgroundSyncService] Only transit/pending packages → 1hour');
     return const Duration(hours: 1);
-  }
-
-  /// 获取最近同步时间
-  DateTime? get lastSyncTime => _lastSyncTime;
-
-  /// 开启/关闭后台同步
-  void setEnabled(bool enabled) {
-    _isBackgroundSyncEnabled = enabled;
-    if (!enabled) {
-      _pauseBackgroundSync();
-    } else {
-      // 检查当前生命周期状态，如果在后台则启动
-      final binding = WidgetsBinding.instance;
-      if (binding.lifecycleState == AppLifecycleState.paused ||
-          binding.lifecycleState == AppLifecycleState.inactive) {
-        _startBackgroundSync();
-      }
-    }
-    debugPrint('[BackgroundSyncService] Background sync ${enabled ? 'enabled' : 'disabled'}');
   }
 
   /// 销毁服务

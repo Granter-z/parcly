@@ -3,18 +3,9 @@ library;
 
 import '../../core/models/package.dart';
 
-enum ConnectorStatus {
-  idle,
-  syncing,
-  challenging, // 遇到验证码
-  success,
-  failed,
-}
-
 abstract class PlatformConnector {
   String get platformId;
   String get displayName;
-  String get brandColorHex;
 
   /// 检查当前是否拥有有效登录态
   Future<bool> isAuthenticated();
@@ -27,4 +18,10 @@ abstract class PlatformConnector {
 
   /// 最近一次同步中出现的问题（例如登录态失效），无问题时为 null
   String? get lastIssue => null;
+
+  /// 最近一次同步是否真实成功（无内部硬超时、网络软失败或取消）
+  bool get lastSyncSucceeded => lastIssue == null;
+
+  /// 清理上一次的失效或异常提示
+  void clearLastIssue() {}
 }

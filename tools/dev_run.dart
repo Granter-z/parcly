@@ -36,28 +36,66 @@ Future<void> main(List<String> args) async {
 
   final sink = log.openWrite();
 
-  proc.stdout.listen(sink.add);
-  proc.stderr.listen(sink.add);
+  final stdoutDone = Completer<void>();
+  final stderrDone = Completer<void>();
+  proc.stdout.listen(
+    sink.add,
+    onDone: () {
+      if (!stdoutDone.isCompleted) stdoutDone.complete();
+    },
+  );
+  proc.stderr.listen(
+    sink.add,
+    onDone: () {
+      if (!stderrDone.isCompleted) stderrDone.complete();
+    },
+  );
 
-  var lastCommand = '';
   final timer = Timer.periodic(const Duration(milliseconds: 400), (_) {
     try {
       if (!trigger.existsSync()) return;
       final content = trigger.readAsStringSync().trim();
-      if (content.isEmpty || content == lastCommand) return;
+      if (content.isEmpty) return;
 
-      lastCommand = content;
       proc.stdin.writeln(content);
       sink.add(utf8.encode('[dev_run] forwarded: $content\n'));
       trigger.writeAsStringSync('');
-      lastCommand = '';
     } catch (e) {
       sink.add(utf8.encode('[dev_run] trigger error: $e\n'));
     }
   });
 
+  late final StreamSubscription<ProcessSignal> sigintSub;
+  StreamSubscription<ProcessSignal>? sigtermSub;
+  Timer? forceKillTimer;
+  var shuttingDown = false;
+
+  Future<void> handleSignal(ProcessSignal signal) async {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    timer.cancel();
+    sink.add(utf8.encode('[dev_run] received ${signal.name}, terminating flutter run...\n'));
+    try {
+      proc.stdin.writeln('q');
+      await proc.stdin.flush();
+    } catch (_) {}
+    proc.kill(signal);
+    forceKillTimer = Timer(const Duration(seconds: 5), () {
+      proc.kill(ProcessSignal.sigkill);
+    });
+  }
+
+  sigintSub = ProcessSignal.sigint.watch().listen(handleSignal);
+  if (!Platform.isWindows) {
+    sigtermSub = ProcessSignal.sigterm.watch().listen(handleSignal);
+  }
+
   final code = await proc.exitCode;
   timer.cancel();
+  forceKillTimer?.cancel();
+  await sigintSub.cancel();
+  await sigtermSub?.cancel();
+  await Future.wait([stdoutDone.future, stderrDone.future]);
   sink.writeln('[dev_run] flutter run exited with code $code');
   await sink.flush();
   await sink.close();

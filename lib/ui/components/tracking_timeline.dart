@@ -87,6 +87,9 @@ class _TrackingTimelineState extends State<TrackingTimeline>
   late final AnimationController _pulseController;
   late final Animation<double> _pulse;
 
+  bool _reduced = false;
+  bool _hasPlayedInitial = false;
+
   @override
   void initState() {
     super.initState();
@@ -107,21 +110,55 @@ class _TrackingTimelineState extends State<TrackingTimeline>
       TweenSequenceItem(tween: Tween(begin: 0.6, end: 0.0), weight: 16),
     ]).animate(CurvedAnimation(parent: _pulseController, curve: Motion.standard));
 
-    if (widget.nodes.isNotEmpty) {
-      _entranceController.forward();
-      _pulseController.forward();
-    }
-
     _prepare();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final reduced = Motion.reduce(context);
+    _reduced = reduced;
+    if (reduced) {
+      // 开启「移除动画」时立即跳到终态并保持圆点静息
+      _entranceController.value = 1.0;
+      _pulseController.value = 0.0;
+      _hasPlayedInitial = widget.nodes.isNotEmpty;
+    } else if (!_hasPlayedInitial && widget.nodes.isNotEmpty) {
+      _hasPlayedInitial = true;
+      _entranceController.forward(from: 0);
+      _pulseController.forward(from: 0);
+    }
   }
 
   @override
   void didUpdateWidget(covariant TrackingTimeline oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (!listEquals(oldWidget.nodes, widget.nodes) ||
-        oldWidget.pickupCode != widget.pickupCode) {
+    final nodesChanged = !listEquals(oldWidget.nodes, widget.nodes);
+    if (nodesChanged || oldWidget.pickupCode != widget.pickupCode) {
       _disposeRecognizers();
       _prepare();
+    }
+    if (nodesChanged) {
+      final becameNonEmpty =
+          oldWidget.nodes.isEmpty && widget.nodes.isNotEmpty;
+      final grew = widget.nodes.length > oldWidget.nodes.length;
+      if (widget.nodes.isEmpty) {
+        _entranceController.value = 0.0;
+        _pulseController.value = 0.0;
+      } else if (_reduced) {
+        _entranceController.value = 1.0;
+        _pulseController.value = 0.0;
+      } else if (becameNonEmpty || grew) {
+        _hasPlayedInitial = true;
+        _entranceController.forward(from: 0);
+        if (becameNonEmpty || oldWidget.nodes.first != widget.nodes.first) {
+          _pulseController.forward(from: 0);
+        }
+      } else if (_entranceController.value == 0.0) {
+        // 兜底：只要节点非空且进度仍为 0，保证节点可见
+        _hasPlayedInitial = true;
+        _entranceController.forward(from: 0);
+      }
     }
   }
 

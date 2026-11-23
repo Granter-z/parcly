@@ -4,9 +4,11 @@ library;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../../../core/engine/station_grouping.dart';
 import '../../../../core/models/package.dart';
 import '../../../../core/models/package_status.dart';
 import '../../../providers/package_provider.dart';
+import '../../../providers/pickup_point_alias_provider.dart';
 import '../../../components/spring_card.dart';
 import '../../../components/platform_badge.dart';
 import '../../../components/status_pill.dart';
@@ -115,6 +117,8 @@ class CompletedPackagesSheet extends ConsumerWidget {
 
 /// 已完成列表里的单张卡片：点击进入物流轨迹抽屉；长按可撤销已取或删除。
 class _CompletedPackageCard extends ConsumerStatefulWidget {
+  static final RegExp _syntheticTrackingReg = RegExp(r'^x?[0-9a-f]{12}$');
+
   final Package package;
 
   const _CompletedPackageCard({required this.package});
@@ -256,6 +260,22 @@ class _CompletedPackageCardState extends ConsumerState<_CompletedPackageCard> {
   @override
   Widget build(BuildContext context) {
     final pkg = widget.package;
+    final aliases = ref.watch(pickupPointAliasesProvider);
+    final trackingNo = pkg.trackingNumber.trim();
+    final hasValidTracking = trackingNo.isNotEmpty &&
+        !_CompletedPackageCard._syntheticTrackingReg.hasMatch(trackingNo);
+    final courierLabel = pkg.effectiveCourier.displayName;
+    final canonicalStation = !isUnknownStationLabel(pkg.stationName)
+        ? resolveCanonicalName(
+            pkg.stationName!.trim(),
+            buildAliasLookup(aliases),
+          )
+        : '';
+    final subtitleText = [
+      courierLabel,
+      if (hasValidTracking) trackingNo,
+      if (canonicalStation.isNotEmpty) canonicalStation,
+    ].join(' · ');
 
     return SpringCard(
       padding: const EdgeInsets.all(AppSpacing.lg),
@@ -285,7 +305,7 @@ class _CompletedPackageCardState extends ConsumerState<_CompletedPackageCard> {
                 ),
                 const SizedBox(height: AppSpacing.xxs),
                 Text(
-                  '${pkg.courier.displayName} · ${pkg.trackingNumber}',
+                  subtitleText,
                   style: const TextStyle(
                     fontSize: 12,
                     color: AppColors.textTertiary,

@@ -1,9 +1,14 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../platform/connectors/connector_manager.dart';
+import '../../../platform/keep_alive/keep_alive_controller.dart';
 import '../../../platform/storage/platform_auth_store.dart';
 import '../../../core/engine/platform_auth_status.dart';
+import '../../../core/models/platform_ids.dart';
+import '../../components/platform_meta.dart';
 import '../../providers/platform_auth_status_provider.dart';
 import '../pdd/pdd_web_screen.dart';
 import 'platform_login_screen.dart';
@@ -18,12 +23,16 @@ class PlatformInfo {
   const PlatformInfo(this.id, this.shortName, this.displayName, this.brandColor);
 }
 
-/// 状态条展示顺序：拼多多 → 京东 → 淘宝（与界面稿一致）。
-const List<PlatformInfo> kPlatforms = [
-  PlatformInfo('pdd', '拼多多', '拼多多', Color(0xFFE02E24)),
-  PlatformInfo('jd', '京东', '京东商城', Color(0xFFE1251B)),
-  PlatformInfo('taobao', '淘宝', '淘宝 / 天猫', Color(0xFFFF5000)),
-];
+/// 状态条展示顺序：直接由 [kPlatformIds] 权威顺序与 [platform_meta.dart] 动态生成。
+final List<PlatformInfo> kPlatforms = List.unmodifiable([
+  for (final id in kPlatformIds)
+    PlatformInfo(
+      id,
+      platformShortName(id),
+      platformDisplayName(id),
+      platformBrandColor(id),
+    ),
+]);
 
 /// 只同步这一个平台（重新登录后用，不打扰其他平台）。
 Future<int> syncSinglePlatform(WidgetRef ref, String platform) {
@@ -44,7 +53,10 @@ Future<bool> openPlatformLogin(
   required String displayName,
   required Color brandColor,
 }) async {
-  final manager = ref.read(connectorManagerProvider);
+  // 在跨页面 await 之前预先获取容器与 messenger，避免源 Widget 卸载后操作 ref 或 context 抛异常
+  final container = ProviderScope.containerOf(context, listen: false);
+  final messenger = ScaffoldMessenger.maybeOf(context);
+  final manager = container.read(connectorManagerProvider);
   final store = PlatformAuthStore();
   // P43 B′：UI「需重登」（含 liveIssue 兜底）时先对齐 isExpired，再开登录流
   // → P37-b 不注入旧 cookie + 允许同指纹提交；失败离开仍保持失效（P29-a）
@@ -83,15 +95,26 @@ Future<bool> openPlatformLogin(
     if (wasExpiredAtOpen) {
       await store.setExpired(platform, true);
     }
-    ref.invalidate(platformAuthStatusProvider);
+    container.invalidate(platformAuthStatusProvider);
     return false;
   }
   manager.clearLastIssueFor(platform);
-  ref.invalidate(platformAuthStatusProvider);
-  syncSinglePlatform(ref, platform);
+  container.invalidate(platformAuthStatusProvider);
+  unawaited(container.read(keepAliveControllerProvider.notifier).refresh());
+  final connectors = manager.realConnectors
+      .where((c) => c.platformId == platform.toLowerCase())
+      .toList();
+  unawaited(manager.syncWithConnectors(connectors));
   // P27-b：默认回首页（从设置进的也 pop 到根 Navigator）
   if (context.mounted) {
     Navigator.of(context).popUntil((route) => route.isFirst);
   }
+  messenger?.hideCurrentSnackBar();
+  messenger?.showSnackBar(
+    SnackBar(
+      content: Text('$displayName 登录成功，正在同步'),
+      behavior: SnackBarBehavior.floating,
+    ),
+  );
   return true;
 }

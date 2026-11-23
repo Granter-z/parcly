@@ -1,6 +1,8 @@
 // lib/core/sanitizer/goods_name_cleaner.dart
 // 纯 Dart：商品长标题智能精简规则
 
+import '../utils/text_truncate.dart';
+
 class GoodsNameCleaner {
   GoodsNameCleaner._();
 
@@ -14,11 +16,17 @@ class GoodsNameCleaner {
 
   /// 常见电商 SEO 营销修饰词正则
   static final RegExp _marketingWordsPattern = RegExp(
-    r'(202\d款?|官方旗舰店?|专柜正品|正品保障|正品包邮|顺丰速达|顺丰包邮|极速发货|现货速发|限时秒杀|百亿补贴|爆款热卖|爆款推荐|热销推荐|热卖推荐|特惠促销|限时特惠|买\d+送\d+|假一赔[三四五千百十]+)',
+    r'(20[2-4]\d款?|官方旗舰店?|专柜正品|正品保障|正品包邮|顺丰速达|顺丰包邮|极速发货|现货速发|限时秒杀|百亿补贴|爆款热卖|爆款推荐|热销推荐|热卖推荐|特惠促销|限时特惠|买\d+送\d+|假一赔[三四五千百十]+)',
   );
 
   /// 多余连续空白字符
   static final RegExp _multiSpacePattern = RegExp(r'\s{2,}');
+
+  /// 前导或末尾孤立标点
+  static final RegExp _edgePunctPattern = RegExp(r'^[\s,，、/|-]+|[\s,，、/|-]+$');
+
+  /// 回退清理时剥除各类括号符
+  static final RegExp _allBracketsPattern = RegExp(r'[【】\[\]〖〗〔〕]');
 
   /// 智能清洗与精简电商商品长标题
   /// [maxLength]：最大保留长度，默认 36
@@ -37,17 +45,17 @@ class GoodsNameCleaner {
     text = text.replaceAll(_multiSpacePattern, ' ').trim();
 
     // 4. 清除可能残留的孤立前导或末尾标点
-    text = text.replaceAll(RegExp(r'^[\s,，、/|-]+|[\s,，、/|-]+$'), '');
+    text = text.replaceAll(_edgePunctPattern, '');
 
-    // 5. 长度截断保护
-    if (text.length > maxLength) {
-      text = text.substring(0, maxLength).trim();
+    // 5. 按码点长度截断保护（避免劈裂 Emoji UTF-16 代理对）
+    if (text.runes.length > maxLength) {
+      text = truncateRunes(text, maxLength).trim();
     }
 
-    // 若清洗后完全变空（极端情况如纯营销词标题），回退安全使用原标题的前 N 个字
+    // 若清洗后完全变空（极端情况如纯营销词标题），回退安全使用原标题的前 N 个码点
     if (text.isEmpty) {
-      final fallback = raw.replaceAll(RegExp(r'[【】\[\]]'), '').trim();
-      return fallback.length > maxLength ? fallback.substring(0, maxLength) : fallback;
+      final fallback = raw.replaceAll(_allBracketsPattern, '').trim();
+      return truncateRunes(fallback, maxLength);
     }
 
     return text;

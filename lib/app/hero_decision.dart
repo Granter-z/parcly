@@ -47,8 +47,16 @@ class HeroDecision {
 }
 
 class HeroDecisionService {
-  static HeroDecision decide(List<Package> allPackages) {
-    final coreState = HeroCardEngine.decide(allPackages);
+  static HeroDecision decide(
+    List<Package> allPackages, {
+    DateTime? now,
+    Map<String, String> stationAliases = const {},
+  }) {
+    final coreState = HeroCardEngine.decide(
+      allPackages,
+      now: now,
+      stationAliases: stationAliases,
+    );
 
     // core 的 pendingCount 覆盖 pendingShipment / transit / delivering / arrived，
     // 待发货数由差值还原（引擎没有单独输出这一项）。

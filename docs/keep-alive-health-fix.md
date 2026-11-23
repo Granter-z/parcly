@@ -48,170 +48,66 @@ if (timeSinceKeepAlive.inHours < 2) {
 ```
 即使定时器每 12 小时触发一次，如果距上次保活不到 2 小时也会跳过。
 
-## 修复方案
+## 修复方案（已与当前架构对齐）
 
 ### 1. 增强健康状态判断（综合失败次数）✅
 
-**文件**: [lib/platform/keep_alive/keep_alive_service.dart](../lib/platform/keep_alive/keep_alive_service.dart)
+**文件**: [lib/core/engine/keep_alive_plan.dart](../lib/core/engine/keep_alive_plan.dart)、[lib/platform/keep_alive/keep_alive_service.dart](../lib/platform/keep_alive/keep_alive_service.dart)
+
+健康度判定已下沉至纯 Dart 的 `KeepAlivePlan.resolveHealth(...)`，`KeepAliveService.statusOf(platform)` 返回强类型 `PlatformKeepAliveStatus`：
 
 ```dart
-Map<String, dynamic> getStatus(String platform) {
-  final failureCount = _failureCount[platform] ?? 0;
-  final isExpired = _authStore.isExpired(platform);
-  
-  // 优先级：失效标记 > 失败次数 > Cookie 年龄
-  String health;
-  if (isExpired) {
-    health = '失效';
-  } else if (failureCount >= 3) {
-    health = '失效';
-  } else if (failureCount >= 1) {
-    health = '不稳定';
-  } else if (cookieAge != null) {
-    health = KeepAliveScheduler.getCookieHealthDescription(cookieAge);
-  } else {
-    health = 'unknown';
-  }
-  
-  return {
-    'health': health,
-    'failureCount': failureCount,
-    'isExpired': isExpired,
-    ...
-  };
+// lib/core/engine/keep_alive_plan.dart
+static String resolveHealth({
+  required bool isExpired,
+  required int failureCount,
+  Duration? cookieAge,
+}) {
+  if (isExpired || failureCount >= failureThreshold) return '失效';
+  if (failureCount >= 1) return '不稳定';
+  if (cookieAge != null) return cookieHealthDescription(cookieAge);
+  return 'unknown';
 }
 ```
 
-### 2. 改进京东心跳（GET + 响应验证）✅
+### 2. 改进京东心跳（wqs + trade 双探与响应分级）✅
 
 **文件**: [lib/platform/keep_alive/platform_heartbeat.dart](../lib/platform/keep_alive/platform_heartbeat.dart)
 
-```dart
-class HeartbeatResult {
-  final bool success;
-  final String? errorMessage;
-  final DateTime timestamp;
-  final bool isAuthFailure;  // 新增：区分登录失效 vs 网络错误
-}
-
-Future<HeartbeatResult> performHeartbeat(String cookies) async {
-  // 从 HEAD 改为 GET
-  final response = await http.get(
-    Uri.parse('https://wqs.jd.com/order/orderlist_jdm.shtml'),
-    headers: {...},
-  );
-  
-  if (response.statusCode == 200) {
-    final body = response.body;
-    
-    // 检查登录态失效标识
-    if (body.contains('请登录') ||
-        body.contains('login.m.jd.com') ||
-        body.contains('"isLogin":false')) {
-      return HeartbeatResult.failure(
-        '登录态已失效（响应要求登录）',
-        isAuthFailure: true,  // 明确标记为登录失效
-      );
-    }
-    
-    // 检查正常订单数据
-    if (body.contains('orderList') || body.contains('订单')) {
-      return HeartbeatResult.success();
-    }
-  } else if (response.statusCode == 401 || response.statusCode == 403) {
-    return HeartbeatResult.failure(
-      '登录态已失效（HTTP ${response.statusCode}）',
-      isAuthFailure: true,
-    );
-  }
-  
-  // 其他错误视为网络问题
-  return HeartbeatResult.failure('HTTP ${response.statusCode}', isAuthFailure: false);
-}
-```
+`JdHeartbeat` 已升级为 `wqs` + `trade.m.jd.com` 双探（关闭自动重定向 `followRedirects = false`，以 `trade` 作为失效真相源，经 `classifyResponse` 与 `combineDualProbe` 综合判定）：
+- 仅 `trade` 出现硬失效信号（`"isLogin":false`、`"loginFlag":false`、`请登录`、重定向到 `login`/`passport`、HTTP `401`/`403`）才返回 `isAuthFailure: true`；
+- SPA 壳常见 `login.m.jd.com` / `passport.jd.com` 作为软信号处理，不直接触发 `setExpired`；
+- 任一探针出现明确订单阳性（`orderList` / `订单` / `我的订单`）且 `trade` 非硬失效时视为成功。
 
 ### 3. 失败后标记登录态失效 ✅
 
-**文件**: [lib/platform/keep_alive/keep_alive_service.dart](../lib/platform/keep_alive/keep_alive_service.dart)
+**文件**: [lib/core/engine/keep_alive_outcome.dart](../lib/core/engine/keep_alive_outcome.dart)、[lib/platform/keep_alive/keep_alive_service.dart](../lib/platform/keep_alive/keep_alive_service.dart)
 
-```dart
-Future<void> _performHeartbeatForPlatform(...) async {
-  final result = await heartbeat.performHeartbeat(cookies);
-  
-  if (result.success) {
-    _failureCount[platform] = 0;
-    await _authStore.setExpired(platform, false);  // 清除失效标记
-  } else {
-    // 明确的登录失效，立即标记
-    if (result.isAuthFailure) {
-      await _authStore.setExpired(platform, true);
-      _failureCount[platform] = 3;
-    } else {
-      // 网络错误，累积失败计数
-      _failureCount[platform] = (_failureCount[platform] ?? 0) + 1;
-      
-      if (_failureCount[platform]! >= 3) {
-        await _authStore.setExpired(platform, true);
-      }
-    }
-  }
-}
-```
+`_performHeartbeatForPlatform` 通过 `planKeepAliveOutcome` 与 `applyHeartbeatOutcome` 统一更新状态（并持久化到 `KeepAliveStore`）：
+- `authFailure`：立即 `setExpired(platform, true)` 且 `failureCount = 3`；
+- `networkFailure`：累加 `failureCount`，连续 ≥ 3 次后 `setExpired(platform, true)`；
+- `success`：归零 `failureCount`、清除 `expired_at`、清空失效通知去重标记与 worker 通知标记；
+- `skipped`：既不算成功也不累加失败，不推进闸门。
 
-### 4. 重新绑定清除失效标记 ✅
+### 4. Cookie 生命周期写边界与重登/解绑清理 ✅
 
-**文件**: [lib/platform/storage/platform_auth_store.dart](../lib/platform/storage/platform_auth_store.dart)
+**文件**: [lib/platform/storage/platform_auth_store.dart](../lib/platform/storage/platform_auth_store.dart)、[lib/platform/storage/keep_alive_store.dart](../lib/platform/storage/keep_alive_store.dart)
 
-```dart
-Future<void> saveCookies(String platform, String cookies) async {
-  // ... 现有逻辑 ...
-  await setExpired(p, false);  // 清除旧的失效标记
-}
-```
+- **保活/同步续期**：连接器同步成功回写完整 Cookie 时调用 `refreshCookiesInPlace(platform, cookies)`（淘宝 mtop 令牌轮换调用 `updateCookieTokenFields`），仅就地刷新加密 Cookie 与内存缓存，**不刷新 `updated_at` 年龄锚点、不误清 `expired_at`**；
+- **用户重新登录 `saveCookies` 与解绑 `unbind`**：清除 `expired_at` 的同时，自动重置 `KeepAliveStore` 的闸门（`setNext(p, null)`）、失败计数（`setFailureCount(p, 0)`）、通知去重标记（`setLastNotifiedAt(p, null)`），并调用 `clearWorkerNotifiedAt(p)` 与 `clearWorkerGate(p)` 清理后台 worker 的通知与闸门 JSON 文件，防止重新绑定后继承旧状态。
 
-### 5. 动态保活间隔调度 ✅
+### 5. 动态保活间隔与持久化共享缓存 ✅
 
-**文件**: [lib/platform/keep_alive/keep_alive_service.dart](../lib/platform/keep_alive/keep_alive_service.dart)
+**文件**: [lib/core/engine/keep_alive_plan.dart](../lib/core/engine/keep_alive_plan.dart)、[lib/platform/storage/keep_alive_store.dart](../lib/platform/storage/keep_alive_store.dart)、[lib/platform/keep_alive/keep_alive_service.dart](../lib/platform/keep_alive/keep_alive_service.dart)
 
-```dart
-// 新增字段
-final Map<String, DateTime> _nextKeepAliveTime = {};
-
-void start() {
-  // 每小时检查一次（而非固定 12 小时）
-  _timer = Timer.periodic(const Duration(hours: 1), (_) {
-    _performKeepAlive();
-  });
-}
-
-Future<void> _performKeepAlive() async {
-  for (final platform in platforms) {
-    final cookieAge = ...;
-    
-    // 根据 Cookie 年龄计算动态间隔
-    final interval = KeepAliveScheduler.calculateInterval(cookieAge);
-    
-    // 检查是否到了下次保活时间
-    final nextTime = _nextKeepAliveTime[platform];
-    if (nextTime != null && now.isBefore(nextTime)) {
-      debugPrint('Skip $platform: next keep-alive in ${remaining.inMinutes} min');
-      continue;
-    }
-    
-    await _performHeartbeatForPlatform(platform, cookies, cookieAge);
-    
-    // 计算下次保活时间
-    _nextKeepAliveTime[platform] = KeepAliveScheduler.calculateNextTime(interval);
-  }
-}
-```
+- `KeepAliveStore` 采用**进程内静态共享缓存**，多处实例化均读写同一份内存缓存并持久化到 `keep_alive_state` Hive box（冷启动时 `next_keep_alive_at` 闸门依然生效）；
+- 前台定时器每 1 小时检查一次，各平台按 `KeepAlivePlan.calculateInterval(cookieAge)` 独立计算下次保活时间（带 ±30 分钟随机抖动）。
 
 ## 保活间隔策略
 
-根据 Cookie 年龄动态调整：
-- **0-3 天**：24 小时（新鲜期，低频维护）
-- **4-7 天**：12 小时（中期，适度保活）
-- **8-10 天**：6 小时（临期，积极保活）
+根据 Cookie 年龄（`now - PlatformAuthStore.getBoundTime()`）动态调整：
+- **≤3 天**：24 小时（新鲜期，低频维护）
+- **4–10 天**：6 小时（中期/临期，缩小会话失效空窗）
 - **11+ 天**：4 小时（危险期，高频保活）
 
 定时器每 1 小时检查一次，各平台独立计算下次保活时间。
@@ -219,36 +115,38 @@ Future<void> _performKeepAlive() async {
 ## 验证方法
 
 ### 1. 模拟登录失效
-手动删除京东 Cookie 中的 `pt_key` 字段。
+手动删除京东 Cookie 中的 `pt_key` 字段（或使用已失效账号）。
 
 ### 2. 触发保活
 ```dart
-final service = ref.read(keepAliveServiceProvider);
-await service.performManualKeepAlive();
+await ref.read(keepAliveControllerProvider.notifier).manualKeepAlive();
 ```
 
 ### 3. 检查状态
 ```dart
-final status = service.getStatus('jd');
-print(status['health']);       // 应显示 "失效"
-print(status['failureCount']); // 应为 3
-print(status['isExpired']);    // 应为 true
+final snapshot = ref.read(keepAliveControllerProvider);
+final jd = snapshot.platforms.firstWhere((p) => p.platform == 'jd');
+debugPrint('health=${jd.health}, failures=${jd.failureCount}, expired=${jd.isExpired}');
+// 应为 health=失效, failureCount=3, isExpired=true
 ```
 
 ### 4. 重新绑定
-在登录页重新授权后，`isExpired` 应自动清除。
+在登录页重新授权（`saveCookies`）后，`isExpired`、失败计数、闸门及 worker 通知/闸门文件会自动清除。
 
 ## 影响范围
 
 - ✅ 健康状态现在准确反映登录态
-- ✅ 京东心跳更可靠（GET + 响应体验证）
-- ✅ 失败后立即标记失效状态
-- ✅ 保活间隔根据 Cookie 年龄动态调整
-- ✅ 重新绑定自动清除失效标记
+- ✅ 京东心跳更可靠（`wqs` + `trade` 双探与硬/软信号分级）
+- ✅ 失败后立即或达阈值标记失效状态
+- ✅ 保活间隔根据 Cookie 年龄动态调整（≤3 天 24h、4–10 天 6h、11+ 天 4h）并持久化
+- ✅ 保活/同步续期调用 `refreshCookiesInPlace` 不篡改 `updated_at` / `expired_at`，重登与解绑自动清理保活及 worker 状态
 
 ## 相关文件
 
+- [lib/core/engine/keep_alive_plan.dart](../lib/core/engine/keep_alive_plan.dart)
+- [lib/core/engine/keep_alive_outcome.dart](../lib/core/engine/keep_alive_outcome.dart)
 - [lib/platform/keep_alive/keep_alive_service.dart](../lib/platform/keep_alive/keep_alive_service.dart)
 - [lib/platform/keep_alive/platform_heartbeat.dart](../lib/platform/keep_alive/platform_heartbeat.dart)
-- [lib/platform/keep_alive/keep_alive_scheduler.dart](../lib/platform/keep_alive/keep_alive_scheduler.dart)
+- [lib/platform/keep_alive/keep_alive_worker_bridge.dart](../lib/platform/keep_alive/keep_alive_worker_bridge.dart)
+- [lib/platform/storage/keep_alive_store.dart](../lib/platform/storage/keep_alive_store.dart)
 - [lib/platform/storage/platform_auth_store.dart](../lib/platform/storage/platform_auth_store.dart)

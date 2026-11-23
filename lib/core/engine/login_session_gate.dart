@@ -3,63 +3,58 @@
 /// 纯 Dart，不依赖 Flutter / Hive，方便单测。
 library;
 
-/// 是否判定为已登录会话（与 WebView 登录页 `_hasLoginSession` 口径一致）。
-bool cookieStringHasLoginSession(String platform, String cookieStr) {
-  String? valueOf(String name) {
-    for (final part in cookieStr.split(';')) {
-      final idx = part.indexOf('=');
-      if (idx <= 0) continue;
-      if (part.substring(0, idx).trim() == name) {
-        final v = part.substring(idx + 1).trim();
-        if (v.isNotEmpty) return v;
-      }
-    }
-    return null;
+Map<String, String> _parseCookies(String cookieStr) {
+  final map = <String, String>{};
+  for (final part in cookieStr.split(';')) {
+    final idx = part.indexOf('=');
+    if (idx <= 0) continue;
+    final name = part.substring(0, idx).trim();
+    if (name.isEmpty || map.containsKey(name)) continue;
+    final v = part.substring(idx + 1).trim();
+    if (v.isNotEmpty) map[name] = v;
   }
+  return map;
+}
 
+bool _hasSessionInMap(String platform, Map<String, String> cookies) {
   switch (platform.toLowerCase()) {
     case 'taobao':
     case 'tmall':
-      return valueOf('cookie2') != null &&
-          (valueOf('unb') != null || valueOf('cookie1') != null);
+      return cookies.containsKey('cookie2') &&
+          (cookies.containsKey('unb') || cookies.containsKey('cookie1'));
     case 'jd':
-      return valueOf('pt_key') != null && valueOf('pt_pin') != null;
+      return cookies.containsKey('pt_key') && cookies.containsKey('pt_pin');
     case 'pdd':
-      return valueOf('PDDAccessToken') != null ||
-          valueOf('pdd_user_id') != null ||
-          valueOf('pdduid') != null ||
-          valueOf('AccessToken') != null;
+      return cookies.containsKey('PDDAccessToken') ||
+          cookies.containsKey('pdd_user_id') ||
+          cookies.containsKey('pdduid') ||
+          cookies.containsKey('AccessToken');
     default:
       return false;
   }
 }
 
+/// 是否判定为已登录会话（与 WebView 登录页 `_hasLoginSession` 口径一致）。
+bool cookieStringHasLoginSession(String platform, String cookieStr) {
+  if (cookieStr.trim().isEmpty) return false;
+  return _hasSessionInMap(platform, _parseCookies(cookieStr));
+}
+
 /// 会话指纹：只取代表登录身份的字段，用于判断「是否仍是打开前那份旧会话」。
 String? loginSessionFingerprint(String platform, String? cookieStr) {
   if (cookieStr == null || cookieStr.trim().isEmpty) return null;
-  if (!cookieStringHasLoginSession(platform, cookieStr)) return null;
-
-  String? valueOf(String name) {
-    for (final part in cookieStr.split(';')) {
-      final idx = part.indexOf('=');
-      if (idx <= 0) continue;
-      if (part.substring(0, idx).trim() == name) {
-        final v = part.substring(idx + 1).trim();
-        if (v.isNotEmpty) return v;
-      }
-    }
-    return null;
-  }
+  final cookies = _parseCookies(cookieStr);
+  if (!_hasSessionInMap(platform, cookies)) return null;
 
   switch (platform.toLowerCase()) {
     case 'taobao':
     case 'tmall':
-      return 'tb:${valueOf('cookie2')}|${valueOf('unb') ?? valueOf('cookie1')}';
+      return 'tb:${cookies['cookie2']}|${cookies['unb'] ?? cookies['cookie1']}';
     case 'jd':
-      return 'jd:${valueOf('pt_key')}|${valueOf('pt_pin')}';
+      return 'jd:${cookies['pt_key']}|${cookies['pt_pin']}';
     case 'pdd':
-      return 'pdd:${valueOf('PDDAccessToken') ?? valueOf('AccessToken')}|'
-          '${valueOf('pdd_user_id') ?? valueOf('pdduid') ?? ''}';
+      return 'pdd:${cookies['PDDAccessToken'] ?? cookies['AccessToken']}|'
+          '${cookies['pdd_user_id'] ?? cookies['pdduid'] ?? ''}';
     default:
       return null;
   }
@@ -119,12 +114,12 @@ bool mayCommitNewLoginSuccess({
   return true;
 }
 
-/// 采集到的 Cookie 是否允许落盘（P29-b，拼多多商城页与登录页共用口径）。
+/// 采集到的 Cookie 是否允许落盘（P29-b / P37-b，拼多多商城页与登录页共用口径）。
 ///
-/// - 本轮是新登录会话（[canCommitNew]）→ 允许；
+/// - 本轮允许提交（[canCommitNew]，含新会话及失效重登同指纹重绑）→ 允许；
 /// - 浏览态（非登录意图 [popOnLoginSuccess]=false）、进入时未失效、且原本就绑定健康
 ///   → 允许刷新同会话 Cookie（不冒充「新登录」）；
-/// - 其余一律拒绝：登录意图下旧会话回声、失效重登却采到旧指纹，都不能落盘。
+/// - 其余一律拒绝：正常状态下的登录意图旧会话回声、未登录/异常会话，都不能落盘。
 bool shouldPersistCollectedCookies({
   required bool canCommitNew,
   required bool popOnLoginSuccess,

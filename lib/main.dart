@@ -2,7 +2,6 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:hive_flutter/hive_flutter.dart';
-import 'package:intl/date_symbol_data_local.dart';
 import 'package:workmanager/workmanager.dart';
 import 'platform/storage/hive_adapters.dart';
 import 'core/debug/debug_trace.dart';
@@ -19,10 +18,6 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   // 调试追踪默认开启；Release 关闭，避免生产包持续输出调试横幅。
   DebugTrace.enabled = kDebugMode;
-
-  await _guard('initializeDateFormatting', () async {
-    await initializeDateFormatting('zh_CN', null);
-  });
 
   await _guard('Hive.initFlutter', () async {
     DebugTrace.separator('MAIN: Hive.initFlutter');
@@ -41,7 +36,7 @@ Future<void> main() async {
     DebugTrace.error('registerAdapters failed', error: e, stackTrace: st);
   }
 
-  // 包裹 box：损坏时备份/重建，绝不能让启动链抛到 runApp 之前（否则永久黑屏）
+  // 包裹 box：损坏时删除并重建空盒，绝不能让启动链抛到 runApp 之前（否则永久黑屏）
   await _guard('openBox', () async {
     try {
       final box = await Hive.openBox<HivePackage>(kPackagesBox);

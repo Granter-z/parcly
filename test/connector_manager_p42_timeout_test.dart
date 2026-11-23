@@ -24,9 +24,6 @@ class _HangConnector implements PlatformConnector {
   String get displayName => name;
 
   @override
-  String get brandColorHex => '#000000';
-
-  @override
   Future<bool> isAuthenticated() async => true;
 
   @override
@@ -34,6 +31,12 @@ class _HangConnector implements PlatformConnector {
 
   @override
   String? get lastIssue => null;
+
+  @override
+  bool get lastSyncSucceeded => true;
+
+  @override
+  void clearLastIssue() {}
 
   @override
   Stream<Package> streamSync() async* {
@@ -55,9 +58,6 @@ class _FastConnector implements PlatformConnector {
   String get displayName => name;
 
   @override
-  String get brandColorHex => '#FF5000';
-
-  @override
   Future<bool> isAuthenticated() async => true;
 
   @override
@@ -65,6 +65,12 @@ class _FastConnector implements PlatformConnector {
 
   @override
   String? get lastIssue => null;
+
+  @override
+  bool get lastSyncSucceeded => true;
+
+  @override
+  void clearLastIssue() {}
 
   @override
   Stream<Package> streamSync() async* {

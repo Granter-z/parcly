@@ -2,8 +2,8 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/Android-7.0+-3DDC84?logo=android&logoColor=white" alt="Android" />
-  <img src="https://img.shields.io/badge/Flutter-3.6+-02569B?logo=flutter&logoColor=white" alt="Flutter" />
-  <img src="https://img.shields.io/badge/Release-v1.0.0%2B4-00B578" alt="Version" />
+  <img src="https://img.shields.io/badge/Flutter-3.38+-02569B?logo=flutter&logoColor=white" alt="Flutter" />
+  <img src="https://img.shields.io/badge/Release-v1.0.0%2B31-00B578" alt="Version" />
   <img src="https://img.shields.io/badge/License-GPLv3-blue" alt="License" />
 </p>
 
@@ -31,7 +31,7 @@ Parcly 聚合拼多多、京东、淘宝 / 天猫的真实物流，把「待取�
 - **物流详情**：承运商、运单号、订单信息与完整转运时间轴；轨迹里的电话可一键拨打。
 - **到件提醒**：状态变为待取件时发本地通知（快递公司 · 取件码 · 驿站）。
 - **登录状态可见**：平台登录失效时提示哪个平台需要重登，其他平台不受影响。
-- **隐私优先**：账号凭证与订单数据仅存本机（Hive）；日志对运单号 / 订单号 / 取件码脱敏。
+- **隐私优先**：账号凭证（Keystore AES-GCM 加密）与订单数据仅存本机（Hive）；日志对运单号 / 订单号 / 取件码脱敏。
 
 > 已知限制：平台改版或风控可能导致某一端暂时拉不到数据；京东偶发网络不可达时，不会拖死整次同步，也不会误标成「需重登」。国内应用商店未必收这类 App，当前以 APK 分发为主。
 
@@ -54,7 +54,7 @@ Parcly 聚合拼多多、京东、淘宝 / 天猫的真实物流，把「待取�
 
 ## 给开发者
 
-本地构建（Flutter `^3.6`、Android minSdk 24）：
+本地构建（Dart `^3.6.0`、Flutter `>=3.38.0`、Android minSdk 24）：
 
 ```bash
 git clone git@github.com:Granter-z/parcly.git
@@ -65,7 +65,7 @@ flutter test
 flutter build apk --release --split-per-abi
 ```
 
-架构与模块划分见仓库内 `docs/` 与源码目录约定：`lib/core/`（纯 Dart）、`lib/platform/`、`lib/ui/`。
+架构与模块划分见仓库内 `docs/` 与源码目录约定：`lib/core/`（纯 Dart）、`lib/app/`、`lib/platform/`、`lib/ui/`。
 
 ---
 

@@ -1,6 +1,6 @@
 # 电商平台保活机制
 
-> 最后更新：2026-11-21
+> 最后更新：2026-11-26
 > 状态：前台调度 + 进程外续期 + 失效提醒闭环均已实现
 
 本文描述**当前代码的实际行为**。历史上的旧版本文档曾声称淘宝用 WebView 心跳、京东检查
@@ -13,15 +13,18 @@
 | 层 | 文件 | 职责 |
 |---|---|---|
 | core | `lib/core/engine/keep_alive_plan.dart` | 纯决策：间隔计算、跳过规则、健康度、失效提醒判定。无 Flutter 依赖、时间可注入，可直接单测 |
+| core | `lib/core/engine/keep_alive_outcome.dart` | 心跳结局分类（`KeepAliveOutcomeKind`）与状态迁移计划（`planKeepAliveOutcome`） |
 | core | `lib/core/models/keep_alive_state.dart` | 不可变模型：`KeepAliveRecord` / `KeepAliveHistory` / `PlatformKeepAliveStatus` / `KeepAliveSnapshot` |
 | core | `lib/core/models/platform_ids.dart` | 平台标识与显示名的唯一来源（`kPlatformIds`），消除三处硬编码 |
-| platform | `lib/platform/storage/keep_alive_store.dart` | 保活调度状态持久化（Hive box `keep_alive_state`） |
+| platform | `lib/platform/storage/keep_alive_store.dart` | 保活调度状态持久化（Hive box `keep_alive_state` + 进程内静态共享缓存） |
+| platform | `lib/platform/storage/platform_auth_store.dart` | 凭据安全存储（`saveCookies` / `refreshCookiesInPlace` / `updateCookieTokenFields` / `unbind`） |
 | platform | `lib/platform/keep_alive/keep_alive_service.dart` | 前台保活编排：按闸门与冷却决定发不发心跳，落盘结果 |
 | platform | `lib/platform/keep_alive/keep_alive_controller.dart` | Riverpod `Notifier`，把状态暴露为可 watch 的 `KeepAliveSnapshot` |
-| platform | `lib/platform/keep_alive/platform_heartbeat.dart` | 心跳接口 + 淘宝/京东实现 |
+| platform | `lib/platform/keep_alive/platform_heartbeat.dart` | 心跳接口 + 淘宝/京东实现（京东为 `wqs` + `trade` 双探） |
 | platform | `lib/platform/keep_alive/taobao_token_refresher.dart` | 淘宝登录态探针（菜鸟包裹列表）与令牌轮换 |
 | platform | `lib/platform/keep_alive/pdd_connector_heartbeat.dart` | 拼多多心跳，委托给 `PddH5Connector` |
 | platform | `lib/platform/keep_alive/keep_alive_notifier.dart` | 失效提醒收口：去重标记 + 发送 |
+| platform | `lib/platform/keep_alive/keep_alive_worker_bridge.dart` | 主 isolate 与后台 worker 的 JSON 原子桥接通道 |
 | platform | `lib/platform/keep_alive/keep_alive_worker.dart` | WorkManager 后台 isolate：App 进程被杀后仍能续期 |
 | ui | `lib/ui/screens/settings/keep_alive_status_screen.dart` | 保活状态页：开关、健康度、历史 |
 
@@ -55,7 +58,7 @@
 
 ## 三、持久化
 
-Hive box `keep_alive_state`，明文存储（只含时间戳与计数，无凭据）。
+Hive box `keep_alive_state`，明文存储（只含时间戳与计数，无凭据）。`KeepAliveStore` 采用**进程内静态共享缓存**（`_enabled`、`_platformEnabled`、`_nextCache`、`_lastCache`、`_failureCache`、`_notifiedCache`、`_history`），避免不同位置各自 `new KeepAliveStore()` 导致内存状态分裂，同步 getter 不必等待 box 打开即可返回一致状态。
 
 | key | 类型 | 说明 |
 |---|---|---|
@@ -68,6 +71,11 @@ Hive box `keep_alive_state`，明文存储（只含时间戳与计数，无凭�
 | `history` | List\<Map\> | 最近 50 条保活记录 |
 | `schema_version` | int | 当前为 1 |
 
+### Cookie 续期与重登/解绑边界
+
+- **保活/同步续期**：连接器（京东/拼多多）同步成功回写完整 Cookie 时调用 `PlatformAuthStore.refreshCookiesInPlace`，淘宝 mtop 令牌轮换调用 `updateCookieTokenFields`——两者均只就地更新加密 Cookie 与内存缓存，**不刷新 `updated_at` 年龄锚点，也不误清 `expired_at` 失效标记**。
+- **用户重新登录 `saveCookies` 与解绑 `unbind`**：更新或删除凭据的同时，自动清理 `KeepAliveStore` 中该平台的保活状态（`setNext(p, null)`、`setFailureCount(p, 0)`、`setLastNotifiedAt(p, null)`），并调用 `clearWorkerNotifiedAt(p)` 与 `clearWorkerGate(p)` 清理后台 worker 的通知与闸门 JSON 文件，防止重新绑定后继承旧闸门、失败计数或 7 天提醒静默窗口。
+
 ### 后台 worker 不写 Hive（P45）
 
 WorkManager 的 FlutterEngine 与主 App 在同一进程的不同 isolate。POSIX 文件锁按进程生效，
@@ -77,12 +85,12 @@ box 会被反复损坏（真机表现为每次冷启动打印 `Recovering corrup
 因此后台 worker **不打开 `keep_alive_state` box**，改用 `keep_alive_worker_bridge.dart` 的 JSON 通道：
 
 - 主 isolate 写 `keep_alive_worker_config.json`（开关 / 闸门 / 失败计数），worker 只读；
-- worker 写 `keep_alive_worker_result.json`（平台、结局、下次时间），主 isolate 下次启动时
-  `KeepAliveService._applyWorkerResults()` 合并进 Hive 并补发失效提醒；
+- worker 每次写入独立结果文件 `keep_alive_worker_result_<microseconds>.json`（兼容清理旧版 `keep_alive_worker_result.json`），主 isolate 下次启动时 `KeepAliveService._applyWorkerResults()` 合并进 Hive 并补发失效提醒；
 - worker 自己的失效提醒去重标记写在 `keep_alive_worker_notify.json`；
+- worker 自己的保活闸门写在 `keep_alive_worker_gate.json`（与主 isolate 下发的闸门取较晚者，避免 App 长期不打开时每 4 小时重发）；
 - 两边都用临时文件 + rename 原子替换。
 
-worker 仍会读凭据 box（无法避免），但不再写任何 Hive box；淘宝令牌轮换在 worker 中禁用
+worker 仍以只读模式读凭据 box（`PlatformAuthStore.initialize(readOnly: true)`，禁止触发 recovery/compact），但不再写任何 Hive box；淘宝令牌轮换在 worker 中禁用
 （`TaobaoHeartbeat(persistTokenRotation: false)`），下次前台心跳会自行轮换。
 
 ### 通知权限
@@ -97,7 +105,7 @@ Android 13+ 必须运行时申请 `POST_NOTIFICATIONS`，否则到件通知和�
 | 平台 | 实现 | 判定口径 | 可后台运行 |
 |---|---|---|---|
 | 淘宝/天猫 | `TaobaoTokenRefresher`：mtop `mtop.cainiao.pickup.plus.queryMultiStaPackages4Xy`（用户维度菜鸟包裹列表）签名请求 | `FAIL_SYS_SESSION_EXPIRED` / `FAIL_SYS_SID_INVALID` / `您需要登录才能继续访问` → 失效；无 `SUCCESS` 标记 → 网络错误（不误报成功） | ✅ 纯 HTTP |
-| 京东 | `GET https://wqs.jd.com/order/orderlist_jdm.shtml`，校验响应体 | 响应体含 `请登录` / `login.m.jd.com` / `passport.jd.com` / `"isLogin":false` / `"loginFlag":false`，或重定向到 login，或 HTTP 401/403 → 失效 | ✅ 纯 HTTP |
+| 京东 | `wqs` + `trade.m.jd.com` 双探（`GET` 且 `followRedirects: false`，经 `combineDualProbe` 以 `trade` 为真相源） | `trade` 出现硬失效（`"isLogin":false` / `"loginFlag":false` / `请登录` / 重定向到 `login`·`passport` / HTTP 401·403）→ 失效；SPA 壳 `login.m.jd.com` / `passport.jd.com` 仅作软信号，不直接 expire | ✅ 纯 HTTP |
 | 拼多多 | 委托 `PddH5Connector.keepAliveProbe()`，复用其常驻 WebView 加载订单页 | 落地页含 `login`，或订单接口返回 `HTTPSTATUS:424` / `login.html` → 失效 | ❌ 见下 |
 
 淘宝心跳的成功口径是「菜鸟包裹列表接口返回 `SUCCESS`」：该接口是用户维度的，登录态失效时会
@@ -183,6 +191,12 @@ work 无效，验证后台请用这个入口。
 ---
 
 ## 九、变更记录
+
+**2026-11-26**
+
+1. **Cookie 就地续期与重登/解绑边界收口**：同步/保活续期改用 `refreshCookiesInPlace`（淘宝令牌轮换用 `updateCookieTokenFields`），不刷新 `updated_at` 年龄锚点、不误清 `expired_at`；用户重登 `saveCookies` 与解绑 `unbind` 自动清理 `KeepAliveStore` 状态与后台 worker 通知/闸门文件（`keep_alive_worker_notify.json` / `keep_alive_worker_gate.json`）。
+2. **`KeepAliveStore` 进程内静态共享缓存**：统一由静态缓存托管全部状态与历史，多实例读取一致、无需等待 box 即可同步读取。
+3. **京东双探与 worker 独立闸门**：京东心跳升级为 `wqs` + `trade` 双探（以 `trade` 硬信号为失效真相源）；worker 增加独立闸门 `keep_alive_worker_gate.json` 及带时间戳的结果文件，并完善 `PlatformAuthStore.initialize(readOnly: true)` 隔离。
 
 **2026-11-21**
 

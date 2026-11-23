@@ -17,10 +17,11 @@ import '../../core/engine/keep_alive_outcome.dart';
 import '../../core/engine/keep_alive_plan.dart';
 import '../../core/models/platform_ids.dart';
 import '../notification/notification_adapter.dart';
-import '../storage/keep_alive_store.dart';
 import '../storage/platform_auth_store.dart';
 import 'keep_alive_worker_bridge.dart';
 import 'platform_heartbeat.dart';
+
+export 'keep_alive_service.dart' show applyHeartbeatOutcome;
 
 /// 后台可续期平台 → 心跳实现。
 ///
@@ -173,27 +174,4 @@ Duration _cookieAge(
   return boundTime != null
       ? now.difference(boundTime)
       : const Duration(days: 999);
-}
-
-/// 按 [plan] 落盘：抽出来方便单测验证「成功清失效 / 失效 setExpired / 跳过不动」。
-///
-/// worker 自身不再直接调用（结果由主 isolate 合并），保留为共享落盘规则与测试入口。
-Future<void> applyHeartbeatOutcome({
-  required String platform,
-  required KeepAliveOutcomePlan plan,
-  required PlatformAuthStore authStore,
-  required KeepAliveStore store,
-}) async {
-  if (plan.touchExpired) {
-    await authStore.setExpired(platform, plan.expiredValue);
-  }
-  if (plan.failureCount != null) {
-    await store.setFailureCount(platform, plan.failureCount!);
-  }
-  if (plan.clearNotifyMark) {
-    await store.setLastNotifiedAt(platform, null);
-  }
-  if (plan.updateLastSuccess) {
-    await store.setLast(platform, DateTime.now());
-  }
 }

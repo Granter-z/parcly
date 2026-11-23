@@ -14,15 +14,19 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_flutter/webview_flutter.dart';
+import 'package:webview_flutter_android/webview_flutter_android.dart';
 import '../../../core/engine/package_identity.dart';
 import '../../../core/models/package.dart';
 import '../../../core/models/package_status.dart';
 import '../../../platform/connectors/connector_manager.dart';
 import '../../../platform/connectors/pdd_connector.dart';
 import '../../../core/engine/login_session_gate.dart';
+import '../../../platform/keep_alive/keep_alive_controller.dart';
 import '../../../platform/storage/platform_auth_store.dart';
 import '../../../platform/webview/platform_cookie.dart';
+import '../../../platform/webview/webview_release.dart';
 import '../../providers/package_provider.dart';
+import '../../providers/platform_auth_status_provider.dart';
 import 'pdd_clean_ui_script.dart';
 
 class PddWebScreen extends ConsumerStatefulWidget {
@@ -149,8 +153,15 @@ class _PddWebScreenState extends ConsumerState<PddWebScreen>
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
       ..setUserAgent(
         'Mozilla/5.0 (Linux; Android 14; 25102RKBEC Build/UP1A.231005.007) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36',
-      )
-      ..setNavigationDelegate(
+      );
+    final platform = _controller.platform;
+    if (platform is AndroidWebViewController) {
+      // 官方 H5 的火车票图标使用 HTTP；兼容模式按 Android/Chromium
+      // 现行策略拦主动内容，被动内容按实现放行，具体行为随 WebView 版本变化。
+      // 不使用意图更宽泛的 alwaysAllow。
+      unawaited(platform.setMixedContentMode(MixedContentMode.compatibilityMode));
+    }
+    _controller.setNavigationDelegate(
         NavigationDelegate(
           onProgress: (progress) {
             if (mounted && _loadingProgress != progress) {
@@ -253,8 +264,11 @@ class _PddWebScreenState extends ConsumerState<PddWebScreen>
               return NavigationDecision.prevent;
             }
 
-            if (lower.startsWith('upowp://')) {
-              debugPrint('[PddWeb] Launch external upowp: $url');
+            if (lower.startsWith('upowp://') ||
+                lower.startsWith('uppay://') ||
+                lower.startsWith('upwrp://') ||
+                lower.startsWith('unionpay://')) {
+              debugPrint('[PddWeb] Launch external unionpay: $url');
               _launchExternalPay(url, paymentName: '云闪付');
               return NavigationDecision.prevent;
             }
@@ -287,6 +301,8 @@ class _PddWebScreenState extends ConsumerState<PddWebScreen>
     WidgetsBinding.instance.removeObserver(this);
     _debounceSyncTimer?.cancel();
     _syncSpinController.dispose();
+    // _controller 为本页 initState 自建的独享实例（未与 PddH5Connector 共享），卸页时停掉活动释放媒体/定时器
+    unawaited(parkWebView(_controller));
     super.dispose();
   }
 
@@ -355,6 +371,7 @@ class _PddWebScreenState extends ConsumerState<PddWebScreen>
 
     // 2. 检查并持久化登录凭据
     await _collectAndSaveCookies();
+    if (!mounted) return;
 
     // 3. 智能嗅探：若当前进入了具体订单或物流追踪页，延迟等待 DOM 渲染后自动捕获最新状态与取件码
     final lower = url.toLowerCase();
@@ -482,6 +499,7 @@ class _PddWebScreenState extends ConsumerState<PddWebScreen>
           rawTimelineJson: detail.rawTimelineJson,
         );
 
+        if (!mounted) return;
         ref.read(packageListProvider.notifier).addPackage(pkg);
         debugPrint('[PddWeb] Sniffed package from active page: id=${packageIdForLog(id)} '
             'courier=${detail.courier.displayName} '
@@ -583,6 +601,9 @@ class _PddWebScreenState extends ConsumerState<PddWebScreen>
         if (hrefStr.startsWith('http') && !hrefStr.contains('login')) {
           await store.saveEntryUrl('pdd', hrefStr);
         }
+        if (!mounted) return;
+        ref.invalidate(platformAuthStatusProvider);
+        unawaited(ref.read(keepAliveControllerProvider.notifier).refresh());
         // P27：登录意图下，本轮新会话才离开登录 WebView（P29：旧会话回声不 pop）
         if (widget.popOnLoginSuccess &&
             canCommitNew &&
@@ -651,9 +672,11 @@ class _PddWebScreenState extends ConsumerState<PddWebScreen>
   static const Set<String> _allowedPaySchemes = {
     'alipays',
     'alipay',
+    'alipayqr',
     'weixin',
     'uppay',
     'upwrp',
+    'upowp',
     'unionpay',
   };
 
@@ -696,15 +719,17 @@ class _PddWebScreenState extends ConsumerState<PddWebScreen>
         } catch (_) {}
       }
 
-      if (!launched && mounted) {
+      if (!launched) {
         _isWaitingPaymentReturn = false;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('未检测到本地已安装的$paymentName，请确认已安装或在页面中重新选择其他支付方式'),
-            behavior: SnackBarBehavior.floating,
-            duration: const Duration(seconds: 4),
-          ),
-        );
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('未检测到本地已安装的$paymentName，请确认已安装或在页面中重新选择其他支付方式'),
+              behavior: SnackBarBehavior.floating,
+              duration: const Duration(seconds: 4),
+            ),
+          );
+        }
       } else {
         debugPrint('[PddWeb] Successfully launched $paymentName: $url');
       }
@@ -757,7 +782,9 @@ class _PddWebScreenState extends ConsumerState<PddWebScreen>
           label: '已完成支付',
           textColor: const Color(0xFFFFD60A),
           onPressed: () async {
+            if (!mounted) return;
             await _controller.loadRequest(Uri.parse(_ordersUrl));
+            if (!mounted) return;
             await _syncLogistics(silent: false);
           },
         ),
@@ -768,9 +795,12 @@ class _PddWebScreenState extends ConsumerState<PddWebScreen>
   Future<void> _launchExternal(String url) async {
     try {
       final uri = Uri.parse(url);
-      // 与支付唤起共用白名单，避免任意深链被页面触发
-      if (uri.scheme != 'https' && uri.scheme != 'http' &&
-          !_allowedPaySchemes.contains(uri.scheme.toLowerCase())) {
+      final scheme = uri.scheme.toLowerCase();
+      // 与支付唤起共用白名单，并放行 tel 拨号，避免任意深链被页面触发
+      if (scheme != 'https' &&
+          scheme != 'http' &&
+          scheme != 'tel' &&
+          !_allowedPaySchemes.contains(scheme)) {
         debugPrint('[PddWeb] blocked launchExternal for scheme: ${uri.scheme}');
         return;
       }
@@ -782,11 +812,13 @@ class _PddWebScreenState extends ConsumerState<PddWebScreen>
 
   Future<bool> _handleBackPress() async {
     final canGoBack = await _controller.canGoBack();
+    if (!mounted) return false;
     if (canGoBack) {
       await _controller.goBack();
       return false;
     }
     await _sniffCurrentPageLogistics();
+    if (!mounted) return true;
     if (widget.popOnLoginSuccess) {
       await _alignAuthOnUnsuccessfulLeave();
     } else {
@@ -993,6 +1025,9 @@ class _PddWebScreenState extends ConsumerState<PddWebScreen>
                       // clearCookies 是 App 级共享 Cookie jar，会连淘宝/京东/菜鸟一起清掉；
                       // 立即把其他平台已保存的会话写回，避免「退出拼多多」误伤无关平台。
                       await _restoreOtherPlatformCookies();
+                      if (!mounted) return;
+                      ref.invalidate(platformAuthStatusProvider);
+                      unawaited(ref.read(keepAliveControllerProvider.notifier).refresh());
                       await _controller.loadRequest(Uri.parse(_defaultHomeUrl));
                       if (!mounted) return;
                       messenger.showSnackBar(

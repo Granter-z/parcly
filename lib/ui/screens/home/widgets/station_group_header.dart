@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 
 import '../../../../core/engine/station_grouping.dart';
 import '../../../constants/app_constants.dart';
+import '../../../theme/motion.dart';
 
 class StationGroupHeader extends StatelessWidget {
   final StationGroup group;
@@ -31,7 +32,7 @@ class StationGroupHeader extends StatelessWidget {
             children: [
               AnimatedRotation(
                 turns: collapsed ? 0 : 0.25,
-                duration: const Duration(milliseconds: 150),
+                duration: Motion.of(context, const Duration(milliseconds: 150)),
                 child: const Icon(
                   Icons.chevron_right_rounded,
                   size: 20,

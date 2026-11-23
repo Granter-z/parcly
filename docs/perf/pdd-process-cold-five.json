@@ -1,0 +1,107 @@
+{
+  "condition": "Network.clearBrowserCache in previous WebView, force-stop, application launch, tap mall; application data preserved",
+  "runs": [
+    {
+      "responseEnd": 628.5,
+      "domContentLoaded": 636.4000000003725,
+      "loadEvent": 1290.5,
+      "firstContentfulPaint": 676,
+      "firstPaint": 676,
+      "urlPath": "/",
+      "run": 1,
+      "deviceTime": "2026-11-23 19:25:56",
+      "documentResponses": [
+        {
+          "status": 200,
+          "fromDiskCache": false,
+          "protocol": "h2"
+        },
+        {
+          "status": 200,
+          "fromDiskCache": false,
+          "protocol": "h2"
+        }
+      ]
+    },
+    {
+      "responseEnd": 566,
+      "domContentLoaded": 573.1999999992549,
+      "loadEvent": 1183.2999999988824,
+      "firstContentfulPaint": 600,
+      "firstPaint": 600,
+      "urlPath": "/",
+      "run": 2,
+      "deviceTime": "2026-11-23 19:26:01",
+      "documentResponses": [
+        {
+          "status": 200,
+          "fromDiskCache": false,
+          "protocol": "h2"
+        }
+      ]
+    },
+    {
+      "responseEnd": 861.9000000003725,
+      "domContentLoaded": 884.4000000003725,
+      "loadEvent": 1358.0999999996275,
+      "firstContentfulPaint": 680,
+      "firstPaint": 680,
+      "urlPath": "/",
+      "run": 3,
+      "deviceTime": "2026-11-23 19:26:07",
+      "documentResponses": [
+        {
+          "status": 200,
+          "fromDiskCache": false,
+          "protocol": "h2"
+        }
+      ]
+    },
+    {
+      "responseEnd": 596.8000000007451,
+      "domContentLoaded": 615.9000000003725,
+      "loadEvent": 1138.0999999996275,
+      "firstContentfulPaint": 612,
+      "firstPaint": 612,
+      "urlPath": "/",
+      "run": 4,
+      "deviceTime": "2026-11-23 19:26:12",
+      "documentResponses": [
+        {
+          "status": 200,
+          "fromDiskCache": false,
+          "protocol": "h2"
+        },
+        {
+          "status": 200,
+          "fromDiskCache": false,
+          "protocol": "h2"
+        }
+      ]
+    },
+    {
+      "responseEnd": 752.2000000011176,
+      "domContentLoaded": 772.8000000007451,
+      "loadEvent": 1221.9000000003725,
+      "firstContentfulPaint": 772,
+      "firstPaint": 772,
+      "urlPath": "/",
+      "run": 5,
+      "deviceTime": "2026-11-23 19:26:18",
+      "documentResponses": [
+        {
+          "status": 200,
+          "fromDiskCache": false,
+          "protocol": "h2"
+        },
+        {
+          "status": 200,
+          "fromDiskCache": false,
+          "protocol": "h2"
+        }
+      ]
+    }
+  ],
+  "medianFcp": 676,
+  "rangeFcp": 172
+}

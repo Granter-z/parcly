@@ -36,7 +36,7 @@ SKIP_DIRS = {
     "plugins",
     "__pycache__",
 }
-DEFAULT_ROOTS = ("test", "docs", "lib", "README.md", "CLAUDE.md")
+DEFAULT_ROOTS = ("test", "docs", "lib", "README.md", "CLAUDE.md", "AGENTS.md", "pubspec.yaml")
 
 # Optional ASCII space, hyphen, or dot between digits after the leading 13x.
 PHONE_RE = re.compile(

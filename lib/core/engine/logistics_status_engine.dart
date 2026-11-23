@@ -71,6 +71,7 @@ class LogisticsStatusEngine {
     bool isPendingShipment = false,
     bool isOrderSigned = false,
     String pickupCode = '',
+    DateTime? now,
   }) {
     // 0. 轨迹中出现拒收/退回：属于终结态，必须优先于列表侧的签收文案与取件码。
     //    events 最新在前，取第一条命中的拒收文案作为原因。
@@ -170,8 +171,6 @@ class LogisticsStatusEngine {
         resolvedStatus = PackageStatus.transit;
         break;
       case LogisticsNodeAction.rejected:
-        resolvedStatus = PackageStatus.rejected;
-        break;
       case LogisticsNodeAction.exception:
       case LogisticsNodeAction.unknown:
       case null:
@@ -193,11 +192,10 @@ class LogisticsStatusEngine {
       case PackageStatus.transit:
         DateTime? latestNodeTime;
         if (events.isNotEmpty) {
-          final tStr = events.first['time'] ?? '';
-          latestNodeTime = DateTime.tryParse(tStr.replaceAll('/', '-'));
+          latestNodeTime = parseContractTime(events.first['time'] ?? '');
         }
-        final now = DateTime.now();
-        if (latestNodeTime != null && now.difference(latestNodeTime).inHours < 2) {
+        final clock = now ?? DateTime.now();
+        if (latestNodeTime != null && clock.difference(latestNodeTime).inHours < 2) {
           stability = LogisticsStability.active;
           syncInterval = const Duration(minutes: 20);
         } else {
@@ -361,7 +359,7 @@ class LogisticsStatusEngine {
 
     // D. 异常动作
     if (_containsAny(t, const [
-      '派送失败', '无人接收', '联系不上', '拒收', '退回', '退件', '地址错误', '无法配送',
+      '派送失败', '无人接收', '联系不上', '退回', '地址错误', '无法配送',
     ])) {
       return LogisticsNodeAction.exception;
     }

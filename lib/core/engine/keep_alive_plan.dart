@@ -23,8 +23,7 @@ class KeepAlivePlan {
     final days = cookieAge.inDays;
 
     if (days <= 3) return const Duration(hours: 24); // 新鲜期，低频维护
-    if (days <= 7) return const Duration(hours: 6); // 中期，缩小会话失效空窗
-    if (days <= 10) return const Duration(hours: 6); // 临期，积极保活
+    if (days <= 10) return const Duration(hours: 6); // 中期/临期，缩小会话失效空窗
     return const Duration(hours: 4); // 危险期，高频保活
   }
 
@@ -87,7 +86,7 @@ class KeepAlivePlan {
     return '即将过期';
   }
 
-  /// Cookie 健康度颜色（ARGB 十六进制字符串，渲染层负责解析）
+  /// Cookie 健康度颜色（6 位 RGB 十六进制字符串，渲染层负责解析）
   static String cookieHealthColorHex(Duration cookieAge) {
     final days = cookieAge.inDays;
 

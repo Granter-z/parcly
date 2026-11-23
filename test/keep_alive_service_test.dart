@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hive/hive.dart';
 import 'package:pickup_app/platform/keep_alive/keep_alive_service.dart';
+import 'package:pickup_app/platform/keep_alive/keep_alive_worker_bridge.dart';
 import 'package:pickup_app/platform/keep_alive/platform_heartbeat.dart';
 import 'package:pickup_app/platform/storage/keep_alive_store.dart';
 import 'package:pickup_app/platform/storage/platform_auth_store.dart';
@@ -58,6 +59,7 @@ class _FakeHeartbeat implements PlatformHeartbeat {
 
 void main() {
   late Directory tempDir;
+  late Directory bridgeDir;
   late _FakeAuthStore auth;
   late KeepAliveStore store;
   late _FakeHeartbeat taobaoHb;
@@ -82,6 +84,8 @@ void main() {
 
   setUp(() async {
     tempDir = Directory.systemTemp.createTempSync('keep_alive_service_test');
+    bridgeDir = Directory.systemTemp.createTempSync('keep_alive_service_bridge');
+    debugBridgeDirOverride = bridgeDir;
     Hive.init(tempDir.path);
     await KeepAliveStore.initialize();
 
@@ -94,8 +98,10 @@ void main() {
 
   tearDown(() async {
     service.dispose();
+    debugBridgeDirOverride = null;
     await Hive.close();
     if (tempDir.existsSync()) tempDir.deleteSync(recursive: true);
+    if (bridgeDir.existsSync()) bridgeDir.deleteSync(recursive: true);
   });
 
   group('冷启动不再重发心跳（本次修复的核心回归点）', () {

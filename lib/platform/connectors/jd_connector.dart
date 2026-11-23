@@ -14,6 +14,7 @@ import '../../core/parser/trace_time.dart';
 import '../../core/sanitizer/goods_name_cleaner.dart';
 import '../../core/utils/image_url.dart';
 import '../storage/platform_auth_store.dart';
+import '../webview/platform_cookie.dart';
 import '../webview/webview_release.dart';
 import 'jd_delivery_filter.dart';
 import 'jd_sync_network.dart';
@@ -21,6 +22,9 @@ import 'jd_trace_parser.dart';
 import 'platform_connector.dart';
 import 'package:pickup_app/core/parser/pickup_point_name.dart';
 import 'package:pickup_app/core/engine/package_identity.dart';
+
+final RegExp _jdPickupCodeReg =
+    RegExp(r'(?:取件码|提货码|取货码|凭码|自提码)[:：\s]*([A-Za-z0-9\-]{3,12})');
 
 /// 调试日志只走 debugPrint；不再落盘明文文件（含订单号/运单号，且无清理机制）。
 void _logJd(String msg) {
@@ -69,9 +73,6 @@ class JdH5Connector implements PlatformConnector {
   String get displayName => '京东商城';
 
   @override
-  String get brandColorHex => '#E1251B';
-
-  @override
   Future<bool> isAuthenticated() async => _authStore.isBound('jd');
 
   bool _cancelled = false;
@@ -79,6 +80,8 @@ class JdH5Connector implements PlatformConnector {
   @override
   Future<void> cancelSync() async {
     _cancelled = true;
+    // 递增代际号，丢弃上一轮页面的迟到响应
+    _captureGeneration++;
     _capturedJsonList.clear();
     _capturedLogisticsJson.clear();
     final oc = _orderCapturedCompleter;
@@ -90,19 +93,25 @@ class JdH5Connector implements PlatformConnector {
   @override
   String? get lastIssue => _lastIssue;
 
+  @override
+  bool get lastSyncSucceeded => _lastSyncCompleted && _lastIssue == null;
+
   /// 用户重新授权后清理上一次的失效提示
+  @override
   void clearLastIssue() {
     _lastIssue = null;
   }
 
   String? _lastIssue;
   WebViewController? _controller;
+  int _captureGeneration = 0;
+  bool _landedLoginThisRound = false;
   final List<String> _capturedJsonList = [];
   Completer<void>? _orderCapturedCompleter;
   final List<String> _capturedLogisticsJson = [];
   Completer<void>? _logisticsCapturedCompleter;
 
-  /// P42-a/c：本轮主 frame 网络硬失败 / 外层 8s 超时 → soft，禁止 expire
+  /// P42-a/c：本轮主 frame 网络硬失败 / 外层 15s 超时 → soft，禁止 expire
   final JdNetworkSoftFailGate _networkGate = JdNetworkSoftFailGate();
 
   bool get _networkSoftFail => _networkGate.failed;
@@ -140,10 +149,13 @@ class JdH5Connector implements PlatformConnector {
 
     _lastIssue = null;
     _cancelled = false;
+    _landedLoginThisRound = false;
+    _captureGeneration++;
     _networkGate.failed = false;
     _networkGate.issue = null;
     _networkGate.wake = null;
     _capturedJsonList.clear();
+    _capturedLogisticsJson.clear();
     _logJd('[JD] Starting sync with cookies (len: ${cookies.length})');
     await _injectCookies(cookies);
 
@@ -159,7 +171,11 @@ class JdH5Connector implements PlatformConnector {
         ..addJavaScriptChannel(
           'JdBridge',
           onMessageReceived: (JavaScriptMessage msg) {
-            final text = msg.message;
+            final raw = msg.message;
+            final sep = raw.indexOf('|');
+            if (sep <= 0) return;
+            if (int.tryParse(raw.substring(0, sep)) != _captureGeneration) return;
+            final text = raw.substring(sep + 1);
             if (text.contains('orderList')) {
               // 宽松收集：配置包也可能含 orderList 字样，交给解析器按结构筛选；
               // 只有带订单对象字段的响应才提前结束 fast-path 等待。
@@ -214,19 +230,15 @@ class JdH5Connector implements PlatformConnector {
 
     // P30-b ① / P30-b′：本轮 plogin / setExpired(true) / 开始前已失效 → finally 禁止 persist
     final alreadyExpiredAtStart = _authStore.isExpired('jd');
-    var skipPersist = alreadyExpiredAtStart;
     if (alreadyExpiredAtStart) {
       _logJd('[JD] skip cookie persist: already expired before sync (P30-b\')');
     }
 
     try {
-      // P42-a：外层硬超时 8s；超时与主 frame 硬失败同一 soft 出口
+      // P42-a：外层硬超时 15s；超时与主 frame 硬失败同一 soft 出口
       yield* _streamSyncBody(
         controller,
         alreadyExpiredAtStart: alreadyExpiredAtStart,
-        markSkipPersist: () {
-          skipPersist = true;
-        },
       ).timeout(
         kJdStreamSyncHardTimeout,
         onTimeout: (EventSink<Package> sink) {
@@ -243,12 +255,18 @@ class JdH5Connector implements PlatformConnector {
       _lastSyncCompleted = !_cancelled && !_networkSoftFail;
       _networkGate.wake = null;
       _orderCapturedCompleter = null;
-      // P30-b ① / P30-b′：plogin / 本轮标失效 / 开始前已失效 → 绝不 persist
+      // P30-b ① / P30-b′：plogin / 本轮标失效 / 开始前已失效 / 网络软失败 → 绝不 persist
+      final skipPersist = shouldSkipJdCookiePersist(
+            alreadyExpiredAtStart: alreadyExpiredAtStart,
+            landedLoginPage: _landedLoginThisRound,
+            markedExpiredThisRound: _authStore.isExpired('jd'),
+          ) ||
+          _networkSoftFail;
       if (skipPersist) {
         _logJd(
           alreadyExpiredAtStart
               ? '[JD] skip cookie persist: already expired before sync'
-              : '[JD] skip cookie persist: landed login/expired this round',
+              : '[JD] skip cookie persist: landed login/expired/network soft fail this round',
         );
       } else {
         await _persistJdCookiesIfHealthy(cookies);
@@ -260,11 +278,10 @@ class JdH5Connector implements PlatformConnector {
     }
   }
 
-  /// P42-a 主体：可被外层 8s timeout 取消；网络 soft 后立刻 return。
+  /// P42-a 主体：可被外层 15s timeout 取消；网络 soft 后立刻 return。
   Stream<Package> _streamSyncBody(
     WebViewController controller, {
     required bool alreadyExpiredAtStart,
-    required void Function() markSkipPersist,
   }) async* {
     // 1) 注入请求拦截钩子并直接导航到订单列表（消除加载 home.m.jd.com 造成的 10s 死等）
     _logJd('[JD] Navigating directly to orderlist_jdm.shtml...');
@@ -326,8 +343,8 @@ class JdH5Connector implements PlatformConnector {
         networkSoftFailThisRound: _networkSoftFail,
         landedUrl: landedUrl,
       )) {
+        _landedLoginThisRound = true;
         _lastIssue = '京东登录态已失效，请在「设置」中重新登录';
-        markSkipPersist();
         await _authStore.setExpired('jd', true);
         return;
       }
@@ -367,31 +384,62 @@ class JdH5Connector implements PlatformConnector {
     // 共享 WebView 必须串行：详情页共用 _controller 与 _capturedLogisticsJson，
     // 并发 loadRequest 会互相打断，A 单捕获的轨迹会被 B 单当成自己的（与 PDD 同因，见 pdd_connector）。
     //
-    // 详情预取必须留出时间预算：外层 15s 硬超时量的是事件间隔，若等全部详情
-    // 取完才开始 yield，多包裹用户必然超时（0 张卡 + 误报「暂时不可达」）。
-    // 预算耗尽后退回订单侧状态，卡片照常产出，只是没有轨迹详情。
-    final detailMap = <String, _JdLogisticsDetail?>{};
+    // 详情抓取必须留出时间预算：外层 15s 硬超时量的是事件间隔，边取边 yield 让首张卡片
+    // 尽早产出；预算耗尽后退回订单侧状态，卡片照常产出，只是没有轨迹详情。
     final detailDeadline = DateTime.now().add(const Duration(seconds: 8));
     final random = Random();
-    for (final o in validOrders.values) {
-      if (o.progressLink.isEmpty) continue;
+    var budgetLogged = false;
+    final orderList = validOrders.values.toList();
+    for (var i = 0; i < orderList.length; i++) {
+      final o = orderList[i];
       if (_networkSoftFail || _cancelled) return;
-      if (detailBudgetExhausted(detailDeadline)) {
-        _logJd('[JD] detail budget exhausted, remaining orders use list status');
-        break;
-      }
-      detailMap[o.orderId] =
-          await _fetchLogisticsDetail(o.orderId, o.progressLink);
-      if (_networkSoftFail || _cancelled) return;
-      await Future.delayed(
-        Duration(milliseconds: 150 + random.nextInt(201)),
-      );
-    }
-    if (_networkSoftFail) return;
 
-    for (final o in validOrders.values) {
-      if (_networkSoftFail || _cancelled) return;
-      final detail = detailMap[o.orderId];
+      _JdLogisticsDetail? detail;
+      var fetchedDetail = false;
+      if (o.progressLink.isNotEmpty) {
+        if (detailBudgetExhausted(detailDeadline)) {
+          if (!budgetLogged) {
+            _logJd('[JD] detail budget exhausted, remaining orders use list status');
+            budgetLogged = true;
+          }
+        } else {
+          fetchedDetail = true;
+          detail = await _fetchLogisticsDetail(o.orderId, o.progressLink);
+          if (_networkSoftFail || _cancelled) return;
+        }
+      }
+
+      // 订单本身缺取件码或站点名时，从详情轨迹节点中补提
+      var pickupCode = o.pickupCode;
+      if (pickupCode.isEmpty && detail != null) {
+        for (final node in detail.timelineNodes) {
+          final code = _pickupCodeFromText(node['text'] ?? '');
+          if (code.isNotEmpty) {
+            pickupCode = code;
+            break;
+          }
+        }
+      }
+      var stationName = o.stationName;
+      if (stationName.isEmpty && detail != null) {
+        for (final node in detail.timelineNodes) {
+          final st = _stationFromText(node['text'] ?? '');
+          if (st.isNotEmpty) {
+            stationName = st;
+            break;
+          }
+        }
+      }
+
+      // 承运商推导：详情承运商名 -> 详情运单号规则 -> 兜底京东快递
+      final detailTracking = detail?.trackingNumber ?? '';
+      var courier = courierFromName(detail?.carrier ?? '');
+      if (courier == CourierType.other && detailTracking.isNotEmpty) {
+        courier = courierFromTrackingNumber(detailTracking);
+      }
+      if (courier == CourierType.other) {
+        courier = CourierType.jd;
+      }
 
       final timelineJson = (detail != null && detail.timelineNodes.isNotEmpty)
           ? jsonEncode(detail.timelineNodes)
@@ -402,32 +450,41 @@ class JdH5Connector implements PlatformConnector {
               events: detail.timelineNodes,
               isPendingShipment: o.status == PackageStatus.pendingShipment,
               isOrderSigned: o.status == PackageStatus.pickedUp,
-              pickupCode: o.pickupCode,
+              pickupCode: pickupCode,
             ).status
           : o.status;
 
       _logJd('[JD Yield] id=${packageIdForLog('JD_${o.orderId}')} status=${status.label} '
-          'hasTracking=${(detail?.trackingNumber ?? '').isNotEmpty} '
+          'hasTracking=${detailTracking.isNotEmpty} '
           'nodes=${detail?.timelineNodes.length ?? 0}');
 
       _lastSyncYieldedIds.add('JD_${o.orderId}');
       yield Package(
         id: 'JD_${o.orderId}',
-        trackingNumber: (detail != null && detail.trackingNumber.isNotEmpty)
-            ? detail.trackingNumber
-            : o.orderId,
-        courier: CourierType.jd,
+        trackingNumber: detailTracking.isNotEmpty ? detailTracking : o.orderId,
+        courier: courier,
         goodsName: o.goodsName.isNotEmpty ? o.goodsName : '京东商品快件',
         goodsImageUrl: o.imageUrl.isNotEmpty ? o.imageUrl : null,
-        pickupCode: o.pickupCode,
-        stationName: o.stationName.isNotEmpty ? o.stationName : '京东自提/配送',
+        pickupCode: pickupCode,
+        stationName: stationName.isNotEmpty ? stationName : null,
         location: (detail != null && detail.address.isNotEmpty) ? detail.address : o.statusText,
         platform: 'jd',
-        urgency: LogisticsStatusEngine.urgencyFor(status: status, pickupCode: o.pickupCode),
+        urgency: LogisticsStatusEngine.urgencyFor(status: status, pickupCode: pickupCode),
         status: status,
         addedAt: DateTime.now(),
         rawTimelineJson: timelineJson,
       );
+
+      // 仅在刚发起了详情请求、后续仍有待抓详情的订单且未耗尽预算时做防风控延迟
+      final hasMoreToFetch = i + 1 < orderList.length &&
+          !budgetLogged &&
+          !detailBudgetExhausted(detailDeadline) &&
+          orderList.skip(i + 1).any((next) => next.progressLink.isNotEmpty);
+      if (fetchedDetail && hasMoreToFetch) {
+        await Future.delayed(
+          Duration(milliseconds: 150 + random.nextInt(201)),
+        );
+      }
     }
   }
 
@@ -448,10 +505,11 @@ class JdH5Connector implements PlatformConnector {
       }
       if (map.isEmpty) return;
 
-      final merged = map.entries.map((e) => '${e.key}=${e.value}').join('; ');
+      final sortedKeys = map.keys.toList()..sort();
+      final merged = sortedKeys.map((k) => '$k=${map[k]}').join('; ');
       if (isJdCookieHealthy(originalCookies, merged)) {
         if (merged != originalCookies) {
-          await _authStore.saveCookies('jd', merged);
+          await _authStore.refreshCookiesInPlace('jd', merged);
           _logJd('[JD] cookies refreshed (len: ${merged.length})');
         }
       } else {
@@ -465,23 +523,27 @@ class JdH5Connector implements PlatformConnector {
   /// 导航到订单物流跟踪页：双轨机制（优先拦截接口，超时走 DOM 纯文本状态机兜底）
   Future<_JdLogisticsDetail?> _fetchLogisticsDetail(String orderId, String progressLink) async {
     final controller = _controller;
-    if (controller == null || _cancelled) return null;
+    if (controller == null || _cancelled || _networkSoftFail) return null;
+    final gen = ++_captureGeneration;
     _capturedLogisticsJson.clear();
     final completer = Completer<void>();
     _logisticsCapturedCompleter = completer;
     try {
       await controller.loadRequest(Uri.parse(progressLink));
+      if (_cancelled || _networkSoftFail) return null;
+      await _injectNetworkHook(controller);
       try {
         await completer.future.timeout(const Duration(milliseconds: 3000));
       } on TimeoutException {
         // 页面未触发物流接口，继续走 DOM 兜底
-      } finally {
-        _logisticsCapturedCompleter = null;
       }
+      if (_cancelled || _networkSoftFail || gen != _captureGeneration) return null;
       if (_capturedLogisticsJson.isNotEmpty) {
-        final parsed = _parseLogisticsJson(_capturedLogisticsJson.first);
-        if (parsed != null && parsed.timelineNodes.isNotEmpty) {
-          return parsed;
+        for (final raw in List<String>.from(_capturedLogisticsJson)) {
+          final parsed = _parseLogisticsJson(raw);
+          if (parsed != null && parsed.timelineNodes.isNotEmpty) {
+            return parsed;
+          }
         }
       }
 
@@ -505,6 +567,10 @@ class JdH5Connector implements PlatformConnector {
     } catch (e) {
       _logJd('[JD Logistics] fetch error: $e');
       return null;
+    } finally {
+      if (identical(_logisticsCapturedCompleter, completer)) {
+        _logisticsCapturedCompleter = null;
+      }
     }
   }
 
@@ -561,20 +627,24 @@ class JdH5Connector implements PlatformConnector {
   }
 
   Future<void> _injectNetworkHook(WebViewController controller) async {
-    const hookJs = '''
+    final generation = _captureGeneration;
+    final hookJs = '''
 (function(){
+  window.__jdCaptureGen = $generation;
   if (window.__jdHookInstalled) return;
   window.__jdHookInstalled = true;
 
-  function report(data){
+  function report(data, gen){
     try {
-      JdBridge.postMessage(typeof data === 'string' ? data : JSON.stringify(data));
+      var payload = typeof data === 'string' ? data : JSON.stringify(data);
+      JdBridge.postMessage(String(gen || 0) + '|' + payload);
     } catch(e) {}
   }
 
   var origFetch = window.fetch;
   if (origFetch) {
     window.fetch = function(input, init) {
+      var reqGen = window.__jdCaptureGen || 0;
       var p = origFetch.apply(this, arguments);
       if (p && p.then) {
         p.then(function(res) {
@@ -582,7 +652,7 @@ class JdH5Connector implements PlatformConnector {
             res.clone().text().then(function(t) {
               var isOrder = t.indexOf('orderList') !== -1;
               var isLogistics = t.indexOf('tracePointVOList') !== -1 || t.indexOf('carriageId') !== -1;
-              if (isOrder || isLogistics) report(t);
+              if (isOrder || isLogistics) report(t, reqGen);
             });
           } catch(e) {}
         });
@@ -593,12 +663,13 @@ class JdH5Connector implements PlatformConnector {
 
   var origSend = XMLHttpRequest.prototype.send;
   XMLHttpRequest.prototype.send = function() {
+    var reqGen = window.__jdCaptureGen || 0;
     this.addEventListener('load', function() {
       try {
         var t = this.responseText || '';
         var isOrder = t.indexOf('orderList') !== -1;
         var isLogistics = t.indexOf('tracePointVOList') !== -1 || t.indexOf('carriageId') !== -1;
-        if (isOrder || isLogistics) report(t);
+        if (isOrder || isLogistics) report(t, reqGen);
       } catch(e) {}
     });
     return origSend.apply(this, arguments);
@@ -611,22 +682,11 @@ class JdH5Connector implements PlatformConnector {
   }
 
   Future<void> _injectCookies(String cookies) async {
-    final cm = WebViewCookieManager();
-    var count = 0;
-    for (final part in cookies.split(';')) {
-      final idx = part.indexOf('=');
-      if (idx <= 0) continue;
-      final name = part.substring(0, idx).trim();
-      final value = part.substring(idx + 1).trim();
-      if (name.isEmpty || value.isEmpty) continue;
-      for (final host in const ['.jd.com', 'trade.m.jd.com', 'home.m.jd.com', 'api.m.jd.com']) {
-        try {
-          await cm.setCookie(WebViewCookie(domain: host, path: '/', name: name, value: value));
-          count++;
-        } catch (_) {}
-      }
-    }
-    _logJd('[JD] injected cookie calls: $count');
+    await injectCookieString(
+      cookies: cookies,
+      domains: const ['.jd.com', 'trade.m.jd.com', 'home.m.jd.com', 'api.m.jd.com'],
+    );
+    _logJd('[JD] cookies injected');
   }
 
   Future<String> _locationHref(WebViewController controller) async {
@@ -786,8 +846,6 @@ class JdH5Connector implements PlatformConnector {
           _logJd('[JD Filter] Instant delivery, drop: ${packageIdForLog('JD_$orderId')}');
           continue;
         }
-        final orderDetailLink =
-            (item['orderDetailLink'] as Map<String, dynamic>?)?['url']?.toString() ?? '';
 
         String skuId = '';
         if (wareList != null && wareList.isNotEmpty) {
@@ -836,7 +894,6 @@ class JdH5Connector implements PlatformConnector {
           goodsName: goodsName,
           imageUrl: imageUrl,
           progressLink: progressLink,
-          orderDetailLink: orderDetailLink,
         ));
       }
     } catch (e) {
@@ -1049,9 +1106,16 @@ class JdH5Connector implements PlatformConnector {
             url.contains('/n0/') ||
             url.contains('/n5/') ||
             url.contains('/popWareMobile/')).toList();
+        final orderIndex = list.length;
         final img = realProductImgs.isNotEmpty
-            ? realProductImgs.first
-            : (goodsImages.isNotEmpty ? goodsImages.first : '');
+            ? (orderIndex < realProductImgs.length
+                ? realProductImgs[orderIndex]
+                : realProductImgs.first)
+            : (goodsImages.isNotEmpty
+                ? (orderIndex < goodsImages.length
+                    ? goodsImages[orderIndex]
+                    : goodsImages.first)
+                : '');
 
         _logJd('[JD Found In-Transit] titleLen=${title.length} '
             'status=${status.label} progressLen=${progress.length}');
@@ -1062,7 +1126,7 @@ class JdH5Connector implements PlatformConnector {
           status: status,
           statusText: progress.isNotEmpty ? '$matchedStatus · $progress' : matchedStatus,
           pickupCode: pickupCode,
-          stationName: station.isNotEmpty ? station : shopName,
+          stationName: station,
           goodsName: GoodsNameCleaner.clean(title),
           imageUrl: img,
         ));
@@ -1073,7 +1137,7 @@ class JdH5Connector implements PlatformConnector {
   }
 
   String _pickupCodeFromText(String block) {
-    final m = RegExp(r'(?:取件码|提货码|取货码|凭码|自提码)[:：\s]*([A-Za-z0-9\-]{3,12})').firstMatch(block);
+    final m = _jdPickupCodeReg.firstMatch(block);
     return m?.group(1) ?? '';
   }
 
@@ -1090,7 +1154,6 @@ class _JdOrder {
   final String goodsName;
   final String imageUrl;
   final String progressLink;
-  final String orderDetailLink;
 
   const _JdOrder({
     required this.orderId,
@@ -1101,7 +1164,6 @@ class _JdOrder {
     required this.goodsName,
     required this.imageUrl,
     this.progressLink = '',
-    this.orderDetailLink = '',
   });
 }
 

@@ -70,16 +70,24 @@ class SyncOptimizer {
     final result = <T>[];
     var skippedCount = 0;
 
-    for (final order in orders) {
-      final orderId = getOrderId(order);
-      final expectedId = idPrefix == null ? null : '$idPrefix$orderId';
+    final byId = <String, Package>{
+      for (final p in localPackages) p.id: p,
+    };
 
-      // 查找本地包裹（不用哨兵对象，避免每单构造一次 Package）
+    for (final order in orders) {
+      final orderId = getOrderId(order).trim();
       Package? localPackage;
-      for (final p in localPackages) {
-        if (expectedId != null ? p.id == expectedId : p.id.endsWith(orderId)) {
-          localPackage = p;
-          break;
+      if (orderId.isNotEmpty) {
+        if (idPrefix != null) {
+          localPackage = byId['$idPrefix$orderId'];
+        } else {
+          final suffix = '_$orderId';
+          for (final p in localPackages) {
+            if (p.id == orderId || p.id.endsWith(suffix)) {
+              localPackage = p;
+              break;
+            }
+          }
         }
       }
 

@@ -20,7 +20,7 @@ Package _pkg({
     courier: CourierType.yt,
     urgency: UrgencyLevel.normal,
     status: status,
-    addedAt: addedAt ?? DateTime(2026, 10, 6, 9),
+    addedAt: addedAt ?? DateTime.utc(2026, 10, 6, 9),
     arrivedAt: arrivedAt,
     rawTimelineJson: timeline,
     platform: 'taobao',
@@ -44,9 +44,13 @@ void main() {
         {'time': '2026-10-06 18:30:00', 'text': '已放入丰巢快递柜，请取件'},
         {'time': '2026-10-06 19:00:00', 'text': '待取件'},
       ]);
-      final at = extractArrivedAtFromTimeline(json);
+      final at = extractArrivedAtFromTimeline(
+        json,
+        now: DateTime.utc(2026, 10, 7, 12),
+      );
       expect(at, isNotNull);
-      expect(at!.year, 2026);
+      expect(at!.isUtc, isTrue);
+      expect(at.year, 2026);
       expect(at.month, 10);
       expect(at.day, 6);
       expect(at.hour, 18);
@@ -58,12 +62,15 @@ void main() {
         {'time': '2026-10-06 08:00:00', 'text': '快件已揽收'},
         {'time': '2026-10-06 12:00:00', 'text': '运输中'},
       ]);
-      expect(extractArrivedAtFromTimeline(json), isNull);
+      expect(
+        extractArrivedAtFromTimeline(json, now: DateTime.utc(2026, 10, 7, 12)),
+        isNull,
+      );
     });
   });
 
   group('resolveArrivedAt', () {
-    final now = DateTime(2026, 10, 7, 12, 0, 0);
+    final now = DateTime.utc(2026, 10, 7, 12, 0, 0);
 
     test('已有值不覆盖', () {
       final existing = DateTime.utc(2026, 10, 5, 10);
@@ -182,7 +189,9 @@ void main() {
 
     tearDown(() async {
       await Hive.close();
-      await dir.delete(recursive: true);
+      if (dir.existsSync()) {
+        await dir.delete(recursive: true);
+      }
     });
 
     test('写入 arrivedAt 后再读回', () async {
@@ -207,7 +216,8 @@ void main() {
 
     test('合并：首次到站写入；再次同步不覆盖；退回在途清空', () async {
       final n = PackageListNotifier();
-      final clockish = DateTime(2026, 10, 7, 12);
+      addTearDown(n.dispose);
+      final clockish = DateTime.utc(2026, 10, 7, 12);
 
       // 在途 → 待取（无轨迹）应写入 arrivedAt（now）
       n.addPackage(_pkg(status: PackageStatus.transit));
@@ -230,6 +240,7 @@ void main() {
       // 先造一条无证据的 arrived，再 sync transit
       await box.clear();
       final n2 = PackageListNotifier();
+      addTearDown(n2.dispose);
       n2.addPackage(_pkg(
         status: PackageStatus.arrived,
         arrivedAt: DateTime.utc(2026, 10, 6, 18),

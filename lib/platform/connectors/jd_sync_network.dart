@@ -50,9 +50,16 @@ bool jdShouldExpireOnLoginLanding({
   required String landedUrl,
 }) {
   if (networkSoftFailThisRound) return false;
-  final u = landedUrl.trim().toLowerCase();
-  if (u.isEmpty || u == 'about:blank') return false;
-  return u.contains('plogin') || (u.contains('login') && !u.contains('orderlist'));
+  final raw = landedUrl.trim();
+  if (raw.isEmpty || raw.toLowerCase() == 'about:blank') return false;
+  final uri = Uri.tryParse(raw);
+  // 仅检查 host + path，忽略 query 中的 ReturnUrl=...orderlist... 参数误干扰
+  final hostPath = uri != null && uri.host.isNotEmpty
+      ? '${uri.host}${uri.path}'.toLowerCase()
+      : raw.toLowerCase().split('?').first;
+  return hostPath.contains('plogin') ||
+      hostPath.contains('passport') ||
+      (hostPath.contains('login') && !hostPath.contains('orderlist'));
 }
 
 /// 主 frame 硬失败时：置 soft、唤醒 hook 等待，供连接器立刻结束本轮。

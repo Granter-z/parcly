@@ -13,6 +13,7 @@ import '../../../core/models/platform_ids.dart';
 import '../../../platform/keep_alive/battery_optimization.dart';
 import '../../../platform/keep_alive/keep_alive_controller.dart';
 import '../../components/platform_meta.dart';
+import '../../constants/app_constants.dart';
 
 class KeepAliveStatusScreen extends ConsumerStatefulWidget {
   const KeepAliveStatusScreen({super.key});
@@ -61,6 +62,7 @@ class _KeepAliveStatusScreenState extends ConsumerState<KeepAliveStatusScreen>
 
   Future<void> _requestBatteryExemption() async {
     await BatteryOptimization.requestIgnore();
+    if (!mounted) return;
     await _loadBatteryStatus();
   }
 
@@ -157,7 +159,7 @@ class _KeepAliveStatusScreenState extends ConsumerState<KeepAliveStatusScreen>
     final snapshot = ref.watch(keepAliveControllerProvider);
 
     return Scaffold(
-      backgroundColor: const Color(0xFFF6F7F9),
+      backgroundColor: AppColors.background,
       appBar: AppBar(
         title: const Text(
           '平台保活状态',
@@ -191,7 +193,7 @@ class _KeepAliveStatusScreenState extends ConsumerState<KeepAliveStatusScreen>
           const SizedBox(height: 16),
           _buildMasterSwitch(snapshot.enabled),
           const SizedBox(height: 16),
-          ...snapshot.platforms.map(_buildPlatformCard),
+          ...snapshot.platforms.map((s) => _buildPlatformCard(s, snapshot)),
           const SizedBox(height: 20),
           _buildHistorySection(snapshot),
           const SizedBox(height: 20),
@@ -250,12 +252,15 @@ class _KeepAliveStatusScreenState extends ConsumerState<KeepAliveStatusScreen>
     );
   }
 
-  Widget _buildPlatformCard(PlatformKeepAliveStatus status) {
+  Widget _buildPlatformCard(
+    PlatformKeepAliveStatus status,
+    KeepAliveSnapshot snapshot,
+  ) {
     final platform = status.platform;
     final brandColor = platformBrandColor(platform);
     final healthColor = _healthColor(status);
     // 未绑定无从保活；总开关关闭时单平台开关无意义
-    final canToggle = status.bound;
+    final canToggle = snapshot.enabled && status.bound;
 
     return Container(
       margin: const EdgeInsets.only(bottom: 12),

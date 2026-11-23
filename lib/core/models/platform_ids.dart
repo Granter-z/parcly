@@ -4,7 +4,7 @@ library;
 /// 全部支持保活的平台标识（顺序即界面展示顺序）
 ///
 /// 需求方不要各自硬编码平台列表：保活服务、同步历史统计、设置页都从这里取。
-const List<String> kPlatformIds = ['taobao', 'jd', 'pdd'];
+const List<String> kPlatformIds = ['pdd', 'jd', 'taobao'];
 
 /// 平台中文显示名；未知平台回退为标识本身
 String platformDisplayName(String platform) {
@@ -15,6 +15,20 @@ String platformDisplayName(String platform) {
       return '京东商城';
     case 'pdd':
       return '拼多多';
+    default:
+      return platform;
+  }
+}
+
+/// 平台中文短名；未知平台回退为标识本身
+String platformShortName(String platform) {
+  switch (platform) {
+    case 'pdd':
+      return '拼多多';
+    case 'jd':
+      return '京东';
+    case 'taobao':
+      return '淘宝';
     default:
       return platform;
   }

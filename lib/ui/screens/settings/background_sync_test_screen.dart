@@ -22,6 +22,7 @@ class _BackgroundSyncTestScreenState extends ConsumerState<BackgroundSyncTestScr
   String _log = '';
 
   void _addLog(String message) {
+    if (!mounted) return;
     setState(() {
       final timestamp = DateTime.now().toString().substring(11, 19);
       _log = '[$timestamp] $message\n$_log';
@@ -112,9 +113,11 @@ class _BackgroundSyncTestScreenState extends ConsumerState<BackgroundSyncTestScr
 
     try {
       await NotificationAdapter().showArrivedNotification(testPackage);
+      if (!mounted) return;
       _addLog('✅ 发送测试通知成功');
       _addLog('📱 请检查通知栏');
     } catch (e) {
+      if (!mounted) return;
       _addLog('❌ 发送通知失败: $e');
     }
   }
@@ -148,7 +151,7 @@ class _BackgroundSyncTestScreenState extends ConsumerState<BackgroundSyncTestScr
     if (delivering > 0) {
       _addLog('⏱️ 预期同步间隔: 15 分钟');
     } else if (arrived > 0) {
-      _addLog('⏱️ 预期同步间隔: 30-45 分钟');
+      _addLog('⏱️ 预期同步间隔: 30 分钟');
     } else if (transit > 0) {
       _addLog('⏱️ 预期同步间隔: 1 小时');
     } else {

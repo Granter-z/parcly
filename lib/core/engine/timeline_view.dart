@@ -141,12 +141,10 @@ String formatTimelineTime(TimelineNode node, {DateTime? now}) {
   final t = node.parsedTime;
   if (t == null) return node.time;
   final current = now ?? DateTime.now();
-  final today = DateTime(current.year, current.month, current.day);
-  final day = DateTime(t.year, t.month, t.day);
   final hm = '${_two(t.hour)}:${_two(t.minute)}';
   // 用日历日差而不是 Duration，避免夏令时之类的问题（国内无夏令时，但保持稳妥）。
-  final diffDays = DateTime.utc(today.year, today.month, today.day)
-      .difference(DateTime.utc(day.year, day.month, day.day))
+  final diffDays = DateTime.utc(current.year, current.month, current.day)
+      .difference(DateTime.utc(t.year, t.month, t.day))
       .inDays;
   if (diffDays == 0) return '今天 $hm';
   if (diffDays == 1) return '昨天 $hm';
@@ -274,8 +272,10 @@ List<String> findPhones(String text, {String? pickupCode}) => [
         if (s.type == TraceSegmentType.phone) s.text,
     ];
 
+final RegExp _nonDigitReg = RegExp(r'[^0-9]');
+
 /// 去掉分隔符，得到可以直接拨打的号码（用于 `tel:`）。
-String dialablePhone(String phone) => phone.replaceAll(RegExp(r'[^0-9]'), '');
+String dialablePhone(String phone) => phone.replaceAll(_nonDigitReg, '');
 
 /// 从最新的几个节点里取驿站/派送员电话（`Package` 还没有 stationPhone 字段前的过渡方案）。
 ///

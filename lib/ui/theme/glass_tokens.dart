@@ -35,14 +35,8 @@ class GlassTokens {
   /// Regular chrome 面洗（~11% 白）。P33 的 0.18 仍偏实。
   static const fill = Color(0x1CFFFFFF); // ≈ 0.11
 
-  /// 略实 chrome（~15%），需要稍强可读底时用。
-  static const fillStrong = Color(0x26FFFFFF); // ≈ 0.15
-
   /// 状态条正常态（~12%）。单测 `platform_status_bar_test` 认此常量。
   static const fillSoft = Color(0x1FFFFFFF); // ≈ 0.12
-
-  /// @Deprecated 语义：列表卡近实心。新代码用 [contentFill]。
-  static const fillListCard = Color(0xF7FFFFFF);
 
   // ── 大块轻玻璃（空态 / PDD / 已完成胶囊；一次 blur，可读）──────────
   /// 轻玻璃面洗（~36%）：比 P33 更透，正文仍可读。
@@ -70,15 +64,6 @@ class GlassTokens {
 
   /// 内高光边（更亮，模拟折射亮沿 / 突起上沿）。
   static const borderInner = Color(0xE6FFFFFF); // white @ 0.90
-
-  /// 统一描边回退。
-  static const border = Color(0xA6FFFFFF); // white @ 0.65
-
-  /// 顶缘高光色（Specular / Light Angle = 0）。
-  static const specularTop = Color(0xF2FFFFFF); // white @ 0.95
-
-  /// 底缘软边。
-  static const refractionBottom = Color(0x33FFFFFF); // white @ 0.20
 
   /// 色散近似：左缘偏冷、右缘偏暖的细线（非真 chromatic aberration）。
   static const dispersionCool = Color(0x8099C9FF); // cool @ 0.50
@@ -169,7 +154,4 @@ class GlassTokens {
       offset: const Offset(0, -0.6),
     ),
   ];
-
-  /// @Deprecated 用 [contentShadow]。
-  static final listCardShadow = contentShadow;
 }

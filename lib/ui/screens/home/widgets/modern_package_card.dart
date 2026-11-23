@@ -15,6 +15,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../core/models/package.dart';
 import '../../../../core/models/package_status.dart';
+import '../../../../core/engine/logistics_status_engine.dart';
 import '../../../../core/engine/station_grouping.dart';
 import '../../../../core/utils/image_url.dart';
 import '../../../providers/package_provider.dart';
@@ -28,6 +29,8 @@ import '../../../theme/motion.dart';
 import 'tracking_timeline_sheet.dart';
 
 class ModernPackageCard extends ConsumerWidget {
+  static final RegExp _syntheticTrackingReg = RegExp(r'^x?[0-9a-f]{12}$');
+
   final Package package;
 
   /// 仅呈现层门禁：退出立即禁用；异步子动作还需检查启动时的呈现代。
@@ -42,10 +45,14 @@ class ModernPackageCard extends ConsumerWidget {
 
   bool get _canInteract => interactive && (interactionAllowed?.call() ?? true);
 
+  static bool _isValidTrackingNo(String no) =>
+      no.isNotEmpty && !_syntheticTrackingReg.hasMatch(no);
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final isArrived = package.status.isArrived;
     final isDelivering = package.status == PackageStatus.delivering;
+    final displayCode = package.displayPickupCode;
     final now = DateTime.now();
     final overdue = isNearlyOverdue(package, now);
     final arrivedAgo = arrivedAgoLabelOf(package, now);
@@ -220,7 +227,7 @@ class ModernPackageCard extends ConsumerWidget {
               children: [
                 // 左侧：取件码 / 派送提示 / 运单号（用 Wrap 避免长取件码溢出）
                 Expanded(
-                  child: isArrived && package.pickupCode.isNotEmpty
+                  child: isArrived && displayCode.isNotEmpty
                       ? Wrap(
                           // P38：徽标固有宽完整显示；放不下时单独换行，勿再 Flexible/ellipsis
                           crossAxisAlignment: WrapCrossAlignment.center,
@@ -236,7 +243,7 @@ class ModernPackageCard extends ConsumerWidget {
                               ),
                             ),
                             HeroPickupBadge(
-                              pickupCode: package.pickupCode,
+                              pickupCode: displayCode,
                               isLarge: true,
                               enabled: interactive,
                             ),
@@ -341,28 +348,31 @@ class ModernPackageCard extends ConsumerWidget {
     final interactiveAtOpen = interactive;
     bool canSubmit() =>
         context.mounted && interactiveAtOpen && (allowedAtOpen?.call() ?? true);
+    final trackingNo = package.trackingNumber.trim();
+    final canCopyTracking = _isValidTrackingNo(trackingNo);
 
     showModalBottomSheet(
       context: context,
       builder: (ctx) => SafeArea(
         child: Wrap(
           children: [
-            ListTile(
-              leading: const Icon(Icons.copy_rounded),
-              title: const Text('复制运单号'),
-              subtitle: Text(package.trackingNumber),
-              onTap: () {
-                if (!canSubmit()) {
+            if (canCopyTracking)
+              ListTile(
+                leading: const Icon(Icons.copy_rounded),
+                title: const Text('复制运单号'),
+                subtitle: Text(trackingNo),
+                onTap: () {
+                  if (!canSubmit()) {
+                    Navigator.pop(ctx);
+                    return;
+                  }
+                  Clipboard.setData(ClipboardData(text: trackingNo));
                   Navigator.pop(ctx);
-                  return;
-                }
-                Clipboard.setData(ClipboardData(text: package.trackingNumber));
-                Navigator.pop(ctx);
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text('已复制运单号: ${package.trackingNumber}')),
-                );
-              },
-            ),
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('已复制运单号: $trackingNo')),
+                  );
+                },
+              ),
             ListTile(
               leading: const Icon(
                 Icons.delete_outline_rounded,
@@ -406,11 +416,11 @@ class ModernPackageCard extends ConsumerWidget {
   static String _displayTracking(Package p) {
     final no = p.trackingNumber.trim();
     if (p.status == PackageStatus.pendingShipment) {
-      if (no.isEmpty) return '等待商家发货';
+      if (!_isValidTrackingNo(no)) return '等待商家发货';
       return '订单号：$no';
     }
-    // 排除前端生成的12位哈希，友好展示
-    if (RegExp(r'^[0-9a-f]{12}$').hasMatch(no) || no.isEmpty) {
+    // 排除前端生成的京东 DOM 合成伪单号与空串，友好展示
+    if (!_isValidTrackingNo(no)) {
       return '${p.effectiveCourier.displayName} · 运输中';
     }
     return '运单号：$no';

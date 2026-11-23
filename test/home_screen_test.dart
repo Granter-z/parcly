@@ -8,6 +8,7 @@ import 'package:hive/hive.dart';
 import 'package:pickup_app/core/models/package.dart';
 import 'package:pickup_app/core/models/package_status.dart';
 import 'package:pickup_app/platform/connectors/connector_manager.dart';
+import 'package:pickup_app/platform/keep_alive/keep_alive_worker_bridge.dart';
 import 'package:pickup_app/platform/storage/keep_alive_store.dart';
 import 'package:pickup_app/ui/providers/package_provider.dart';
 import 'package:pickup_app/ui/providers/platform_auth_status_provider.dart';
@@ -25,7 +26,12 @@ class _NoopManager extends ConnectorManager {
   _NoopManager(super.ref);
 
   @override
-  Future<int> syncAll({void Function()? onEarlyProgress, bool force = false}) async => 0;
+  Future<int> syncAll({
+    void Function()? onEarlyProgress,
+    bool force = false,
+    bool forceSignedDetail = false,
+  }) async =>
+      0;
 }
 
 Package _pkg({
@@ -69,17 +75,22 @@ Future<void> pumpHome(
 
 void main() {
   late Directory tempDir;
+  late Directory bridgeDir;
 
   setUp(() async {
     // 首页首帧会启动保活服务，需要 Hive 已初始化；用临时目录隔离
     tempDir = Directory.systemTemp.createTempSync('home_screen_test');
+    bridgeDir = Directory.systemTemp.createTempSync('home_screen_bridge');
+    debugBridgeDirOverride = bridgeDir;
     Hive.init(tempDir.path);
     await KeepAliveStore.initialize();
   });
 
   tearDown(() async {
+    debugBridgeDirOverride = null;
     await Hive.close();
     if (tempDir.existsSync()) tempDir.deleteSync(recursive: true);
+    if (bridgeDir.existsSync()) bridgeDir.deleteSync(recursive: true);
   });
 
   testWidgets('空态：无包裹时显示「暂无待取快件」，不显示分区', (tester) async {

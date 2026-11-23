@@ -7,6 +7,8 @@ library;
 import 'package:flutter/foundation.dart';
 import 'package:hive/hive.dart';
 
+import '../../core/engine/station_grouping.dart';
+
 /// 别名表 Box 名称（main.dart 预打开）
 const String kPickupPointAliasesBox = 'pickup_point_aliases';
 
@@ -67,24 +69,29 @@ class PickupPointAliasStore {
 
   /// 声明「[alias] 与 [canonical] 是同一取件点」。
   ///
-  /// 若 alias 与 canonical 规范化后相同则忽略；会覆盖同 alias 的旧映射。
+  /// 若 alias 与 canonical 规范化后相同则忽略；按规范化键覆盖旧映射，
+  /// 并将原本指向 [alias] 的旧链式规则同步重定向到 [canonical]（防止成环）。
   Future<void> setAlias(String alias, String canonical) async {
     final a = alias.trim();
     final c = canonical.trim();
     if (a.isEmpty || c.isEmpty) return;
-    await _ensureInit();
-    final map = Map<String, String>.from(readAll());
-    map[a] = c;
-    await _persist(map);
-  }
+    final normA = normalizeStationName(a);
+    final normC = normalizeStationName(c);
+    if (normA.isEmpty || normC.isEmpty || normA == normC) return;
 
-  /// 按别名原文精确删除一条。
-  Future<void> removeAlias(String alias) async {
-    final target = alias.trim();
-    if (target.isEmpty) return;
     await _ensureInit();
     final map = Map<String, String>.from(readAll());
-    map.remove(target);
+    // 覆盖规范化后同名旧键，防止同一别名空格/全角变体并存
+    map.removeWhere((k, _) => normalizeStationName(k) == normA);
+    // 规范名自身不再作为别名指向别处，避免产生链条或环
+    map.removeWhere((k, _) => normalizeStationName(k) == normC);
+    // 展平链式映射：原本指向 a 的规则一并指向 c
+    for (final k in map.keys.toList()) {
+      if (normalizeStationName(map[k]!) == normA) {
+        map[k] = c;
+      }
+    }
+    map[a] = c;
     await _persist(map);
   }
 

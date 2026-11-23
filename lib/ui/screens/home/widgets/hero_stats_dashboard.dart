@@ -26,11 +26,25 @@ class HeroStatsDashboard extends ConsumerWidget {
 
     final lead = decision.lead;
     final theme = Theme.of(context);
-    final isUrgent = decision.heroEmotionState == HeroEmotionState.urgent;
+    final emotion = decision.heroEmotionState;
+    final isUrgent = emotion == HeroEmotionState.urgent;
+    final isNormal = emotion == HeroEmotionState.normal;
+
+    // 情绪分层：urgent 用红边 + 红数字 +「紧急」徽标；normal（刚到站）用主色到达边 +「可取件」；
+    // relaxed（纯在途/待发）保持平静中性卡片。
+    final Color borderColor = isUrgent
+        ? AppColors.statusRejected.withValues(alpha: 0.38)
+        : (isNormal ? GlassTokens.arrivedBorder : GlassTokens.contentBorder);
+    final double borderWidth = (isUrgent || isNormal) ? 1.4 : 1.0;
+    final Color countColor = isUrgent
+        ? AppColors.statusRejected
+        : (isNormal ? AppColors.primaryStrong : AppColors.textPrimary);
 
     return ContentSurface(
       padding: const EdgeInsets.all(AppSpacing.xl),
       borderRadius: GlassTokens.radiusAll,
+      borderColor: borderColor,
+      borderWidth: borderWidth,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -41,7 +55,7 @@ class HeroStatsDashboard extends ConsumerWidget {
               _RollingNumber(
                 value: lead.count,
                 style: theme.textTheme.displaySmall!.copyWith(
-                  color: AppColors.textPrimary,
+                  color: countColor,
                 ),
               ),
               const SizedBox(width: AppSpacing.sm),
@@ -54,7 +68,10 @@ class HeroStatsDashboard extends ConsumerWidget {
                 ),
               ),
               const Spacer(),
-              if (isUrgent) const _UrgentChip(),
+              if (isUrgent)
+                const _UrgentChip()
+              else if (isNormal)
+                const _NormalPickupChip(),
             ],
           ),
           const SizedBox(height: AppSpacing.md),
@@ -81,6 +98,32 @@ class HeroStatsDashboard extends ConsumerWidget {
     if (decision.transitCount > 0) return '包裹运送中，到站后会第一时间提醒';
     if (lead.count > 0) return '商家正在备货，发货后自动同步';
     return '';
+  }
+}
+
+class _NormalPickupChip extends StatelessWidget {
+  const _NormalPickupChip();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(
+        horizontal: AppSpacing.sm,
+        vertical: 3,
+      ),
+      decoration: BoxDecoration(
+        color: AppColors.primaryContainer,
+        borderRadius: AppRadius.xsAll,
+      ),
+      child: const Text(
+        '可取件',
+        style: TextStyle(
+          fontSize: 11,
+          fontWeight: FontWeight.w700,
+          color: AppColors.primaryStrong,
+        ),
+      ),
+    );
   }
 }
 

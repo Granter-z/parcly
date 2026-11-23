@@ -139,13 +139,15 @@ class Package {
   final DateTime? archivedAt;
   final bool notifiedArrived;
   final List<StatusTransition> statusHistory;
-  final String? transitFingerprint;  // transit 阶段的弱身份标识
+  /// 历史遗留字段，不再参与核心匹配判定，仅保留以兼容旧版 Hive 字段槽位。
+  final String? transitFingerprint;
   final String? goodsName;
   final String? goodsImageUrl;
   final String? platform;
   final String? stationName;
   final String? rawTimelineJson; // 序列化的完整物流节点列表
-  final String fingerprint;  // 包裹唯一识别指纹
+  /// 历史遗留字段，不再参与核心匹配判定，仅保留以兼容旧版 Hive 字段槽位。
+  final String fingerprint;
 
   /// 获取展示用的有效承运商（若未指定则通过单号规则推断，如 JT 开头为极兔）
   CourierType get effectiveCourier {
@@ -153,11 +155,15 @@ class Package {
     return courierFromTrackingNumber(trackingNumber);
   }
 
-  /// 获取订单原始编号（去除平台前缀）
+  static final RegExp _syntheticJdIdReg = RegExp(r'^JD_x[0-9a-f]{12}$');
+
+  /// 获取订单原始编号（去除平台前缀；京东 DOM 合成伪 ID 无真实订单号时返回空串）
   String get displayOrderSn {
+    if (_syntheticJdIdReg.hasMatch(id)) return '';
     if (id.startsWith('PDD_')) return id.substring(4);
     if (id.startsWith('JD_')) return id.substring(3);
     if (id.startsWith('TB_')) return id.substring(3);
+    if (id.startsWith('CN_')) return id.substring(3);
     return id;
   }
 
@@ -187,12 +193,22 @@ class Package {
     return '请查看物流详情';
   }
 
-  /// 获取解析后的完整时间轴节点列表
+  /// 获取解析后的完整时间轴节点列表（容错解析，单字段非 String 不会整表失败）
   List<Map<String, String>> get parsedTimeline {
     if (rawTimelineJson == null || rawTimelineJson!.isEmpty) return const [];
     try {
-      final list = jsonDecode(rawTimelineJson!) as List<dynamic>;
-      return list.map((e) => Map<String, String>.from(e as Map)).toList();
+      final decoded = jsonDecode(rawTimelineJson!);
+      if (decoded is! List) return const [];
+      final out = <Map<String, String>>[];
+      for (final item in decoded) {
+        if (item is! Map) continue;
+        out.add({
+          for (final entry in item.entries)
+            if (entry.key != null && entry.value != null)
+              entry.key.toString(): entry.value.toString(),
+        });
+      }
+      return out;
     } catch (_) {
       return const [];
     }
@@ -319,6 +335,9 @@ class Package {
   }
 }
 
+final RegExp _courierTokenSplitReg = RegExp(r'[^A-Z0-9]+');
+final RegExp _digitsOnlyReg = RegExp(r'^\d+$');
+
 /// 按承运商名称/编码推断（中文名优先；英文编码按整词匹配，避免两字母子串误判）。
 CourierType courierFromName(String text) {
   final t = text.trim();
@@ -356,7 +375,7 @@ CourierType courierFromName(String text) {
     'EMS': CourierType.ems,
     'POSTB': CourierType.ems,
   };
-  for (final token in t.toUpperCase().split(RegExp(r'[^A-Z0-9]+'))) {
+  for (final token in t.toUpperCase().split(_courierTokenSplitReg)) {
     final c = codes[token];
     if (c != null) return c;
   }
@@ -372,7 +391,7 @@ CourierType courierFromTrackingNumber(String trackingNo) {
   if (tn.startsWith('SF')) return CourierType.sf;
   if (tn.startsWith('YT')) return CourierType.yt;
   if (tn.startsWith('ST')) return CourierType.sto;
-  if (tn.startsWith('JD') || tn.startsWith('JDX') || tn.startsWith('JDD')) {
+  if (tn.startsWith('JD')) {
     return CourierType.jd;
   }
   if (tn.startsWith('ZTO') || tn.startsWith('ZTE')) return CourierType.zto;
@@ -380,7 +399,7 @@ CourierType courierFromTrackingNumber(String trackingNo) {
     return CourierType.ems;
   }
 
-  if (!RegExp(r'^\d+$').hasMatch(tn)) return CourierType.other;
+  if (!_digitsOnlyReg.hasMatch(tn)) return CourierType.other;
   final len = tn.length;
 
   // 中通：14/15 位，以 73/75/76/77/78/79/68/61/63 开头
@@ -407,8 +426,8 @@ CourierType courierFromTrackingNumber(String trackingNo) {
       _startsWithAny(tn, const ['88', '80', '81', '82', '83', '85'])) {
     return CourierType.yt;
   }
-  // 极兔：15 位，以 66/68/88 开头
-  if (len == 15 && _startsWithAny(tn, const ['66', '68', '88'])) {
+  // 极兔：以 JT 开头为主，15 位 66/68 与申通/中通重叠且优先匹配上方规则，此处保留 88
+  if (len == 15 && tn.startsWith('88')) {
     return CourierType.jt;
   }
   // 顺丰：12 位纯数字，以 01~09/10/11/12 开头

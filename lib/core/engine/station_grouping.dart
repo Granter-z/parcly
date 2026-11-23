@@ -29,7 +29,8 @@ class StationGroup {
   const StationGroup({required this.name, required this.packages});
 
   /// 组里最早到站的时间，用来给组排序；组里都不知道到站时间时为 null。
-  DateTime? get earliestArrival => arrivalTimeOf(packages.first);
+  DateTime? get earliestArrival =>
+      packages.isEmpty ? null : arrivalTimeOf(packages.first);
 }
 
 /// 包裹真实的到站时间，不知道就返回 null。
@@ -37,10 +38,26 @@ class StationGroup {
 /// 只读 [Package.arrivedAt]（P16）。绝不拿 addedAt 顶替：连接器每次同步都会刷新 addedAt。
 DateTime? arrivalTimeOf(Package p) => p.arrivedAt;
 
+/// 将时间统一对齐到北京墙钟的 UTC 日历分量，消除 `extractArrivedAtFromTimeline`
+/// （存为 `DateTime.utc` 墙钟）与本地 `DateTime.now()` 混算时的 8 小时时差。
+DateTime _toWallUtc(DateTime dt) => dt.isUtc
+    ? dt
+    : DateTime.utc(
+        dt.year,
+        dt.month,
+        dt.day,
+        dt.hour,
+        dt.minute,
+        dt.second,
+        dt.millisecond,
+        dt.microsecond,
+      );
+
 /// 到站超过 [nearlyOverdueAfter] 就算快过期；不知道到站时间的不标。
 bool isNearlyOverdue(Package p, DateTime now) {
   final arrived = arrivalTimeOf(p);
-  return arrived != null && now.difference(arrived) > nearlyOverdueAfter;
+  return arrived != null &&
+      _toWallUtc(now).difference(_toWallUtc(arrived)) > nearlyOverdueAfter;
 }
 
 /// 包裹的取件点组名：只用 stationName，没有返回空串（归进「未知取件点」）。
@@ -88,8 +105,14 @@ Map<String, String> buildAliasLookup(Map<String, String> aliases) {
 String resolveCanonicalName(String raw, Map<String, String> aliases) {
   final trimmed = raw.trim();
   if (trimmed.isEmpty || aliases.isEmpty) return trimmed;
-  final hit = buildAliasLookup(aliases)[normalizeStationName(trimmed)];
-  return (hit == null || hit.isEmpty) ? trimmed : hit;
+  final target = normalizeStationName(trimmed);
+  if (target.isEmpty) return trimmed;
+  for (final e in aliases.entries) {
+    final v = e.value.trim();
+    if (v.isEmpty) continue;
+    if (normalizeStationName(e.key) == target) return v;
+  }
+  return trimmed;
 }
 
 /// 把待取件（见 [isAwaitingPickup]）的包裹按取件点分组。
@@ -156,7 +179,7 @@ List<StationGroup> groupPackagesByStation(
 int _compareArrival(DateTime? a, DateTime? b) {
   if (a == null) return b == null ? 0 : 1;
   if (b == null) return -1;
-  return a.compareTo(b);
+  return _toWallUtc(a).compareTo(_toWallUtc(b));
 }
 
 List<Package> _stableSorted(List<Package> list, int Function(Package, Package) cmp) {
@@ -170,7 +193,7 @@ List<Package> _stableSorted(List<Package> list, int Function(Package, Package) c
 
 /// 「X天前到 / X小时前到 …」；[arrived] 不应为 null（调用方先判断）。
 String arrivedAgoText(DateTime arrived, DateTime now) {
-  final d = now.difference(arrived);
+  final d = _toWallUtc(now).difference(_toWallUtc(arrived));
   if (d.isNegative || d.inMinutes < 1) return '刚到';
   if (d.inDays >= 1) return '${d.inDays}天前到';
   if (d.inHours >= 1) return '${d.inHours}小时前到';

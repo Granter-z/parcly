@@ -71,6 +71,11 @@ class Harness {
     model.value = Model(ps, reduced);
     await t.pump();
   }
+
+  void dispose() {
+    model.dispose();
+    scroll.dispose();
+  }
 }
 
 Finder row(String id) => find.byKey(ValueKey(id));
@@ -98,6 +103,7 @@ List<String> active(WidgetTester t) => t
 void main() {
   testWidgets('首屏即时可读，无交错或延迟任务', (t) async {
     final h = Harness();
+    addTearDown(h.dispose);
     await h.mount(t, [pkg('A'), pkg('B')]);
     expect(ids(t), ['A', 'B']);
     expect(progress(t, 'A'), 1);
@@ -107,6 +113,7 @@ void main() {
   });
   testWidgets('新增使用原生SliverList，16/40/100ms共享线性size+fade', (t) async {
     final h = Harness();
+    addTearDown(h.dispose);
     await h.mount(t, [pkg('B')]);
     await h.update(t, [pkg('A'), pkg('B')]);
     var elapsed = 0;
@@ -126,6 +133,7 @@ void main() {
   });
   testWidgets('退出即禁用，380ms后移除', (t) async {
     final h = Harness();
+    addTearDown(h.dispose);
     await h.mount(t, [pkg('A'), pkg('B')]);
     await h.update(t, [pkg('B')]);
     expect(ids(t), ['A', 'B']);
@@ -137,6 +145,7 @@ void main() {
   });
   testWidgets('纯重排+内容更新立刻对齐，不重播', (t) async {
     final h = Harness();
+    addTearDown(h.dispose);
     await h.mount(t, [pkg('A'), pkg('B')]);
     final state = t.state(spring('A'));
     await h.update(t, [pkg('B', title: 'new-B'), pkg('A', title: 'new-A')]);
@@ -149,6 +158,7 @@ void main() {
   });
   testWidgets('退出重入复用entry/controller/key/card，旧回调不能删除', (t) async {
     final h = Harness();
+    addTearDown(h.dispose);
     await h.mount(t, [pkg('A'), pkg('B')]);
     final state = t.state(spring('A'));
     final controller = t.widget<SizeTransition>(row('A')).sizeFactor;
@@ -174,6 +184,7 @@ void main() {
   });
   testWidgets('插入中删除按剩余距离退场；混合增删排用最新内容', (t) async {
     final h = Harness();
+    addTearDown(h.dispose);
     await h.mount(t, [pkg('A'), pkg('B')]);
     await h.update(t, [pkg('X'), pkg('A'), pkg('B')]);
     await t.pump(const Duration(milliseconds: 40));
@@ -191,6 +202,7 @@ void main() {
   });
   testWidgets('按压A重排不串到B；退出中按下不执行新动作', (t) async {
     final h = Harness();
+    addTearDown(h.dispose);
     await h.mount(t, [pkg('A'), pkg('B')]);
     final gesture = await t.startGesture(t.getCenter(spring('A')));
     await t.pump(const Duration(milliseconds: 140));
@@ -209,46 +221,51 @@ void main() {
   testWidgets('退出禁pointer/long/semantics/focus和旧action；重入仅一个语义卡', (t) async {
     final semantics = t.ensureSemantics();
     final h = Harness();
-    await h.mount(t, [pkg('A'), pkg('B')]);
-    final old = t.widget<SpringCard>(spring('A'));
-    final node = t.getSemantics(find.text('fixture-A')).id;
-    await h.update(t, [pkg('B')]);
-    expect(t.widget<ModernPackageCard>(card('A')).interactive, false);
-    expect(t.widget<SpringCard>(spring('A')).onTap, isNull);
-    expect(
-        t
-            .widget<IgnorePointer>(find
-                .descendant(of: row('A'), matching: find.byType(IgnorePointer))
-                .first)
-            .ignoring,
-        true);
-    expect(
-        t
-            .widget<ExcludeFocus>(find
-                .descendant(of: row('A'), matching: find.byType(ExcludeFocus))
-                .first)
-            .excluding,
-        true);
-    expect(find.bySemanticsLabel(RegExp('fixture-A')), findsNothing);
-    old.onTap!();
-    old.onLongPress!();
-    t.binding.renderViews.first.owner!.semanticsOwner!
-        .performAction(node, SemanticsAction.tap);
-    await t.pump(const Duration(milliseconds: 16));
-    expect(find.byType(TrackingTimelineSheet), findsNothing);
-    expect(find.text('删除该包裹'), findsNothing);
-    await h.update(t, [pkg('A'), pkg('B')]);
-    old.onTap!();
-    old.onLongPress!();
-    await t.pump(const Duration(milliseconds: 40));
-    expect(find.byType(TrackingTimelineSheet), findsNothing);
-    expect(find.bySemanticsLabel(RegExp('fixture-A')), findsOneWidget);
-    await t.pumpAndSettle();
-    semantics.dispose();
+    addTearDown(h.dispose);
+    try {
+      await h.mount(t, [pkg('A'), pkg('B')]);
+      final old = t.widget<SpringCard>(spring('A'));
+      final node = t.getSemantics(find.text('fixture-A')).id;
+      await h.update(t, [pkg('B')]);
+      expect(t.widget<ModernPackageCard>(card('A')).interactive, false);
+      expect(t.widget<SpringCard>(spring('A')).onTap, isNull);
+      expect(
+          t
+              .widget<IgnorePointer>(find
+                  .descendant(of: row('A'), matching: find.byType(IgnorePointer))
+                  .first)
+              .ignoring,
+          true);
+      expect(
+          t
+              .widget<ExcludeFocus>(find
+                  .descendant(of: row('A'), matching: find.byType(ExcludeFocus))
+                  .first)
+              .excluding,
+          true);
+      expect(find.bySemanticsLabel(RegExp('fixture-A')), findsNothing);
+      old.onTap!();
+      old.onLongPress!();
+      t.binding.renderViews.first.owner!.semanticsOwner!
+          .performAction(node, SemanticsAction.tap);
+      await t.pump(const Duration(milliseconds: 16));
+      expect(find.byType(TrackingTimelineSheet), findsNothing);
+      expect(find.text('删除该包裹'), findsNothing);
+      await h.update(t, [pkg('A'), pkg('B')]);
+      old.onTap!();
+      old.onLongPress!();
+      await t.pump(const Duration(milliseconds: 40));
+      expect(find.byType(TrackingTimelineSheet), findsNothing);
+      expect(find.bySemanticsLabel(RegExp('fixture-A')), findsOneWidget);
+      await t.pumpAndSettle();
+    } finally {
+      semantics.dispose();
+    }
   });
   testWidgets('确认取件异步等待中退出重入，旧generation不得提交', (t) async {
     final fake = FakePackages();
     final h = Harness();
+    addTearDown(h.dispose);
     await h.mount(t, [pkg('A', arrived: true)], notifier: fake);
     await t.tap(find.text('确认取件'));
     await t.pump();
@@ -273,6 +290,7 @@ void main() {
     addTearDown(() => t.binding.defaultBinaryMessenger
         .setMockMethodCallHandler(SystemChannels.platform, null));
     final h = Harness();
+    addTearDown(h.dispose);
     await h.mount(t, [pkg('A', arrived: true)]);
     await t.tap(find.text('9-9-9999'));
     await t.pump();
@@ -289,6 +307,7 @@ void main() {
   });
   testWidgets('退出时已聚焦后代失焦，重入不会恢复旧焦点', (t) async {
     final h = Harness();
+    addTearDown(h.dispose);
     await h.mount(t, [pkg('A', arrived: true), pkg('B')]);
     final context = t.element(find.text('确认取件'));
     final node = Focus.of(context);
@@ -305,6 +324,7 @@ void main() {
   });
   testWidgets('减少动态效果插入/退出中即终态，关闭不重播', (t) async {
     final h = Harness();
+    addTearDown(h.dispose);
     await h.mount(t, [pkg('A')]);
     await h.update(t, [pkg('B'), pkg('A')]);
     await t.pump(const Duration(milliseconds: 40));
@@ -323,6 +343,7 @@ void main() {
   });
   testWidgets('20轮混合更新、空/单列表与离页无ticker', (t) async {
     final h = Harness();
+    addTearDown(h.dispose);
     await h.mount(t, []);
     for (var i = 0; i < 20; i++) {
       await h.update(t, [pkg('A', title: 'round-$i'), if (i.isEven) pkg('B')]);
@@ -344,6 +365,7 @@ void main() {
   });
   testWidgets('长列表原生惰性滚动；离屏退场也释放，offset不被重置', (t) async {
     final h = Harness();
+    addTearDown(h.dispose);
     final ps = List.generate(80, (i) => pkg('L$i'));
     await h.mount(t, ps);
     expect(ids(t).length, lessThan(15));

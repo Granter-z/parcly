@@ -4,6 +4,7 @@ import 'package:pickup_app/core/engine/logistics_status_engine.dart';
 import 'package:pickup_app/core/engine/package_identity.dart';
 import 'package:pickup_app/core/models/package.dart';
 import 'package:pickup_app/core/models/package_status.dart';
+import 'package:pickup_app/core/sanitizer/goods_name_cleaner.dart';
 import 'package:pickup_app/platform/connectors/taobao_sync_rules.dart';
 
 Package _p(
@@ -162,5 +163,21 @@ void main() {
     expect(isUserHandledPickup(_p('a_1', '', status: PackageStatus.archived)), isTrue);
     expect(isUserHandledPickup(_p('a_1', '', status: PackageStatus.pickedUp, pickedUpAt: DateTime(2026))), isTrue);
     expect(isUserHandledPickup(_p('a_1', '', status: PackageStatus.pickedUp)), isFalse);
+  });
+
+  group('courierFromTrackingNumber 号段回归', () {
+    test('15 位纯数字低熵号段与 JT 前缀推断正确', () {
+      expect(courierFromTrackingNumber('680000000000001'), CourierType.zto);
+      expect(courierFromTrackingNumber('660000000000001'), CourierType.sto);
+      expect(courierFromTrackingNumber('880000000000001'), CourierType.jt);
+      expect(courierFromTrackingNumber('JT0000000000001'), CourierType.jt);
+    });
+  });
+
+  group('GoodsNameCleaner 年份修饰词剥离', () {
+    test('剥离 202x/203x/204x 年份款型词', () {
+      expect(GoodsNameCleaner.clean('2035款 纯棉短袖'), '纯棉短袖');
+      expect(GoodsNameCleaner.clean('2049款 耳机'), '耳机');
+    });
   });
 }

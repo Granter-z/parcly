@@ -6,10 +6,8 @@
 ///
 /// 只存时间戳与计数（不含任何凭据），因此与 `sync_history` 一样使用明文 box。
 ///
-/// 前后台两个 isolate 会各自打开同一个 box，写入策略据此约定：
-/// - 后台 worker 只做**单 key 标量**写入（幂等、last-writer-wins）；
-/// - 需要 read-modify-write 的 `history` **只由主 isolate 写**；
-/// - 前台启动时 [loadIntoCache] 以磁盘为准覆盖内存，天然与后台写入收敛。
+/// P45 起仅主 isolate 打开并读写本 box（后台 WorkManager worker 改走 JSON 桥接文件，
+/// 再由主 isolate 启动时合并），避免双 isolate 共写同一 Hive 文件导致偏移损坏。
 library;
 
 import 'package:flutter/foundation.dart';
@@ -18,7 +16,7 @@ import 'package:hive/hive.dart';
 import '../../core/models/keep_alive_state.dart';
 import '../../core/models/platform_ids.dart';
 
-/// 保活状态 Box 名称（在 main.dart 与后台 worker 中预先打开）
+/// 保活状态 Box 名称（仅在 main.dart 主 isolate 预先打开）
 const String kKeepAliveBox = 'keep_alive_state';
 
 class KeepAliveStore {
@@ -29,14 +27,15 @@ class KeepAliveStore {
 
   Box? _box;
 
-  // 高频读路径的内存缓存：同步 getter 不应依赖 box 是否已打开
-  bool _enabled = true;
-  final Map<String, bool> _platformEnabled = {};
-  final Map<String, DateTime> _nextCache = {};
-  final Map<String, DateTime> _lastCache = {};
-  final Map<String, int> _failureCache = {};
-  final Map<String, DateTime> _notifiedCache = {};
-  KeepAliveHistory _history = KeepAliveHistory.empty;
+  // 进程级共享内存缓存：避免不同地方各自 new KeepAliveStore() 导致内存缓存分裂；
+  // 同步 getter 不必等待 box 打开即可返回一致状态。
+  static bool _enabled = true;
+  static final Map<String, bool> _platformEnabled = {};
+  static final Map<String, DateTime> _nextCache = {};
+  static final Map<String, DateTime> _lastCache = {};
+  static final Map<String, int> _failureCache = {};
+  static final Map<String, DateTime> _notifiedCache = {};
+  static KeepAliveHistory _history = KeepAliveHistory.empty;
 
   static String _nextKey(String p) => '${p.toLowerCase()}_next_keep_alive_at';
   static String _lastKey(String p) => '${p.toLowerCase()}_last_keep_alive_at';
@@ -44,15 +43,28 @@ class KeepAliveStore {
   static String _enabledKey(String p) => '${p.toLowerCase()}_enabled';
   static String _notifiedKey(String p) => '${p.toLowerCase()}_last_notify_expired_at';
 
-  /// 启动时预打开存储（main.dart 与后台 worker 各调用一次）
+  /// 启动时预打开存储并预热静态缓存（仅在主 isolate 调用）
   static Future<void> initialize() async {
-    if (!Hive.isBoxOpen(_boxName)) {
+    final wasOpen = Hive.isBoxOpen(_boxName);
+    if (!wasOpen) {
+      _resetCache();
       try {
         await Hive.openBox(_boxName);
       } catch (e) {
         debugPrint('[KeepAliveStore] open box failed: $e');
       }
     }
+    await KeepAliveStore().loadIntoCache();
+  }
+
+  static void _resetCache() {
+    _enabled = true;
+    _platformEnabled.clear();
+    _nextCache.clear();
+    _lastCache.clear();
+    _failureCache.clear();
+    _notifiedCache.clear();
+    _history = KeepAliveHistory.empty;
   }
 
   Box? get _safeBox {
@@ -75,9 +87,7 @@ class KeepAliveStore {
     }
   }
 
-  /// 从磁盘预热内存缓存
-  ///
-  /// 这是前后台两个 isolate 收敛的手段：无论后台写了什么，前台启动时以磁盘为准。
+  /// 从磁盘预热内存缓存（以磁盘为准覆盖静态缓存）。
   Future<void> loadIntoCache() async {
     await _ensureInit();
     final box = _safeBox;

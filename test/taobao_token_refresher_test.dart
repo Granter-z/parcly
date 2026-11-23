@@ -1,7 +1,12 @@
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
+import 'package:hive/hive.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:pickup_app/platform/keep_alive/platform_heartbeat.dart';
 import 'package:pickup_app/platform/keep_alive/taobao_token_refresher.dart';
+import 'package:pickup_app/platform/storage/platform_auth_store.dart';
 
 void main() {
   group('classifyMtopBody', () {
@@ -156,6 +161,57 @@ void main() {
       expect(calls, 2);
       expect(result.sessionExpired, isTrue);
       expect(result.networkError, isFalse);
+    });
+
+    test('首轮 Set-Cookie 下发新令牌且返回 TOKEN_EMPTY，次轮成功未再下发 Set-Cookie 时持久化新令牌', () async {
+      final tempDir = Directory.systemTemp.createTempSync('tb_refresher_persist_');
+      Hive.init(tempDir.path);
+      await Hive.openBox(kPlatformAuthBox);
+      addTearDown(() async {
+        await Hive.close();
+        if (tempDir.existsSync()) tempDir.deleteSync(recursive: true);
+      });
+
+      final authStore = PlatformAuthStore();
+      await authStore.saveCookies(
+        'taobao',
+        'cookie2=testc2; unb=testunb; _m_h5_tk=oldtok_1; _m_h5_tk_enc=oldenc_1',
+      );
+
+      var calls = 0;
+      String? secondCookie;
+      final client = MockClient((request) async {
+        calls++;
+        if (calls == 1) {
+          return http.Response(
+            'FAIL_SYS_TOKEN_EMPTY',
+            200,
+            headers: {
+              'set-cookie': '_m_h5_tk=newtok_2; Path=/, _m_h5_tk_enc=newenc_2; Path=/',
+            },
+          );
+        }
+        secondCookie = request.headers['Cookie'];
+        return http.Response('{"ret":["SUCCESS::OK"],"data":{}}', 200);
+      });
+
+      final hb = TaobaoHeartbeat(
+        authStore: authStore,
+        refreshOverride: (cookies) =>
+            TaobaoTokenRefresher.refresh(cookies, client: client),
+      );
+      final hbResult = await hb.performHeartbeat(authStore.getCookies('taobao')!);
+
+      expect(calls, 2);
+      expect(hbResult.success, isTrue);
+      expect(secondCookie, contains('_m_h5_tk=newtok_2'));
+
+      final persisted = authStore.getCookies('taobao');
+      expect(persisted, isNotNull);
+      expect(persisted, contains('_m_h5_tk=newtok_2'));
+      expect(persisted, contains('_m_h5_tk_enc=newenc_2'));
+      expect(persisted, isNot(contains('oldtok_1')));
+      expect(persisted, isNot(contains('oldenc_1')));
     });
   });
 }

@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:pickup_app/core/models/platform_ids.dart';
 import 'package:pickup_app/platform/connectors/connector_manager.dart';
 import 'package:pickup_app/ui/components/platform_status_bar.dart';
 import 'package:pickup_app/ui/constants/app_constants.dart';
 import 'package:pickup_app/ui/providers/platform_auth_status_provider.dart';
+import 'package:pickup_app/ui/screens/login/platform_login_flow.dart';
 import 'package:pickup_app/ui/theme/glass_tokens.dart';
 
 Future<void> pumpBar(
@@ -94,5 +96,14 @@ void main() {
       );
     }
     handle.dispose();
+  });
+
+  test('kPlatformIds 与 kPlatforms 顺序和短名一致', () {
+    expect(kPlatformIds, const ['pdd', 'jd', 'taobao']);
+    expect(kPlatforms.map((p) => p.id).toList(), kPlatformIds);
+    expect(
+      kPlatforms.map((p) => p.shortName).toList(),
+      kPlatformIds.map(platformShortName).toList(),
+    );
   });
 }

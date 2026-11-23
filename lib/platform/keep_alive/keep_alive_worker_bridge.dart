@@ -296,3 +296,15 @@ Future<void> writeWorkerGates(Map<String, DateTime> gates) async {
     debugPrint('[KeepAliveBridge] write gate failed: $e');
   }
 }
+
+/// 主 isolate 调用：清除指定平台的 worker 闸门（重登或解绑时使用）。
+Future<void> clearWorkerGate(String platform) async {
+  try {
+    final current = await readWorkerGates();
+    if (!current.containsKey(platform)) return;
+    current.remove(platform);
+    await writeWorkerGates(current);
+  } catch (e) {
+    debugPrint('[KeepAliveBridge] clear gate failed: $e');
+  }
+}

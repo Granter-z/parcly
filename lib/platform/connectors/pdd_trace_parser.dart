@@ -75,10 +75,10 @@ List<Map<String, String>> parsePddDomTimeline(String rawText, {DateTime? now}) {
       continue;
     }
 
-    if (_noiseWords.contains(line)) continue;
+    if (_noiseWords.contains(line) || _skipRegex.hasMatch(line)) continue;
 
     final looksLikeDesc = line.contains('【') || _logisticsKeywords.any(line.contains);
-    if (looksLikeDesc) {
+    if (looksLikeDesc || (pendingDesc != null && line.length >= 4)) {
       if (pendingDesc == null) {
         pendingDesc = StringBuffer(line);
       } else {
@@ -86,8 +86,6 @@ List<Map<String, String>> parsePddDomTimeline(String rawText, {DateTime? now}) {
       }
       continue;
     }
-
-    if (_skipRegex.hasMatch(line)) continue;
   }
 
   flush();
@@ -100,6 +98,8 @@ class PddCapturedResponse {
 
   const PddCapturedResponse(this.url, this.body);
 }
+
+final _pddIgnoreUrlReg = RegExp(r'/(?:log|logs|event|events)(?:[/?#]|$)');
 
 /// 解析 window.name 暂存的 JSON 数组捕获项
 List<PddCapturedResponse> parsePddWindowNameCaptures(String raw) {
@@ -116,18 +116,17 @@ List<PddCapturedResponse> parsePddWindowNameCaptures(String raw) {
       if (url.isEmpty || body.isEmpty) continue;
 
       final lowerUrl = url.toLowerCase();
-      // 过滤统计打点等无用网络包
-      if (lowerUrl.contains('analytics') || lowerUrl.contains('/event') || lowerUrl.contains('/log')) {
+      // 过滤统计打点等无用网络包（按独立路径段匹配，避免误杀 /logistics）
+      if (lowerUrl.contains('analytics') || _pddIgnoreUrlReg.hasMatch(lowerUrl)) {
         continue;
       }
-      final isRelevant = lowerUrl.contains('proxy/api') &&
-          (lowerUrl.contains('order') ||
-              lowerUrl.contains('logistic') ||
-              lowerUrl.contains('express') ||
-              lowerUrl.contains('track') ||
-              lowerUrl.contains('parcel') ||
-              lowerUrl.contains('shipping') ||
-              lowerUrl.contains('goods'));
+      final isRelevant = lowerUrl.contains('order') ||
+          lowerUrl.contains('logistic') ||
+          lowerUrl.contains('express') ||
+          lowerUrl.contains('track') ||
+          lowerUrl.contains('parcel') ||
+          lowerUrl.contains('shipping') ||
+          lowerUrl.contains('goods');
       if (isRelevant) {
         result.add(PddCapturedResponse(url, body));
       }
@@ -140,11 +139,11 @@ List<PddCapturedResponse> parsePddWindowNameCaptures(String raw) {
 
 const _timeCandidateKeys = {
   'time', 'create_time', 'update_time', 'logistics_time', 'tracking_time',
-  'subtitle', 'format_time', 'formatTime', 'gmt_create',
+  'subtitle', 'format_time', 'formattime', 'gmt_create',
 };
 
 const _descCandidateKeys = {
-  'desc', 'description', 'context', 'status_desc', 'statusDesc', 'text',
+  'desc', 'description', 'context', 'status_desc', 'statusdesc', 'text',
   'content', 'track_desc', 'logistics_desc', 'sub_desc',
 };
 
@@ -187,7 +186,6 @@ List<Map<String, String>> extractPddTimelineFromJson(dynamic root, {DateTime? no
             });
           }
         }
-        return;
       }
 
       for (final child in node.values) {

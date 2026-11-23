@@ -47,7 +47,7 @@ class _PickupAppState extends State<PickupApp> {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: '待取件',
+      title: 'Parcly',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.light,
       navigatorKey: appNavigatorKey,

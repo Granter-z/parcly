@@ -48,9 +48,4 @@ class Motion {
   static Duration of(BuildContext context, Duration duration) {
     return reduce(context) ? Duration.zero : duration;
   }
-
-  /// 按曲线取值，开启「移除动画」时退化成线性（配合零时长即瞬时）。
-  static Curve curve(BuildContext context, Curve curve) {
-    return reduce(context) ? Curves.linear : curve;
-  }
 }

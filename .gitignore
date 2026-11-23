@@ -29,3 +29,8 @@ tb_log*.txt
 *.diag.zip
 diag_export*/
 real_world/
+
+# Python 字节码缓存
+__pycache__/
+*.py[cod]
+

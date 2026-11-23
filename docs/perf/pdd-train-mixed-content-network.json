@@ -1,0 +1,65 @@
+{
+  "collectedAt": "2026-11-23 19:02 before / 19:16 after",
+  "before": {
+    "url": "http://t00img.yangkeduo.com/goods/2019-11-20/d26747be4edc4904d22628b6fde261ba.png",
+    "kind": "Network.loadingFailed",
+    "httpStatus": null,
+    "blockedReason": "mixed-content",
+    "responseBytes": 0,
+    "referer": "",
+    "ua": "Mozilla/5.0 (Linux; Android 14; 25102RKBEC Build/UP1A.231005.007) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36",
+    "image": {
+      "complete": true,
+      "naturalWidth": 0,
+      "display": "inline",
+      "visibility": "visible",
+      "dataSrc": null,
+      "matchedCleanRule": null
+    }
+  },
+  "after": {
+    "deviceTime": "2026-11-23 19:27:31",
+    "network": [
+      {
+        "kind": "request",
+        "url": "http://t00img.yangkeduo.com/goods/2019-11-20/d26747be4edc4904d22628b6fde261ba.png",
+        "referer": "",
+        "ua": "Mozilla/5.0 (Linux; Android 14; 25102RKBEC Build/UP1A.231005.007) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36"
+      },
+      {
+        "kind": "requestExtra",
+        "url": "http://t00img.yangkeduo.com/goods/2019-11-20/d26747be4edc4904d22628b6fde261ba.png",
+        "referer": null,
+        "ua": "Mozilla/5.0 (Linux; Android 14; 25102RKBEC Build/UP1A.231005.007) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36"
+      },
+      {
+        "kind": "response",
+        "url": "http://t00img.yangkeduo.com/goods/2019-11-20/d26747be4edc4904d22628b6fde261ba.png",
+        "status": 200,
+        "mimeType": "image/png",
+        "protocol": "http/1.1",
+        "encodedDataLength": 550
+      },
+      {
+        "kind": "finished",
+        "url": "http://t00img.yangkeduo.com/goods/2019-11-20/d26747be4edc4904d22628b6fde261ba.png",
+        "encodedDataLength": 2456
+      }
+    ],
+    "image": {
+      "naturalWidth": 75,
+      "naturalHeight": 75,
+      "complete": true,
+      "display": "inline",
+      "visibility": "visible",
+      "dataSrc": null,
+      "rect": {
+        "x": 17.27678680419922,
+        "y": 320.62054443359375,
+        "width": 19.196430206298828,
+        "height": 19.196430206298828
+      }
+    }
+  },
+  "evidenceType": "CDP Network + Runtime; no Cookie or user avatar/order fields"
+}

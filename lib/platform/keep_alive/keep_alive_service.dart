@@ -50,9 +50,9 @@ class KeepAliveService {
   /// 保活定时器（每小时检查一次，是否真正执行由各平台闸门决定）
   Timer? _timer;
 
-  /// 启动中标志：`start()` 的第一个 await 之前 `_timer` 仍为空，
-  /// 并发调用会各自跑完并重复创建定时器（旧的会泄漏），因此需要这道闸。
-  bool _starting = false;
+  /// 启动中任务 Future：`start()` 的首个 await 之前 `_timer` 仍为空，
+  /// 并发调用或中途 `setEnabled` 切换需要可等待与二次校验，防止定时器泄漏或状态反置。
+  Future<void>? _startFuture;
 
   DateTime? _lastCheckAt;
 
@@ -90,32 +90,38 @@ class KeepAliveService {
   ///
   /// 先加载持久化状态：若用户已关闭保活则不启动；若各平台的「下次保活时间」
   /// 仍在闸门内，本轮检查不会发送任何心跳（这是冷启动不再重发请求的关键）。
-  Future<void> start() async {
-    if (_timer != null || _starting) return;
+  Future<void> start() {
+    if (_timer != null) return Future<void>.value();
+    final inflight = _startFuture;
+    if (inflight != null) return inflight;
 
-    _starting = true;
-    try {
-      await _store.loadIntoCache();
-      // 合并 App 进程不在时 worker 的结果（跨 isolate 不写同一个 Hive box）
-      await _applyWorkerResults();
-      _enabled = _store.enabled;
-      await _syncWorkerConfig();
+    final task = _startInner();
+    _startFuture = task.whenComplete(() {
+      if (identical(_startFuture, task)) _startFuture = null;
+    });
+    return _startFuture!;
+  }
 
-      if (!_enabled) {
-        debugPrint('[KeepAliveService] disabled by user, not starting');
-        return;
-      }
+  Future<void> _startInner() async {
+    await _store.loadIntoCache();
+    // 合并 App 进程不在时 worker 的结果（跨 isolate 不写同一个 Hive box）
+    await _applyWorkerResults();
+    _enabled = _store.enabled;
+    await _syncWorkerConfig();
 
-      debugPrint('[KeepAliveService] Starting keep-alive service...');
-      await _performKeepAlive();
-
-      // 每小时检查一次是否需要保活（各平台按动态间隔独立放行）
-      _timer = Timer.periodic(const Duration(hours: 1), (_) {
-        _performKeepAlive();
-      });
-    } finally {
-      _starting = false;
+    if (!_enabled) {
+      debugPrint('[KeepAliveService] disabled by user, not starting');
+      return;
     }
+
+    debugPrint('[KeepAliveService] Starting keep-alive service...');
+    await _performKeepAlive();
+
+    if (!_enabled || _timer != null) return;
+    // 每小时检查一次是否需要保活（各平台按动态间隔独立放行）
+    _timer = Timer.periodic(const Duration(hours: 1), (_) {
+      _performKeepAlive();
+    });
   }
 
   /// 停止保活服务
@@ -130,7 +136,12 @@ class KeepAliveService {
     await _store.setEnabled(enabled);
     _enabled = enabled;
     if (enabled) {
+      final inflight = _startFuture;
+      if (inflight != null) {
+        await inflight;
+      }
       await start();
+      await _syncWorkerConfig();
     } else {
       stop();
       await _syncWorkerConfig();
@@ -322,18 +333,13 @@ class KeepAliveService {
       }
     }
 
-    if (plan.touchExpired) {
-      await _authStore.setExpired(platform, plan.expiredValue);
-    }
-    if (plan.failureCount != null) {
-      await _store.setFailureCount(platform, plan.failureCount!);
-    }
-    if (plan.clearNotifyMark) {
-      await _store.setLastNotifiedAt(platform, null);
-    }
-    if (plan.updateLastSuccess) {
-      await _store.setLast(platform, recordTime);
-    }
+    await applyHeartbeatOutcome(
+      platform: platform,
+      plan: plan,
+      authStore: _authStore,
+      store: _store,
+      now: recordTime,
+    );
     if (kind == KeepAliveOutcomeKind.success) {
       // 前台成功恢复后清除 worker 的失效提醒标记，避免重登后短期再失效被 7 天窗口压掉
       await clearWorkerNotifiedAt(platform);
@@ -466,5 +472,27 @@ class KeepAliveService {
   /// 释放资源
   void dispose() {
     stop();
+  }
+}
+
+/// 按 [plan] 将心跳结局落盘（供前台 [KeepAliveService] 合并结果及测试复用）。
+Future<void> applyHeartbeatOutcome({
+  required String platform,
+  required KeepAliveOutcomePlan plan,
+  required PlatformAuthStore authStore,
+  required KeepAliveStore store,
+  DateTime? now,
+}) async {
+  if (plan.touchExpired) {
+    await authStore.setExpired(platform, plan.expiredValue);
+  }
+  if (plan.failureCount != null) {
+    await store.setFailureCount(platform, plan.failureCount!);
+  }
+  if (plan.clearNotifyMark) {
+    await store.setLastNotifiedAt(platform, null);
+  }
+  if (plan.updateLastSuccess) {
+    await store.setLast(platform, now ?? DateTime.now());
   }
 }

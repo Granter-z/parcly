@@ -15,7 +15,7 @@ library;
 import 'dart:convert';
 
 import 'trace_time.dart';
-import 'package:pickup_app/core/parser/pickup_point_name.dart';
+import 'pickup_point_name.dart';
 
 /// SSR 页里数据的赋值标记
 const String taobaoSsrMarker = "__ICE_SUSPENSE_LOADER__']['undefined'] = ";
@@ -59,14 +59,6 @@ class TaobaoTrace {
     required this.lgStatus,
     required this.nodes,
   });
-
-  Map<String, Object> toMap() => {
-        'mailNo': mailNo,
-        'cpName': cpName,
-        'pickupCode': pickupCode,
-        'stationName': stationName,
-        'nodes': nodes,
-      };
 }
 
 /// 淘宝 SSR 物流详情解析器
@@ -160,7 +152,7 @@ class TaobaoTraceParser {
     final mailNo = _str(fields['mailNo']).isNotEmpty ? _str(fields['mailNo']) : _str(company['mailNo']);
     final cpCode = _str(args['cpCode']);
     var cpName = _str(company['name']);
-    if (cpName.isEmpty || RegExp(r'^\*+$').hasMatch(cpName)) {
+    if (cpName.isEmpty || _maskedStarsReg.hasMatch(cpName)) {
       cpName = cpNameFromCode(cpCode);
     }
     final lgStatus = _str(args['lgStatus']);
@@ -200,6 +192,12 @@ class TaobaoTraceParser {
       return c != 0 ? c : a.$1.compareTo(b.$1);
     });
     final nodes = [for (final e in indexed) e.$2];
+    if (nodes.isNotEmpty) {
+      final newestTag = nodes.first['tag'] ?? '';
+      if (newestTag.isNotEmpty) {
+        stateLabel = newestTag;
+      }
+    }
 
     var pickupCode = '';
     var stationName = '';
@@ -283,6 +281,9 @@ class TaobaoTraceParser {
     return _str(stage['desc']);
   }
 
+  static final _maskedStarsReg = RegExp(r'^\*+$');
+  static final _hasDigitReg = RegExp(r'\d');
+  static final _unsafeCodeCharsReg = RegExp(r'[^A-Za-z0-9_]');
   static final _pickupCodeReg =
       RegExp(r'(?:取件码|取货码|提货码|凭码)\s*(?:为|是)?\s*[:：]?\s*([A-Za-z0-9]+(?:-[A-Za-z0-9]+)*)');
 
@@ -290,7 +291,7 @@ class TaobaoTraceParser {
   static String extractPickupCode(String text) {
     for (final m in _pickupCodeReg.allMatches(text)) {
       final code = m.group(1)!;
-      if (RegExp(r'\d').hasMatch(code) && code.length <= 16) return code;
+      if (_hasDigitReg.hasMatch(code) && code.length <= 16) return code;
     }
     return '';
   }
@@ -336,7 +337,7 @@ class TaobaoTraceParser {
 
   /// 日志里的 code 只保留 [A-Za-z0-9_]，最多 40 个字符
   static String _safeCode(Object? code) {
-    final s = code.toString().replaceAll(RegExp(r'[^A-Za-z0-9_]'), '');
+    final s = code.toString().replaceAll(_unsafeCodeCharsReg, '');
     return s.length > 40 ? s.substring(0, 40) : s;
   }
 

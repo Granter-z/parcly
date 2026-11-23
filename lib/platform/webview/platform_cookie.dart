@@ -15,6 +15,9 @@ import 'package:webview_flutter/webview_flutter.dart';
 const MethodChannel _webviewChannel =
     MethodChannel('com.example.pickup_app/webview_hook');
 
+/// 后台 isolate 或测试环境中原生通道不可用时短路跳过，避免重复 IPC 与日志刷屏。
+bool _nativeChannelUnavailable = false;
+
 /// 以原生方式写入单条 Cookie（保留 HttpOnly/Secure）
 Future<bool> setPlatformCookie({
   required String name,
@@ -31,15 +34,20 @@ Future<bool> setPlatformCookie({
   if (secure) cookie.write('; Secure');
   if (httpOnly) cookie.write('; HttpOnly');
 
-  try {
-    final ok = await _webviewChannel.invokeMethod<bool>('setCookie', {
-      'url': url,
-      'cookie': cookie.toString(),
-      'flush': flush,
-    });
-    if (ok == true) return true;
-  } catch (e) {
-    debugPrint('[Cookie] native setCookie failed, fallback to Dart: $e');
+  if (!_nativeChannelUnavailable) {
+    try {
+      final ok = await _webviewChannel.invokeMethod<bool>('setCookie', {
+        'url': url,
+        'cookie': cookie.toString(),
+        'flush': flush,
+      });
+      if (ok == true) return true;
+    } on MissingPluginException catch (e) {
+      _nativeChannelUnavailable = true;
+      debugPrint('[Cookie] native channel unavailable, fallback to Dart: $e');
+    } catch (e) {
+      debugPrint('[Cookie] native setCookie failed, fallback to Dart: $e');
+    }
   }
 
   try {
@@ -78,11 +86,13 @@ Future<void> injectCookieString({
       );
     }
   }
-  try {
-    await _webviewChannel.invokeMethod<bool>('flushCookies');
-  } on MissingPluginException {
-    // 后台 isolate 没有原生通道，逐条回退已完成。
-  } catch (e) {
-    debugPrint('[Cookie] batch flush failed: $e');
+  if (!_nativeChannelUnavailable) {
+    try {
+      await _webviewChannel.invokeMethod<bool>('flushCookies');
+    } on MissingPluginException {
+      _nativeChannelUnavailable = true;
+    } catch (e) {
+      debugPrint('[Cookie] batch flush failed: $e');
+    }
   }
 }

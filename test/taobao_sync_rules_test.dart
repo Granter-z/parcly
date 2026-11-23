@@ -65,6 +65,14 @@ void main() {
       expect(shouldSkipSignedDetail(_pkg(status: PackageStatus.archived, timeline: _timeline)), isTrue);
     });
 
+    test('force=true 时即使已签收且有轨迹也不跳过（返回 false）', () {
+      expect(shouldSkipSignedDetail(_pkg(timeline: _timeline), force: true), isFalse);
+      expect(
+        shouldSkipSignedDetail(_pkg(status: PackageStatus.archived, timeline: _timeline), force: true),
+        isFalse,
+      );
+    });
+
     test('第一次同步：本地没有 → 照常请求', () {
       expect(shouldSkipSignedDetail(null), isFalse);
     });
@@ -226,6 +234,47 @@ void main() {
       final seed = localCainiaoSeedForPriority(local);
       expect(seed, hasLength(1));
       expect(seed.single.pickupCode, '12-3-4567');
+    });
+  });
+
+  group('applyCainiaoPriority 完整（非打码）单号精确匹配', () {
+    Package cnFull({String tracking = 'YT0000000000001', String code = '1-1-1111'}) => Package(
+          id: 'CN_$tracking',
+          trackingNumber: tracking,
+          courier: CourierType.yt,
+          urgency: UrgencyLevel.normal,
+          status: PackageStatus.arrived,
+          addedAt: DateTime(2026, 10, 24),
+          platform: 'cainiao',
+          pickupCode: code,
+          stationName: '测试驿站',
+        );
+
+    test('淘宝已签收 + 完整单号精确命中菜鸟待取件 → 改回 arrived 并带上取件码', () {
+      final tb = _pkg(
+        id: 'TB_1000000000000000001',
+        tracking: 'YT0000000000001',
+        status: PackageStatus.pickedUp,
+      );
+      final result = applyCainiaoPriority(tb, [cnFull()]);
+      expect(result.id, 'TB_1000000000000000001');
+      expect(result.status, PackageStatus.arrived);
+      expect(result.pickupCode, '1-1-1111');
+      expect(result.stationName, '测试驿站');
+      expect(result.trackingNumber, 'YT0000000000001');
+    });
+
+    test('用户手动已取（pickedUpAt 有值）或已归档 → 不被完整单号菜鸟覆盖', () {
+      final tb = _pkg(
+        id: 'TB_1000000000000000001',
+        tracking: 'YT0000000000001',
+        status: PackageStatus.pickedUp,
+      );
+      final userPicked = tb.copyWith(pickedUpAt: DateTime(2026, 10, 24, 20));
+      expect(identical(applyCainiaoPriority(tb, [cnFull()], local: userPicked), tb), isTrue);
+
+      final archived = tb.copyWith(status: PackageStatus.archived);
+      expect(identical(applyCainiaoPriority(tb, [cnFull()], local: archived), tb), isTrue);
     });
   });
 }

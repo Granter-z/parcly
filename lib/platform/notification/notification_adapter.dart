@@ -4,10 +4,13 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:timezone/timezone.dart' as tz;
 import 'package:timezone/data/latest.dart' as tz;
+import '../../core/debug/debug_trace.dart';
+import '../../core/engine/station_grouping.dart';
 import '../../core/models/package.dart';
 import '../../core/models/platform_ids.dart';
-import '../../core/debug/debug_trace.dart';
 import '../../core/utils/stable_hash.dart';
+import '../../core/utils/text_truncate.dart';
+import '../storage/pickup_point_alias_store.dart';
 
 /// 登录状态提醒使用独立通知渠道
 ///
@@ -90,10 +93,9 @@ class NotificationAdapter {
     tz.initializeTimeZones();
 
     const android = AndroidInitializationSettings('ic_stat_parcel');
-    const ios = DarwinInitializationSettings();
 
     await _plugin.initialize(
-      const InitializationSettings(android: android, iOS: ios),
+      const InitializationSettings(android: android),
       onDidReceiveNotificationResponse: _onNotificationResponse,
     );
     _initialized = true;
@@ -199,15 +201,19 @@ class NotificationAdapter {
   Future<void> showArrivedNotification(Package package) async {
     DebugTrace.separator('SHOW ARRIVED NOTIFICATION');
     debugPrint(
-        '[Notify] arrived courier=${package.courier.shortName} hasCode=${package.pickupCode.isNotEmpty}');
+        '[Notify] arrived courier=${package.effectiveCourier.shortName} hasCode=${package.pickupCode.trim().isNotEmpty}');
 
     final title = _buildArrivedTitle(package);
     final body = _buildArrivedBody(package);
     final notificationId = packageNotificationId(package.id, _arrivedBaseId);
-    try {
-      await _plugin.cancel(
-          legacyPackageNotificationId(package.id, _arrivedBaseId));
-    } catch (_) {}
+    for (final oldId in [
+      legacyPackageNotificationId(package.id, _arrivedBaseId),
+      previousPackageNotificationId(package.id, _arrivedBaseId),
+    ]) {
+      try {
+        await _plugin.cancel(oldId);
+      } catch (_) {}
+    }
 
     await _showNotification(
       id: notificationId,
@@ -221,35 +227,48 @@ class NotificationAdapter {
     // 优先显示商品名，如果没有则显示「快递到了！」
     if (package.goodsName != null && package.goodsName!.trim().isNotEmpty) {
       final goodsName = package.goodsName!.trim();
-      // 商品名过长时截断（通知标题最多显示约 40 个字符）
-      return goodsName.length > 18 ? '${goodsName.substring(0, 18)}...' : goodsName;
+      // 商品名过长时按码点安全截断（通知标题最多显示约 40 个字符）
+      return truncateRunes(goodsName, 18, ellipsis: '...');
     }
     return '快递到了！';
   }
 
-  String _buildArrivedBody(Package package) {
-    final courier = package.courier.shortName;
+  @visibleForTesting
+  String buildArrivedBodyForTest(
+    Package package, {
+    Map<String, String>? stationAliases,
+  }) =>
+      _buildArrivedBody(package, stationAliases: stationAliases);
+
+  String _buildArrivedBody(
+    Package package, {
+    Map<String, String>? stationAliases,
+  }) {
+    final courier = package.effectiveCourier.shortName;
     final parts = <String>[];
 
     // 显示快递公司
     parts.add(courier);
 
     // 显示取件码
-    if (package.pickupCode.isNotEmpty) {
-      parts.add('取件码：${package.pickupCode}');
+    final code = package.pickupCode.trim();
+    if (code.isNotEmpty) {
+      parts.add('取件码：$code');
     }
 
-    // 显示驿站名（如果有）
-    if (package.stationName != null && package.stationName!.trim().isNotEmpty) {
-      final stationName = package.stationName!.trim();
-      // 驿站名过长时截断
-      final displayStation = stationName.length > 12 ? '${stationName.substring(0, 12)}...' : stationName;
-      parts.add(displayStation);
+    // 显示驿站名（排除未知占位文案，经别名表映射为规范名）
+    if (!isUnknownStationLabel(package.stationName)) {
+      final canonical = resolveCanonicalName(
+        package.stationName!.trim(),
+        buildAliasLookup(stationAliases ?? PickupPointAliasStore().readAll()),
+      );
+      // 驿站名过长时按码点安全截断
+      parts.add(truncateRunes(canonical, 12, ellipsis: '...'));
     }
 
     // 如果没有取件码，显示地址信息
-    if (package.pickupCode.isEmpty && package.location.isNotEmpty) {
-      parts.add('已到 ${package.location}');
+    if (code.isEmpty && package.location.trim().isNotEmpty) {
+      parts.add('已到 ${package.location.trim()}');
     }
 
     return parts.join(' · ');
@@ -257,15 +276,19 @@ class NotificationAdapter {
 
   Future<void> scheduleReminderNotification(Package package) async {
     DebugTrace.separator('SCHEDULE REMINDER NOTIFICATION');
-    debugPrint('[Notify] reminder courier=${package.courier.shortName}');
+    debugPrint('[Notify] reminder courier=${package.effectiveCourier.shortName}');
 
     const title = '快递还在等你';
-    final body = '${package.courier.shortName} 已等待超过 24 小时';
+    final body = '${package.effectiveCourier.shortName} 已等待超过 24 小时';
     final notificationId = packageNotificationId(package.id, _reminderBaseId);
-    try {
-      await _plugin.cancel(
-          legacyPackageNotificationId(package.id, _reminderBaseId));
-    } catch (_) {}
+    for (final oldId in [
+      legacyPackageNotificationId(package.id, _reminderBaseId),
+      previousPackageNotificationId(package.id, _reminderBaseId),
+    ]) {
+      try {
+        await _plugin.cancel(oldId);
+      } catch (_) {}
+    }
 
     await _scheduleNotification(
       id: notificationId,
@@ -306,12 +329,7 @@ class NotificationAdapter {
       priority: Priority.high,
       icon: 'ic_stat_parcel',
     );
-    const ios = DarwinNotificationDetails(
-      presentAlert: true,
-      presentBadge: true,
-      presentSound: true,
-    );
-    final details = NotificationDetails(android: android, iOS: ios);
+    final details = NotificationDetails(android: android);
 
     await _plugin.show(id, title, body, details, payload: payload);
   }
@@ -331,12 +349,7 @@ class NotificationAdapter {
       priority: Priority.high,
       icon: 'ic_stat_parcel',
     );
-    const ios = DarwinNotificationDetails(
-      presentAlert: true,
-      presentBadge: true,
-      presentSound: true,
-    );
-    const details = NotificationDetails(android: android, iOS: ios);
+    const details = NotificationDetails(android: android);
 
     final scheduledDate = tz.TZDateTime.now(tz.local).add(delay);
 

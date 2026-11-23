@@ -19,21 +19,6 @@ class AppColors {
   /// 卡片内部的次级容器底色（取件码条、空态内嵌块、图片占位）。
   static const surfaceSunken = Color(0xFFF7F7FA);
 
-  // P32 玻璃/内容令牌见 lib/ui/theme/glass_tokens.dart。
-  // 下列别名仅兼容旧引用；新代码请用 GlassTokens.fill* / contentFill。
-  static const glassFill = Color(0x8CFFFFFF);
-  static const glassFillStrong = Color(0xA6FFFFFF);
-  static const glassFillSoft = Color(0x73FFFFFF);
-  static const glassBorder = Color(0x99FFFFFF);
-  static const glassArrivedBorder = Color(0x59007AFF);
-  @Deprecated("用 GlassTokens.canvasGradient")
-  static const canvasGradient = LinearGradient(
-    begin: Alignment.topLeft,
-    end: Alignment.bottomRight,
-    colors: [Color(0xFFE8E0F5), Color(0xFFD6E8F8), Color(0xFFF7EFE4)],
-    stops: [0.0, 0.48, 1.0],
-  );
-
   // ── 强调色（全应用唯一）────────────────────────────────────────────────
   /// 填充、描边、图标。白字压在纯 [primary] 上只有 4.02:1，
   /// 因此它只用于非文字元素，或 ≥18px 粗体。
@@ -50,11 +35,7 @@ class AppColors {
   static const textSecondary = Color(0xFF5C5C63); //  6.63 /  5.94
   static const textTertiary = Color(0xFF6E6E73); //  5.07 /  4.54
 
-  /// 仅用于 ≥18px 或纯装饰图标。**不得承载正文**：白底只有 2.21:1。
-  static const textDisabled = Color(0xFFAEAEB2);
-
   static const separator = Color(0xFFE3E3E8);
-  static const border = Color(0xFFE3E3E8);
 
   // ── 状态语义色 ──────────────────────────────────────────────────────────
   // 每个前景色都保证：作为文本压在自己的 12% 浅底上 ≥ 4.5:1。
@@ -71,25 +52,9 @@ class AppColors {
 
   // ── 墨色表面（遗留；SnackBar 仍可用）──────────────────────────────────
   static const inkSurface = Color(0xFF17171A);
-  static const inkSurfaceRaised = Color(0xFF232327);
   static const onInkPrimary = Color(0xFFFFFFFF); // 17.89
-  static const onInkSecondary = Color(0xB8FFFFFF); // white 72% → 10.9
-  static const onInkTertiary = Color(0x9EFFFFFF); // white 62% →  7.5
-  static const onInkDivider = Color(0x1FFFFFFF);
-
-  // ── 兼容别名 ────────────────────────────────────────────────────────────
-  // 供 `app/hero_decision.dart` 等既有模块引用，语义统一收敛到上面的状态色。
-  static const secondary = Color(0xFF5856D6);
-  static const destructive = statusRejected;
-  static const error = statusRejected;
-  static const urgent = statusRejected;
-  static const success = statusPickedUp;
-  static const warning = statusDelivering;
-  static const info = primary;
 
   static const urgentBg = Color(0xFFFFE9E7);
-  static const warningBg = Color(0xFFFFF3E4);
-  static const successBg = Color(0xFFE6F4EA);
 }
 
 /// 间距令牌 —— 8 的倍数为主，4 为半档。
@@ -126,17 +91,12 @@ class AppRadius {
   /// Hero 表面、空态大块、底部抽屉。
   static const lg = 20.0;
 
-  /// 大面板（与 GlassTokens.radius=28 对齐的别名槽；玻璃 chrome 请读 GlassTokens）。
-  static const xl = 28.0;
-
   /// 胶囊形（同步按钮、状态胶囊）。
   static const pill = 999.0;
 
   static BorderRadius get xsAll => BorderRadius.circular(xs);
   static BorderRadius get smAll => BorderRadius.circular(sm);
   static BorderRadius get mdAll => BorderRadius.circular(md);
-  static BorderRadius get lgAll => BorderRadius.circular(lg);
-  static BorderRadius get xlAll => BorderRadius.circular(xl);
   static BorderRadius get pillAll => BorderRadius.circular(pill);
 }
 

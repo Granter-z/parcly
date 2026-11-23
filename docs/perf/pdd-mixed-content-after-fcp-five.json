@@ -1,0 +1,105 @@
+{
+  "condition": "mixed content compatibilityMode: existing WebView, force-stop before run 1, Network.setCacheDisabled(true)+clearBrowserCache before each navigation; not application cold start",
+  "runs": [
+    {
+      "urlPath": "/",
+      "responseEnd": 622.5,
+      "domContentLoaded": 630.5999999996275,
+      "loadEvent": 916.5999999996275,
+      "firstContentfulPaint": 632,
+      "firstPaint": 632,
+      "documentElements": 543,
+      "cleanScriptInstalled": false,
+      "visibleImages": 31,
+      "visibleFailed": 0,
+      "run": 1,
+      "deviceTime": "2026-11-23 19:16:30"
+    },
+    {
+      "urlPath": "/",
+      "responseEnd": 535.1999999992549,
+      "domContentLoaded": 548.7999999988824,
+      "loadEvent": 855.5999999996275,
+      "firstContentfulPaint": 528,
+      "firstPaint": 528,
+      "documentElements": 539,
+      "cleanScriptInstalled": true,
+      "visibleImages": 30,
+      "visibleFailed": 0,
+      "run": 2,
+      "deviceTime": "2026-11-23 19:16:36"
+    },
+    {
+      "urlPath": "/",
+      "responseEnd": 543.6000000014901,
+      "domContentLoaded": 574.2000000011176,
+      "loadEvent": 901.7000000011176,
+      "firstContentfulPaint": 584,
+      "firstPaint": 584,
+      "documentElements": 549,
+      "cleanScriptInstalled": true,
+      "visibleImages": 35,
+      "visibleFailed": 0,
+      "run": 3,
+      "deviceTime": "2026-11-23 19:16:43"
+    },
+    {
+      "urlPath": "/",
+      "responseEnd": 550.4000000003725,
+      "domContentLoaded": 572.1999999992549,
+      "loadEvent": 932.0999999996275,
+      "firstContentfulPaint": 580,
+      "firstPaint": 580,
+      "documentElements": 553,
+      "cleanScriptInstalled": false,
+      "visibleImages": 30,
+      "visibleFailed": 0,
+      "run": 4,
+      "deviceTime": "2026-11-23 19:16:49"
+    },
+    {
+      "urlPath": "/",
+      "responseEnd": 502.09999999962747,
+      "domContentLoaded": 530.4000000003725,
+      "loadEvent": 867.4000000003725,
+      "firstContentfulPaint": 544,
+      "firstPaint": 544,
+      "documentElements": 546,
+      "cleanScriptInstalled": true,
+      "visibleImages": 31,
+      "visibleFailed": 0,
+      "run": 5,
+      "deviceTime": "2026-11-23 19:16:55"
+    }
+  ],
+  "medianFcp": 580,
+  "rangeFcp": 104,
+  "previousSameWebViewGroups": [
+    {
+      "condition": "a0d52aa before mixed-content change; same existing-WebView cache-disabled navigation",
+      "fcpMs": [
+        560,
+        596,
+        556,
+        548,
+        540
+      ],
+      "medianFcp": 556,
+      "rangeFcp": 56,
+      "deviceTime": "2026-11-23 19:05:21-19:05:46"
+    },
+    {
+      "condition": "same control repeated",
+      "fcpMs": [
+        648,
+        596,
+        588,
+        636,
+        596
+      ],
+      "medianFcp": 596,
+      "rangeFcp": 60,
+      "deviceTime": "2026-11-23 19:06:01-19:06:26"
+    }
+  ]
+}

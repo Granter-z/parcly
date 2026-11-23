@@ -91,7 +91,9 @@ class _PlatformLoginScreenState extends State<PlatformLoginScreen> {
       ..setNavigationDelegate(
         NavigationDelegate(
           onProgress: (progress) {
-            if (mounted) setState(() => _loadingProgress = progress);
+            if (mounted && !_loginCommitted) {
+              setState(() => _loadingProgress = progress);
+            }
           },
           onNavigationRequest: (request) {
             final url = request.url;
@@ -138,20 +140,20 @@ class _PlatformLoginScreenState extends State<PlatformLoginScreen> {
             _mainDocumentFinished = true;
             if (widget.platform.toLowerCase() == 'jd') {
               final anomaly = await _detectJdAnomaly(url);
+              if (!mounted) return;
               if (anomaly) {
                 _anomalyDetected = true;
-                if (mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('检测到登录异常，未更新绑定状态，请重试或返回'),
-                      behavior: SnackBarBehavior.floating,
-                      duration: Duration(seconds: 4),
-                    ),
-                  );
-                }
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('检测到登录异常，未更新绑定状态，请重试或返回'),
+                    behavior: SnackBarBehavior.floating,
+                    duration: Duration(seconds: 4),
+                  ),
+                );
                 return; // P29-b：异常页不得走静默成功
               }
             }
+            if (!mounted) return;
             await _checkAutoLogin(url);
           },
         ),
@@ -188,6 +190,7 @@ class _PlatformLoginScreenState extends State<PlatformLoginScreen> {
       await injectCookieString(cookies: saved, domains: hosts.toList());
       debugPrint('[Login] Injected saved cookies for ${widget.platform}');
     }
+    if (!mounted) return;
     final entry = _entryUrlForOpen();
     debugPrint('[Login] entry url load: $entry expired=$_wasExpiredAtOpen');
     await _controller.loadRequest(Uri.parse(entry));
@@ -245,10 +248,11 @@ class _PlatformLoginScreenState extends State<PlatformLoginScreen> {
   }
 
   Future<void> _checkAutoLogin(String url) async {
+    if (!mounted || _loginCommitted) return;
     final lowerUrl = url.toLowerCase();
     // 检查URL是否已经跳过登录页，进入个人中心或订单中心
     final isHomeOrOrder = switch (widget.platform.toLowerCase()) {
-      'taobao' => lowerUrl.contains('my_taobao') ||
+      'taobao' || 'tmall' => lowerUrl.contains('my_taobao') ||
           lowerUrl.contains('mytaobao') ||
           lowerUrl.contains('order') ||
           lowerUrl.contains('cainiao') ||
@@ -397,6 +401,7 @@ class _PlatformLoginScreenState extends State<PlatformLoginScreen> {
   static const Set<String> _allowedDeepLinkSchemes = {
     'taobao',
     'tmall',
+    'tbopen',
     'taobaowireless',
     'openapp.jdmobile',
     'jdmobile',
@@ -429,6 +434,7 @@ class _PlatformLoginScreenState extends State<PlatformLoginScreen> {
   }
 
   void _showNoAppHint() {
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
         content: Text('未检测到对应的官方客户端，请使用页面内的「手机登录」完成登录'),
@@ -485,15 +491,15 @@ class _PlatformLoginScreenState extends State<PlatformLoginScreen> {
 
     try {
       final cookieStr = await _collectCredential();
+      if (!mounted) return;
       debugPrint('[Login] Collected credential length: ${cookieStr.length}');
 
       if (cookieStr.trim().isEmpty) {
-        if (!silent && mounted) {
+        if (!silent) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text('未检测到有效登录信息，请先在页面完成登录')),
           );
         }
-        setState(() => _isSaving = false);
         return;
       }
 
@@ -505,7 +511,7 @@ class _PlatformLoginScreenState extends State<PlatformLoginScreen> {
       // 防止「匿名会话覆盖已登录凭据」：新数据不含登录令牌但旧数据含有时，拒绝覆盖
       if (!newHasToken && storedHasToken) {
         debugPrint('[Login] Reject downgrade: new credential has no login token');
-        if (!silent && mounted) {
+        if (!silent) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
               content: Text('尚未检测到登录完成，请先在页面中完成登录后再点击绑定'),
@@ -513,13 +519,12 @@ class _PlatformLoginScreenState extends State<PlatformLoginScreen> {
             ),
           );
         }
-        setState(() => _isSaving = false);
         return;
       }
 
       // 未登录成功且原本就没绑定，同样提示用户
       if (!newHasToken && !storedHasToken) {
-        if (!silent && mounted) {
+        if (!silent) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
               content: Text('尚未检测到登录完成，请先在页面中完成登录后再点击绑定'),
@@ -527,7 +532,6 @@ class _PlatformLoginScreenState extends State<PlatformLoginScreen> {
             ),
           );
         }
-        setState(() => _isSaving = false);
         return;
       }
 
@@ -544,7 +548,7 @@ class _PlatformLoginScreenState extends State<PlatformLoginScreen> {
           '[Login] Reject commit: anomaly=$_anomalyDetected '
           'sameAsBaseline=${isSameLoginSession(platform: widget.platform, baselineCookies: _baselineCookies, collectedCookies: cookieStr)}',
         );
-        if (!silent && mounted) {
+        if (!silent) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
               content: Text(
@@ -556,7 +560,6 @@ class _PlatformLoginScreenState extends State<PlatformLoginScreen> {
             ),
           );
         }
-        setState(() => _isSaving = false);
         return;
       }
 
@@ -568,15 +571,7 @@ class _PlatformLoginScreenState extends State<PlatformLoginScreen> {
 
       HapticFeedback.mediumImpact();
       if (!mounted) return;
-      // P27：成功瞬间必须离开登录页（含 onPageFinished 静默检测路径）
-      if (!silent) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('${widget.displayName} 账号绑定成功！'),
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
-      }
+      // P27：成功瞬间必须离开登录页；登录成功提示由 platform_login_flow 统一弹出，避免重复
       Navigator.of(context).pop(true);
     } catch (e) {
       if (!silent && mounted) {
@@ -585,7 +580,10 @@ class _PlatformLoginScreenState extends State<PlatformLoginScreen> {
         );
       }
     } finally {
-      if (mounted) setState(() => _isSaving = false);
+      // 已提交登录即将 pop/dispose 时不再调用 setState，避免无意义的重建
+      if (mounted && !_loginCommitted) {
+        setState(() => _isSaving = false);
+      }
     }
   }
 

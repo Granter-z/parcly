@@ -45,7 +45,9 @@ void main() {
 
   tearDown(() async {
     await Hive.close();
-    await dir.delete(recursive: true);
+    if (dir.existsSync()) {
+      await dir.delete(recursive: true);
+    }
   });
 
   test('结构化真实京东单：商品名带渠道词也不得冷启动清理', () async {
@@ -57,6 +59,7 @@ void main() {
     await box.put(p.id, HivePackage.fromPackage(p));
 
     final n = PackageListNotifier();
+    addTearDown(n.dispose);
 
     expect(n.state.map((e) => e.id), contains(p.id));
     expect(box.get(p.id), isNotNull, reason: '_sync 后 Hive 记录必须还在');
@@ -71,6 +74,7 @@ void main() {
     await box.put(p.id, HivePackage.fromPackage(p));
 
     final n = PackageListNotifier();
+    addTearDown(n.dispose);
 
     expect(n.state, isEmpty);
     expect(box.get(p.id), isNull);

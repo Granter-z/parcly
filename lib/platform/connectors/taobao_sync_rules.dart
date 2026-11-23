@@ -35,7 +35,10 @@ Package? findLocalTaobaoPackage(Iterable<Package> local, String orderId) {
 }
 
 /// 本地已有这单、已签收（pickedUp，或由它归档的 archived）、轨迹不为空 → 跳过详情请求。
-bool shouldSkipSignedDetail(Package? local) {
+///
+/// [force] 为 true 时忽略该跳过规则（用户主动触发强制重拉）。
+bool shouldSkipSignedDetail(Package? local, {bool force = false}) {
+  if (force) return false;
   if (local == null) return false;
   if (local.status != PackageStatus.pickedUp && local.status != PackageStatus.archived) return false;
   return local.parsedTimeline.isNotEmpty;
@@ -45,14 +48,23 @@ bool shouldSkipSignedDetail(Package? local) {
 List<String> queryableTrackingNumbers(Iterable<String> trackingNumbers) =>
     [for (final tn in trackingNumbers) if (tn.trim().isNotEmpty && !isMaskedTrackingNumber(tn)) tn.trim()];
 
-/// 以菜鸟为准：淘宝详情判为已签收，但本次同步菜鸟驿站列表里还挂着这个件（打码单号恰好对上一个、
-/// 同快递公司、露出位数达标）且有取件码 → 改回待取件并带上菜鸟的取件码、驿站和完整单号。
+/// 以菜鸟为准：淘宝详情判为已签收，但本次同步菜鸟驿站列表里还挂着这个件
+/// （打码单号恰好对上一个且同快递公司露出位数达标，或完整单号精确匹配）且有取件码
+/// → 改回待取件并带上菜鸟的取件码、驿站和完整单号。
 /// 驿站代签不等于用户取了。用户在 App 里手动点过已取 / 已归档（[local]）的不改。
 Package applyCainiaoPriority(Package taobao, List<Package> cainiao, {Package? local}) {
   if (taobao.status != PackageStatus.pickedUp) return taobao;
-  if (!isMaskedTrackingNumber(taobao.trackingNumber)) return taobao;
   if (local != null && isUserHandledPickup(local)) return taobao;
-  final idx = findUniqueMaskedMatch(cainiao, taobao);
+
+  final int idx;
+  if (isMaskedTrackingNumber(taobao.trackingNumber)) {
+    idx = findUniqueMaskedMatch(cainiao, taobao);
+  } else {
+    final tn = taobao.trackingNumber.trim().toUpperCase();
+    idx = tn.isEmpty
+        ? -1
+        : cainiao.indexWhere((c) => c.trackingNumber.trim().toUpperCase() == tn);
+  }
   if (idx == -1) return taobao;
   final cn = cainiao[idx];
   if (cn.pickupCode.trim().isEmpty) return taobao;

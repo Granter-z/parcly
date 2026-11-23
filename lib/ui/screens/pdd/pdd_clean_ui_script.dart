@@ -31,7 +31,9 @@ const String pddCleanUiScript = r'''
     }
     function inspectElement(el) {
       // textContent 不触发布局；只读新增节点及少量祖先，兼容拆到多个子节点的文本。
-      if (!el) return;
+      if (!el || el.__pddBadgeChecked) return;
+      // 标记已检查元素，避免 MutationObserver 后续批次反复触发 getComputedStyle
+      el.__pddBadgeChecked = true;
       var candidate = el;
       var text = (candidate.textContent || '').trim();
       for (var level = 0; level < 4 && candidate && candidate !== document.body &&
@@ -47,8 +49,8 @@ const String pddCleanUiScript = r'''
       var cur = target;
       for (var d = 0; d < 4 && cur && cur.parentElement &&
           cur.parentElement !== document.body && cur.parentElement !== document.documentElement; d++) {
-        if (window.getComputedStyle(cur).position === 'fixed' ||
-            window.getComputedStyle(cur).position === 'absolute') {
+        var pos = window.getComputedStyle(cur).position;
+        if (pos === 'fixed' || pos === 'absolute') {
           target = cur;
           break;
         }
@@ -79,8 +81,19 @@ const String pddCleanUiScript = r'''
         requestAnimationFrame(function() {
           pending = false;
           for (var r = 0; r < records.length; r++) {
-            if (records[r].type === 'characterData') inspectText(records[r].target);
-            for (var i = 0; i < records[r].addedNodes.length; i++) inspect(records[r].addedNodes[i]);
+            if (records[r].type === 'characterData') {
+              if (records[r].target && records[r].target.parentElement) {
+                records[r].target.parentElement.__pddBadgeChecked = false;
+              }
+              inspectText(records[r].target);
+            }
+            for (var i = 0; i < records[r].addedNodes.length; i++) {
+              var added = records[r].addedNodes[i];
+              if (added && added.nodeType === Node.TEXT_NODE && added.parentElement) {
+                added.parentElement.__pddBadgeChecked = false;
+              }
+              inspect(added);
+            }
           }
         });
       });

@@ -8,6 +8,7 @@ import '../../platform/connectors/connector_manager.dart';
 import '../../platform/storage/platform_auth_store.dart';
 import '../constants/app_constants.dart';
 import '../theme/glass_tokens.dart';
+import '../theme/motion.dart';
 import '../providers/platform_auth_status_provider.dart';
 import '../screens/login/platform_login_flow.dart';
 
@@ -86,7 +87,10 @@ class PlatformStatusBar extends ConsumerWidget {
                       ),
                     ),
                   AnimatedContainer(
-                    duration: const Duration(milliseconds: 200),
+                    duration: Motion.of(
+                      context,
+                      const Duration(milliseconds: 200),
+                    ),
                     width: double.infinity,
                     padding: EdgeInsets.symmetric(
                       horizontal: 8,

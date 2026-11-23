@@ -29,7 +29,10 @@ class SyncHistoryManager {
   /// 记录平台同步时间
   Future<void> recordPlatformSync(String platform) async {
     await _ensureInit();
-    await _box!.put('${platform}_last_sync', DateTime.now().millisecondsSinceEpoch);
+    await _box!.put(
+      '${platform.toLowerCase()}_last_sync',
+      DateTime.now().millisecondsSinceEpoch,
+    );
   }
 
   /// 获取平台最近同步时间（同步读）
@@ -41,7 +44,7 @@ class SyncHistoryManager {
       if (!Hive.isBoxOpen(_boxName)) return null;
       _box = Hive.box(_boxName);
     }
-    final ms = _box!.get('${platform}_last_sync') as int?;
+    final ms = _box!.get('${platform.toLowerCase()}_last_sync') as int?;
     return ms != null ? DateTime.fromMillisecondsSinceEpoch(ms) : null;
   }
 

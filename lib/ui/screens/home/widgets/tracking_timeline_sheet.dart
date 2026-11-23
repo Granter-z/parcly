@@ -14,6 +14,8 @@ library;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../../../core/engine/logistics_status_engine.dart';
+import '../../../../core/engine/station_grouping.dart';
 import '../../../../core/engine/timeline_view.dart';
 import '../../../../core/models/package.dart';
 import '../../../../core/models/package_status.dart';
@@ -22,6 +24,7 @@ import '../../../components/hero_pickup_badge.dart';
 import '../../../components/platform_badge.dart';
 import '../../../components/tracking_timeline.dart';
 import '../../../providers/package_provider.dart';
+import '../../../providers/pickup_point_alias_provider.dart';
 
 class TrackingTimelineSheet extends ConsumerStatefulWidget {
   /// 打开时的快照；抽屉内会按同 id 订阅最新包裹，同步到新轨迹/取件码后实时刷新。
@@ -45,6 +48,11 @@ class TrackingTimelineSheet extends ConsumerStatefulWidget {
 }
 
 class _TrackingTimelineSheetState extends ConsumerState<TrackingTimelineSheet> {
+  static final RegExp _syntheticTrackingReg = RegExp(r'^x?[0-9a-f]{12}$');
+
+  static bool _isValidTrackingNo(String no) =>
+      no.isNotEmpty && !_syntheticTrackingReg.hasMatch(no);
+
   bool _isAddressExpanded = false;
 
   /// 整理好的时间轴节点（最新在前）；仅当输入变化时重新计算。
@@ -56,16 +64,17 @@ class _TrackingTimelineSheetState extends ConsumerState<TrackingTimelineSheet> {
   String? _stationPhone;
 
   void _ensurePrepared(Package pkg) {
+    final displayCode = pkg.displayPickupCode;
     if (_preparedTimelineJson == pkg.rawTimelineJson &&
-        _preparedPickupCode == pkg.pickupCode) {
+        _preparedPickupCode == displayCode) {
       return;
     }
     _preparedTimelineJson = pkg.rawTimelineJson;
-    _preparedPickupCode = pkg.pickupCode;
+    _preparedPickupCode = displayCode;
     _timeline = timelineForDisplay(pkg.rawTimelineJson);
     _stationPhone = extractStationPhone(
       nodes: _timeline,
-      pickupCode: pkg.pickupCode,
+      pickupCode: displayCode,
     );
   }
 
@@ -82,13 +91,19 @@ class _TrackingTimelineSheetState extends ConsumerState<TrackingTimelineSheet> {
     );
   }
 
-  /// 取件凭证栏的站点文案：优先用简洁的取件点名，避免整段收货地址把取件码挤出屏幕
-  String _credentialLocation(Package pkg) {
-    final station = pkg.stationName?.trim() ?? '';
-    if (station.isNotEmpty &&
-        station != '未知取件点' &&
-        station != '未知驿站') {
-      return station;
+  /// 取件凭证栏的站点文案：优先用别名映射后的规范取件点名（若被别名合并则保留原名核查），
+  /// 无有效站名时再回退原始站名或地址，避免整段收货地址把取件码挤出屏幕。
+  String _credentialLocation(Package pkg, Map<String, String> aliases) {
+    final rawStation = pkg.stationName?.trim() ?? '';
+    if (!isUnknownStationLabel(rawStation)) {
+      final canonical = resolveCanonicalName(
+        rawStation,
+        buildAliasLookup(aliases),
+      );
+      if (canonical != rawStation) {
+        return '$canonical（原名：$rawStation）';
+      }
+      return rawStation;
     }
     final original = pkg.originalStation.trim();
     if (original.isNotEmpty) return original;
@@ -98,6 +113,7 @@ class _TrackingTimelineSheetState extends ConsumerState<TrackingTimelineSheet> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final aliases = ref.watch(pickupPointAliasesProvider);
     // 按 id 订阅最新包裹：后台同步到达新轨迹/取件码时抽屉实时刷新；
     // 包裹已被删除时回退到打开时的快照。
     final live = ref.watch(packageListProvider.select((list) {
@@ -109,8 +125,10 @@ class _TrackingTimelineSheetState extends ConsumerState<TrackingTimelineSheet> {
     final pkg = live ?? widget.package;
     _ensurePrepared(pkg);
     final courierName = pkg.effectiveCourier.displayName;
-    final trackingNo = pkg.trackingNumber;
-    final orderSn = pkg.displayOrderSn;
+    final trackingNo = pkg.trackingNumber.trim();
+    final hasValidTracking = _isValidTrackingNo(trackingNo);
+    final displayCode = pkg.displayPickupCode;
+    final orderSn = pkg.displayOrderSn.trim();
     final address = pkg.location.trim();
     final stationPhone = _stationPhone;
 
@@ -183,7 +201,7 @@ class _TrackingTimelineSheetState extends ConsumerState<TrackingTimelineSheet> {
                               text: TextSpan(
                                 children: [
                                   TextSpan(
-                                    text: '$courierName: ',
+                                    text: hasValidTracking ? '$courierName: ' : courierName,
                                     style: const TextStyle(
                                       color: Color(0xFF00B578),
                                       fontWeight: FontWeight.bold,
@@ -191,7 +209,9 @@ class _TrackingTimelineSheetState extends ConsumerState<TrackingTimelineSheet> {
                                     ),
                                   ),
                                   TextSpan(
-                                    text: trackingNo,
+                                    text: hasValidTracking
+                                        ? trackingNo
+                                        : ' · ${pkg.status.label}',
                                     style: const TextStyle(
                                       color: Color(0xFF1C1C1E),
                                       fontWeight: FontWeight.w700,
@@ -203,9 +223,10 @@ class _TrackingTimelineSheetState extends ConsumerState<TrackingTimelineSheet> {
                               ),
                             ),
                           ),
-                          _buildCopyButton(
-                            onTap: () => _copyToClipboard(trackingNo, '运单号'),
-                          ),
+                          if (hasValidTracking)
+                            _buildCopyButton(
+                              onTap: () => _copyToClipboard(trackingNo, '运单号'),
+                            ),
                         ],
                       ),
                     ),
@@ -233,7 +254,9 @@ class _TrackingTimelineSheetState extends ConsumerState<TrackingTimelineSheet> {
                               const SizedBox(width: 8),
                               Expanded(
                                 child: Text(
-                                  '订单编号：$orderSn',
+                                  orderSn.isNotEmpty
+                                      ? '订单编号：$orderSn'
+                                      : '订单编号：暂无',
                                   style: const TextStyle(
                                     fontSize: 13,
                                     color: Color(0xFF3A3A3C),
@@ -244,9 +267,10 @@ class _TrackingTimelineSheetState extends ConsumerState<TrackingTimelineSheet> {
                                   overflow: TextOverflow.ellipsis,
                                 ),
                               ),
-                              _buildCopyButton(
-                                onTap: () => _copyToClipboard(orderSn, '订单编号'),
-                              ),
+                              if (orderSn.isNotEmpty)
+                                _buildCopyButton(
+                                  onTap: () => _copyToClipboard(orderSn, '订单编号'),
+                                ),
                             ],
                           ),
 
@@ -371,7 +395,7 @@ class _TrackingTimelineSheetState extends ConsumerState<TrackingTimelineSheet> {
 
                     // ── 模块 4：取件码突出展示（若已到驿站） ──
                     // P38：纵排，避免大号徽标与驿站名横排抢宽把文案挤成竖排截断。
-                    if (pkg.pickupCode.isNotEmpty) ...[
+                    if (displayCode.isNotEmpty) ...[
                       const SizedBox(height: 12),
                       Container(
                         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
@@ -395,7 +419,7 @@ class _TrackingTimelineSheetState extends ConsumerState<TrackingTimelineSheet> {
                             ),
                             const SizedBox(height: 2),
                             Text(
-                              _credentialLocation(pkg),
+                              _credentialLocation(pkg, aliases),
                               style: const TextStyle(
                                 fontSize: 13.5,
                                 fontWeight: FontWeight.bold,
@@ -412,7 +436,7 @@ class _TrackingTimelineSheetState extends ConsumerState<TrackingTimelineSheet> {
                             Align(
                               alignment: Alignment.centerLeft,
                               child: HeroPickupBadge(
-                                pickupCode: pkg.pickupCode,
+                                pickupCode: displayCode,
                                 isLarge: true,
                               ),
                             ),
@@ -440,7 +464,7 @@ class _TrackingTimelineSheetState extends ConsumerState<TrackingTimelineSheet> {
 
                     TrackingTimeline(
                       nodes: _timeline,
-                      pickupCode: pkg.pickupCode,
+                      pickupCode: displayCode,
                       statusLabel: pkg.status.label,
                     ),
                   ],

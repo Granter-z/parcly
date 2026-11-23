@@ -31,7 +31,11 @@ class UrgencyLevelAdapter extends TypeAdapter<UrgencyLevel> {
 
   @override
   UrgencyLevel read(BinaryReader reader) {
-    return UrgencyLevel.values[reader.readByte()];
+    final index = reader.readByte();
+    if (index >= UrgencyLevel.values.length) {
+      return UrgencyLevel.normal;
+    }
+    return UrgencyLevel.values[index];
   }
 
   @override

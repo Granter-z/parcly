@@ -313,4 +313,54 @@ void main() {
       expect(plan.expiredValue, isTrue);
     });
   });
+
+  group('JdHeartbeat.performHeartbeat 先探 trade 短路', () {
+    test('trade 成功 → 仅调 [trade]（不调 wqs），结果成功', () async {
+      final calls = <String>[];
+      final hb = JdHeartbeat(
+        probeHostOverride: (url, cookies, hostTag) async {
+          calls.add(hostTag);
+          return HeartbeatResult.success();
+        },
+      );
+
+      final result = await hb.performHeartbeat('pt_key=test');
+      expect(calls, ['trade']);
+      expect(result.success, isTrue);
+      expect(result.isAuthFailure, isFalse);
+    });
+
+    test('trade 硬鉴权失败 → 仅调 [trade]（不调 wqs），结果 isAuthFailure=true', () async {
+      final calls = <String>[];
+      final hb = JdHeartbeat(
+        probeHostOverride: (url, cookies, hostTag) async {
+          calls.add(hostTag);
+          return HeartbeatResult.failure('登录态已失效（trade）', isAuthFailure: true);
+        },
+      );
+
+      final result = await hb.performHeartbeat('pt_key=test');
+      expect(calls, ['trade']);
+      expect(result.success, isFalse);
+      expect(result.isAuthFailure, isTrue);
+    });
+
+    test('trade 软失败/网络错误 → 调 [trade, wqs]，wqs 成功时返回成功', () async {
+      final calls = <String>[];
+      final hb = JdHeartbeat(
+        probeHostOverride: (url, cookies, hostTag) async {
+          calls.add(hostTag);
+          if (hostTag == 'trade') {
+            return HeartbeatResult.failure('无法确认登录态（软信号，不 expire）', isAuthFailure: false);
+          }
+          return HeartbeatResult.success();
+        },
+      );
+
+      final result = await hb.performHeartbeat('pt_key=test');
+      expect(calls, ['trade', 'wqs']);
+      expect(result.success, isTrue);
+      expect(result.isAuthFailure, isFalse);
+    });
+  });
 }

@@ -1,4 +1,3 @@
-import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 
 import '../constants/app_constants.dart';
@@ -154,18 +153,6 @@ class AppTheme {
           letterSpacing: 0.2,
           color: AppColors.textSecondary,
         ),
-      ),
-    );
-  }
-
-  static CupertinoThemeData get cupertino {
-    return const CupertinoThemeData(
-      brightness: Brightness.light,
-      primaryColor: AppColors.primaryStrong,
-      scaffoldBackgroundColor: AppColors.background,
-      barBackgroundColor: AppColors.surface,
-      textTheme: CupertinoTextThemeData(
-        textStyle: TextStyle(fontSize: 15, color: AppColors.textPrimary),
       ),
     );
   }

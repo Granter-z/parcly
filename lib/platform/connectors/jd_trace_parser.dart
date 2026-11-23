@@ -19,15 +19,26 @@ String buildJdLogisticsUrl({
   }
 
   if (dealState != null && dealState.isNotEmpty) {
-    return 'https://trade.m.jd.com/order/deal_wuliu_jdm.shtml?from=orderdetail'
-        '&dealState=$dealState&dealId=$orderId'
-        '&orderType=${orderType ?? ''}'
-        '&skuid=${skuId ?? ''}'
-        '&shopid=${shopId ?? ''}'
-        '&source=m_inner_orderList.track_orderTrack';
+    return Uri.https(
+      'trade.m.jd.com',
+      '/order/deal_wuliu_jdm.shtml',
+      {
+        'from': 'orderdetail',
+        'dealState': dealState,
+        'dealId': orderId,
+        'orderType': orderType ?? '',
+        'skuid': skuId ?? '',
+        'shopid': shopId ?? '',
+        'source': 'm_inner_orderList.track_orderTrack',
+      },
+    ).toString();
   }
 
-  return 'https://trade.m.jd.com/order/deal_wuliu_jdm.shtml?dealId=$orderId';
+  return Uri.https(
+    'trade.m.jd.com',
+    '/order/deal_wuliu_jdm.shtml',
+    {'dealId': orderId},
+  ).toString();
 }
 
 final _timeRegex = RegExp(r'^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}(?::\d{2})?)');

@@ -21,9 +21,10 @@ class BatteryOptimization {
     }
   }
 
-  /// 打开系统授权弹窗，返回调用后的状态。
+  /// 打开系统「忽略电池优化」授权页（异步拉起系统界面）。
   ///
-  /// 用户可能选择「不允许」，所以返回值仍需重新查询，不能假定成功。
+  /// 注意：系统弹窗本身是非阻塞的，返回值只反映调用瞬间是否已处于豁免态；
+  /// 用户在系统界面授权后的真实状态需在页面 `resumed` 生命周期里通过 [isIgnoring] 刷新。
   static Future<bool> requestIgnore() async {
     if (defaultTargetPlatform != TargetPlatform.android) return true;
     try {

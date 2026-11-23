@@ -1,4 +1,4 @@
-#!/usr/bin/env python3 -I
+#!/usr/bin/env python3
 """通过 CDP 测量拼多多 H5 的 DOM 清理脚本开销。
 
 不读取或保存凭据；探针会临时读取 innerText 计算开销，不保存页面正文。
@@ -12,6 +12,7 @@ targets 子命令仅用于定位调试目标，会把完整 URL 打到 stdout，
 import argparse
 import asyncio
 import json
+import sys
 import time
 import urllib.request
 
@@ -102,6 +103,13 @@ async def main():
     if args.command == 'targets':
         print(json.dumps([{k: t.get(k) for k in ('id', 'type', 'url')} for t in pages], indent=2))
         return
+    if not pages:
+        print(
+            f'Error: no CDP page targets found on localhost:{PORT}. '
+            'Ensure WebView debugging is enabled and a page is open.',
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
     target = next((t for t in pages if t.get('url', '').rstrip('/') == 'https://mobile.yangkeduo.com'), pages[0])
     async with websockets.connect(target['webSocketDebuggerUrl'], max_size=2**24, ping_interval=None, open_timeout=10) as ws:
         counter = 0
@@ -116,12 +124,10 @@ async def main():
                     return data.get('result', {})
         await call('Page.enable')
         await call('Runtime.enable')
-        init = await call('Page.addScriptToEvaluateOnNewDocument', {'source': "window.__pddInitAt=performance.now();window.__pddMallOpenAt=Date.now();"})
         if args.command == 'snapshot':
             result = await call('Runtime.evaluate', {'expression': PROBE, 'awaitPromise': True, 'returnByValue': True})
             data = result['result']['value']
         else:
-            await call('Page.removeScriptToEvaluateOnNewDocument', {'identifier': init['identifier']})
             await call('Runtime.evaluate', {'expression': "window.scrollTo({top:0,behavior:'instant'})"})
             await asyncio.sleep(1)
             await call('Runtime.evaluate', {'expression': """
@@ -143,13 +149,16 @@ async def main():
                 const frames=window.__perfFrames.slice(2).sort((a,b)=>a-b); const pct=p=>frames[Math.min(frames.length-1,Math.floor(frames.length*p))]||null;
                 const imgs=[...document.images], res=performance.getEntriesByType('resource').filter(x=>x.initiatorType==='img');
                 const visible=imgs.filter(x=>{const r=x.getBoundingClientRect();return r.bottom>0&&r.top<innerHeight&&r.width>0&&r.height>0;});
-                return {frames:frames.length,over50ms:frames.filter(x=>x>50).length,over100ms:frames.filter(x=>x>100).length,p50:pct(.5),p95:pct(.95),p99:pct(.99),max:frames[frames.length-1],longTaskCount:window.__perfLongTasks.length,longTaskMs:window.__perfLongTasks.reduce((a,b)=>a+b,0),documentElements:document.querySelectorAll('*').length,cleanScriptInstalled:!!window.__pddCleanObserver,images:{total:imgs.length,failed:imgs.filter(x=>x.complete&&x.naturalWidth===0&&!x.dataset.src).length,pending:imgs.filter(x=>!x.complete).length,lazyNotLoaded:imgs.filter(x=>x.complete&&x.naturalWidth===0&&x.dataset.src).length,visibleTotal:visible.length,visibleFailed:visible.filter(x=>x.complete&&x.naturalWidth===0).length,visiblePending:visible.filter(x=>!x.complete).length},imageResources:{count:res.length,cacheHits:res.filter(x=>x.transferSize===0&&x.decodedBodySize>0).length,transferBytes:res.reduce((s,x)=>s+x.transferSize,0),decodedBytes:res.reduce((s,x)=>s+x.decodedBodySize,0)}};})()
+                const summary = {frames:frames.length,over50ms:frames.filter(x=>x>50).length,over100ms:frames.filter(x=>x>100).length,p50:pct(.5),p95:pct(.95),p99:pct(.99),max:frames[frames.length-1],longTaskCount:window.__perfLongTasks.length,longTaskMs:window.__perfLongTasks.reduce((a,b)=>a+b,0),documentElements:document.querySelectorAll('*').length,cleanScriptInstalled:!!window.__pddCleanObserver,images:{total:imgs.length,failed:imgs.filter(x=>x.complete&&x.naturalWidth===0&&!x.dataset.src).length,pending:imgs.filter(x=>!x.complete).length,lazyNotLoaded:imgs.filter(x=>x.complete&&x.naturalWidth===0&&x.dataset.src).length,visibleTotal:visible.length,visibleFailed:visible.filter(x=>x.complete&&x.naturalWidth===0).length,visiblePending:visible.filter(x=>!x.complete).length},imageResources:{count:res.length,cacheHits:res.filter(x=>x.transferSize===0&&x.decodedBodySize>0).length,transferBytes:res.reduce((s,x)=>s+x.transferSize,0),decodedBytes:res.reduce((s,x)=>s+x.decodedBodySize,0)}};
+                delete window.__perfLongTasks; delete window.__perfFrames; delete window.__perfObs; delete window.__perfLast; delete window.__perfRunning; delete window.__perfTick;
+                return summary;})()
             """, 'returnByValue': True})
             data = result['result']['value']
         data['deviceTime'] = time.strftime('%Y-%m-%d %H:%M:%S')
         output = json.dumps(data, ensure_ascii=False, indent=2)
         if args.output:
-            with open(args.output, 'w') as f: f.write(output + '\n')
+            with open(args.output, 'w', encoding='utf-8') as f:
+                f.write(output + '\n')
         print(output)
 
 asyncio.run(main())

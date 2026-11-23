@@ -15,6 +15,16 @@ import '../../platform/notification/notification_adapter.dart';
 import '../../platform/connectors/pdd_connector.dart';
 import '../../platform/storage/platform_auth_store.dart';
 
+final RegExp _stationBracketReg = RegExp(r'【([^】]{2,30})】');
+final RegExp _jdSyntheticNewReg = RegExp(r'^JD_x[0-9a-f]{12}$');
+final RegExp _jdSyntheticLegacyReg = RegExp(r'^JD_([0-9a-f]{12})$');
+final RegExp _hexAlphaReg = RegExp(r'[a-f]');
+final RegExp _jdRealIdReg = RegExp(r'^JD_\d{6,}$');
+final RegExp _tailPickupCodeReg = RegExp(r'^后[三四五六\d]+位\s*([0-9A-Za-z]{3,8})$');
+final RegExp _phone11Reg = RegExp(r'^1[3-9]\d{9}$');
+final RegExp _shelfCodeReg = RegExp(r'^\d{1,3}-\d{1,3}-\d{2,5}$');
+final RegExp _shortCodeReg = RegExp(r'^[0-9A-Za-z\-]{3,12}$');
+
 class PackageListNotifier extends StateNotifier<List<Package>> {
   Box<HivePackage>? _box;
 
@@ -47,12 +57,13 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
       debugPrint('[PackageListNotifier] box.length: ${_box!.length}');
     } catch (e, stack) {
       DebugTrace.error('Hive box open FAILED', error: e, stackTrace: stack);
-      debugPrint('[PackageListNotifier] Falling back to _initialPackages (no Hive persistence)');
-      state = _initialPackages;
+      debugPrint('[PackageListNotifier] Falling back to empty list (no Hive persistence)');
+      state = const [];
       return;
     }
 
     // ── Step 2: 从 Hive 加载 ─────────────────────────────────
+    var needsHiveSync = false;
     if (_box!.isNotEmpty) {
       final loaded = <Package>[];
       for (final hivePkg in _box!.values) {
@@ -61,6 +72,7 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
           // 清理无意义的幽灵残留数据（如 description == 'OCR' 且无商品名、无取件码的无效卡片）
           if (pkg.description == 'OCR' && pkg.pickupCode.isEmpty && (pkg.goodsName == null || pkg.goodsName == 'OCR')) {
             debugPrint('[PackageListNotifier] Pruning phantom empty OCR package: ${packageIdForLog(pkg.id)}');
+            needsHiveSync = true;
             continue;
           }
           // 清理存量误导入的餐饮外卖与秒送即时订单（非快递包裹）。
@@ -73,6 +85,7 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
               !pkg.status.isCompleted &&
               !LogisticsStatusEngine.isActiveLogisticsText(pkg.description)) {
             debugPrint('[PackageListNotifier] Pruning takeout/food package: ${packageIdForLog(pkg.id)}');
+            needsHiveSync = true;
             continue;
           }
           // 保护：已取件/已完成的包裹生命周期已完结，严禁被误判为在途。
@@ -83,6 +96,7 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
             if (healed != null) {
               debugPrint('[PackageListNotifier] P44 Hive heal pickedUp → ${healed.status.label}: ${packageIdForLog(pkg.id)}');
               pkg = healed;
+              needsHiveSync = true;
             } else {
               loaded.add(pkg);
               continue;
@@ -94,6 +108,11 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
 
           // 全面对齐拼多多官方分类体系进行存量状态自愈
           if (pkg.platform == 'pdd') {
+            final origStatus = pkg.status;
+            final origDesc = pkg.description;
+            final origStation = pkg.stationName;
+            final origCode = pkg.pickupCode;
+
             // 清洗历史被拼多多底部推荐流广告污染的描述（如“米哈游火花抱抱娃娃【200天内发货】”）
             if (pkg.description.contains('米哈游') ||
                 pkg.description.contains('抱抱娃娃') ||
@@ -119,23 +138,39 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
                 pkg.status != PackageStatus.pickedUp) {
               var station = pkg.stationName;
               if (isUnknownStationLabel(station)) {
-                final m = RegExp(r'【([^】]{2,30})】').firstMatch(pkg.description);
+                final m = _stationBracketReg.firstMatch(pkg.description);
                 if (m != null) station = m.group(1);
               }
-              pkg = pkg.copyWith(
-                status: PackageStatus.arrived,
-                stationName: station,
-              );
+              if (pkg.status != PackageStatus.arrived || pkg.stationName != station) {
+                pkg = pkg.copyWith(
+                  status: PackageStatus.arrived,
+                  stationName: station,
+                );
+              }
             } else if (officialStatus == PackageStatus.delivering || officialStatus == PackageStatus.transit) {
-            // 确实处于派送中或运输中的包裹：统一清空驿站名，并在残留串页取件码时一并清空
-            final clearCode = isStaleTailPickupCode(pkg.pickupCode, pkg.trackingNumber);
-            pkg = pkg.copyWith(
-              pickupCode: clearCode ? '' : pkg.pickupCode,
-              status: officialStatus,
-              clearStationName: true,
-            );
-          } else if (officialStatus == PackageStatus.pendingShipment) {
-              pkg = pkg.copyWith(status: PackageStatus.pendingShipment);
+              // 确实处于派送中或运输中的包裹：统一清空驿站名，并在残留串页取件码时一并清空
+              final clearCode = isStaleTailPickupCode(pkg.pickupCode, pkg.trackingNumber);
+              final nextCode = clearCode ? '' : pkg.pickupCode;
+              if (pkg.status != officialStatus ||
+                  pkg.stationName != null ||
+                  pkg.pickupCode != nextCode) {
+                pkg = pkg.copyWith(
+                  pickupCode: nextCode,
+                  status: officialStatus,
+                  clearStationName: true,
+                );
+              }
+            } else if (officialStatus == PackageStatus.pendingShipment) {
+              if (pkg.status != PackageStatus.pendingShipment) {
+                pkg = pkg.copyWith(status: PackageStatus.pendingShipment);
+              }
+            }
+
+            if (pkg.status != origStatus ||
+                pkg.description != origDesc ||
+                pkg.stationName != origStation ||
+                pkg.pickupCode != origCode) {
+              needsHiveSync = true;
             }
           }
           loaded.add(pkg);
@@ -145,15 +180,20 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
         }
       }
       state = _consolidateLoaded(loaded);
+      if (state.length != loaded.length) {
+        needsHiveSync = true;
+      }
       debugPrint('[PackageListNotifier] Loaded ${loaded.length} record(s) from Hive → ${state.length} package(s) after consolidation');
     } else {
-      debugPrint('[PackageListNotifier] Hive box is EMPTY, using _initialPackages (${_initialPackages.length} items)');
-      state = _initialPackages;
+      debugPrint('[PackageListNotifier] Hive box is EMPTY');
+      state = const [];
     }
 
-    // ── Step 3: 同步回 Hive ──────────────────────────────────
-    _sync();
-    debugPrint('[PackageListNotifier] Synced ${state.length} packages back to Hive');
+    // ── Step 3: 仅在存量清洗/合并发生实际变更时回写 Hive ─────────
+    if (needsHiveSync) {
+      _sync();
+      debugPrint('[PackageListNotifier] Synced ${state.length} packages back to Hive');
+    }
     DebugTrace.separator('PACKAGE PROVIDER INIT DONE');
     debugPrint('[PackageListNotifier] initialized. Total packages in state: ${state.length}');
   }
@@ -191,31 +231,50 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
 
       // 电商平台信息更丰富时（如 PDD、JD、淘宝已有具体商品名和图文），保留已有商品图文，不被菜鸟/快递的通用描述覆盖
       final samePlatform = existing.platform == package.platform;
-      final hasSpecificGoodsName = existing.goodsName != null &&
-          existing.goodsName!.isNotEmpty &&
-          !_looksLikeLogisticsText(existing.goodsName!) &&
-          existing.goodsName != '快件包裹' &&
-          existing.goodsName != '快递包裹' &&
-          existing.goodsName != 'OCR';
-      final hasSpecificPlatform = existing.platform != null &&
-          existing.platform!.isNotEmpty &&
-          existing.platform != 'other' &&
-          existing.platform != 'cainiao';
+      final hasSpecificGoodsName = _isSpecificGoodsName(existing.goodsName);
+      final hasSpecificPlatform = _isSpecificPlatform(existing.platform);
+      final incomingHasUsableGoodsName =
+          package.goodsName != null &&
+          package.goodsName!.isNotEmpty &&
+          !_looksLikeLogisticsText(package.goodsName!);
 
       final updatedGoodsName = samePlatform
-          ? ((package.goodsName?.isNotEmpty == true && !_looksLikeLogisticsText(package.goodsName!))
+          ? (_isSpecificGoodsName(package.goodsName)
               ? package.goodsName
-              : existing.goodsName)
-          : (hasSpecificGoodsName ? existing.goodsName : (package.goodsName ?? existing.goodsName));
+              : (hasSpecificGoodsName
+                  ? existing.goodsName
+                  : (incomingHasUsableGoodsName
+                      ? package.goodsName
+                      : existing.goodsName)))
+          : (hasSpecificGoodsName
+              ? existing.goodsName
+              : (_isSpecificGoodsName(package.goodsName)
+                  ? package.goodsName
+                  : (incomingHasUsableGoodsName
+                      ? package.goodsName
+                      : existing.goodsName)));
 
       final mergedTimeline =
-          _mergeTimelineJson(existing.rawTimelineJson, package.rawTimelineJson);
+          mergeTimelineJson(existing.rawTimelineJson, package.rawTimelineJson);
       final arrivedDecision = resolveArrivedAt(
         existingArrivedAt: existing.arrivedAt,
         resolvedStatus: resolvedStatus,
         previousStatus: existing.status,
         rawTimelineJson: mergedTimeline,
       );
+
+      // 运输中/派送中/待发货阶段包裹尚未到达自提点，一律不保留驿站名（避免把“转运中心”误当驿站）
+      final clearStation = resolvedStatus == PackageStatus.delivering ||
+          resolvedStatus == PackageStatus.transit ||
+          resolvedStatus == PackageStatus.pendingShipment;
+      final preferredStation = clearStation
+          ? ''
+          : preferStationName(
+              existing.stationName ?? '',
+              package.stationName ?? '',
+            );
+      final resolvedStation =
+          isUnknownStationLabel(preferredStation) ? null : preferredStation;
 
       final updated = existing.copyWith(
         // 旧的 TB_<打码运单号> / CN_<运单号> 换成 TB_<订单号>；用户状态（已取、归档、pickedUpAt）随 existing 带过去，
@@ -230,19 +289,13 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
                 : existing.trackingNumber),
         goodsName: updatedGoodsName,
         goodsImageUrl: existing.goodsImageUrl ?? package.goodsImageUrl,
-        platform: hasSpecificPlatform ? existing.platform : (package.platform ?? existing.platform),
-        stationName: () {
-          // 运输中/派送中/待发货阶段包裹尚未到达自提点，一律不保留驿站名（避免把“转运中心”误当驿站）
-          if (resolvedStatus == PackageStatus.delivering ||
-              resolvedStatus == PackageStatus.transit ||
-              resolvedStatus == PackageStatus.pendingShipment) {
-            return null;
-          }
-          return preferStationName(existing.stationName ?? '', package.stationName ?? '');
-        }(),
-        clearStationName: resolvedStatus == PackageStatus.delivering ||
-            resolvedStatus == PackageStatus.transit ||
-            resolvedStatus == PackageStatus.pendingShipment,
+        platform: hasSpecificPlatform
+            ? existing.platform
+            : (_isSpecificPlatform(package.platform)
+                ? package.platform
+                : (package.platform ?? existing.platform)),
+        stationName: resolvedStation,
+        clearStationName: resolvedStation == null,
         location: package.location.isNotEmpty ? package.location : existing.location,
         originalStation: package.originalStation.isNotEmpty ? package.originalStation : existing.originalStation,
         pickupCode: () {
@@ -341,16 +394,15 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
   /// 宁可漏清也不能误删真实订单号）。
   @visibleForTesting
   static bool isSyntheticJdId(String id) {
-    if (RegExp(r'^JD_x[0-9a-f]{12}$').hasMatch(id)) return true;
-    final m = RegExp(r'^JD_([0-9a-f]{12})$').firstMatch(id);
-    return m != null && RegExp(r'[a-f]').hasMatch(m.group(1)!);
+    if (_jdSyntheticNewReg.hasMatch(id)) return true;
+    final m = _jdSyntheticLegacyReg.firstMatch(id);
+    return m != null && _hexAlphaReg.hasMatch(m.group(1)!);
   }
 
   /// 合并时把京东 DOM 伪 id 迁移到结构化真实订单号（记录、已取状态原样保留）。
   @visibleForTesting
   static String resolveMergedJdId(Package existing, Package incoming) {
-    if (isSyntheticJdId(existing.id) &&
-        RegExp(r'^JD_\d{6,}$').hasMatch(incoming.id)) {
+    if (isSyntheticJdId(existing.id) && _jdRealIdReg.hasMatch(incoming.id)) {
       return incoming.id;
     }
     return resolveMergedPackageId(existing, incoming);
@@ -499,7 +551,7 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
   /// 结构化真实京东单匹配唯一的 DOM 伪卡（按清洗后商品名）。
   int _findUniqueSyntheticJdByGoodsName(Package incoming) {
     if ((incoming.platform ?? '') != 'jd') return -1;
-    if (!RegExp(r'^JD_\d{6,}$').hasMatch(incoming.id)) return -1;
+    if (!_jdRealIdReg.hasMatch(incoming.id)) return -1;
     final name = _cleanedGoodsName(incoming.goodsName);
     if (!_isSpecificGoodsName(name)) return -1;
 
@@ -517,7 +569,7 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
           continue;
         }
         matches.add(i);
-      } else if (RegExp(r'^JD_\d{6,}$').hasMatch(p.id) && p.id != incoming.id) {
+      } else if (_jdRealIdReg.hasMatch(p.id) && p.id != incoming.id) {
         realWithSameName++;
       }
     }
@@ -540,7 +592,7 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
   /// 运单号缺失或仅为订单编号（含「-」）时无从校验，保留原码。
   @visibleForTesting
   static bool isStaleTailPickupCode(String pickupCode, String trackingNumber) {
-    final tail = RegExp(r'^后[四五五六\d]+位\s*([0-9A-Za-z]{3,8})$').firstMatch(pickupCode.trim());
+    final tail = _tailPickupCodeReg.firstMatch(pickupCode.trim());
     if (tail == null) return false;
     final tn = trackingNumber.trim();
     if (tn.isEmpty || tn.contains('-')) return false;
@@ -557,13 +609,13 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
     // 含掩码的隐私号/手机号，绝不是取件码
     if (c.contains('*')) return 0;
     // 纯 11 位手机号
-    if (RegExp(r'^1[3-9]\d{9}$').hasMatch(c)) return 0;
+    if (_phone11Reg.hasMatch(c)) return 0;
     // 货架码（驿站分配的物理位置码，如 16-1-7002）最直接可用
-    if (RegExp(r'^\d{1,3}-\d{1,3}-\d{2,5}$').hasMatch(c)) return 5;
+    if (_shelfCodeReg.hasMatch(c)) return 5;
     // 「后N位 XXXXX」这类显式取件凭证
-    if (RegExp(r'^后[四五五六\d]+位\s*[0-9A-Za-z]{3,8}$').hasMatch(c)) return 4;
+    if (_tailPickupCodeReg.hasMatch(c)) return 4;
     // 普通短码
-    if (RegExp(r'^[0-9A-Za-z\-]{3,12}$').hasMatch(c)) return 2;
+    if (_shortCodeReg.hasMatch(c)) return 2;
     return 1;
   }
 
@@ -576,7 +628,7 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
   static String preferStationName(String current, String incoming) {
     final cur = current.trim();
     final inc = incoming.trim();
-    if (isUnknownStationLabel(inc)) return cur;
+    if (isUnknownStationLabel(inc)) return isUnknownStationLabel(cur) ? '' : cur;
     if (isUnknownStationLabel(cur)) return inc;
 
     // 泛称的信息量排序，用于「两个泛称之间取更具体的那个」
@@ -671,6 +723,12 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
 
     final primaryCodeScore = _pickupCodeScore(primary.pickupCode);
     final secondaryCodeScore = _pickupCodeScore(secondary.pickupCode);
+    final preferredStation = preferStationName(
+      primary.stationName ?? '',
+      secondary.stationName ?? '',
+    );
+    final resolvedStation =
+        isUnknownStationLabel(preferredStation) ? null : preferredStation;
 
     return primary.copyWith(
       courier: primary.courier != CourierType.other ? primary.courier : secondary.courier,
@@ -682,10 +740,11 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
           ? primary.platform
           : (_isSpecificPlatform(secondary.platform) ? secondary.platform : primary.platform),
       pickupCode: primaryCodeScore >= secondaryCodeScore ? primary.pickupCode : secondary.pickupCode,
-      stationName: (primary.stationName?.trim().isNotEmpty == true) ? primary.stationName : secondary.stationName,
+      stationName: resolvedStation,
+      clearStationName: resolvedStation == null,
       description: primary.description.isNotEmpty ? primary.description : secondary.description,
       // 时间轴取并集：重复记录合并时同样不允许节点丢失
-      rawTimelineJson: _mergeTimelineJson(primary.rawTimelineJson, secondary.rawTimelineJson),
+      rawTimelineJson: mergeTimelineJson(primary.rawTimelineJson, secondary.rawTimelineJson),
       location: primary.location.isNotEmpty ? primary.location : secondary.location,
       // 任一条已发过到件通知即视为已通知，避免合并后重复推送
       notifiedArrived: primary.notifiedArrived || secondary.notifiedArrived,
@@ -743,7 +802,7 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
     if (existing == PackageStatus.arrived &&
         (incoming == PackageStatus.delivering || incoming == PackageStatus.transit)) {
       final hasArrivalEvidence = _pickupCodeScore(existingPickupCode) > 0 ||
-          (existingStationName?.trim().isNotEmpty ?? false);
+          !isUnknownStationLabel(existingStationName);
       if (hasArrivalEvidence) {
         debugPrint('[PackageListNotifier] Protecting arrived package from being downgraded to ${incoming.label}');
         return PackageStatus.arrived;
@@ -766,20 +825,22 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
 
   void markPickedUp(String id) {
     // 取消该包裹的通知
-    NotificationAdapter().cancelNotification(id);
+    NotificationAdapter().cancelNotification(id).catchError((_) {});
 
+    Package? updated;
+    final now = DateTime.now();
     state = [
       for (final p in state)
         if (p.id == id)
-          p.copyWith(
+          updated = p.copyWith(
             status: PackageStatus.pickedUp,
-            pickedUpAt: DateTime.now(),
+            pickedUpAt: now,
             statusHistory: [
               ...p.statusHistory,
               StatusTransition(
                 from: p.status,
                 to: PackageStatus.pickedUp,
-                timestamp: DateTime.now(),
+                timestamp: now,
                 reason: 'user_mark_picked_up',
               ),
             ],
@@ -787,7 +848,9 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
         else
           p,
     ];
-    _sync();
+    if (updated != null) {
+      _persistOne(updated);
+    }
   }
 
   /// 撤销「已取件」：仅当仍为已取时，恢复到标记前的待处理状态并清空 pickedUpAt。
@@ -810,37 +873,64 @@ class PackageListNotifier extends StateNotifier<List<Package>> {
       }
     }
 
+    Package? restored;
     state = [
       for (final p in state)
         if (p.id == id)
-          p.copyWith(
+          restored = p.copyWith(
             status: previous,
             clearPickedUpAt: true,
           )
         else
           p,
     ];
-    _sync();
+    if (restored != null) {
+      _persistOne(restored);
+    }
   }
 
-  /// 清空所有包裹数据
+  /// 清空所有包裹数据并同步取消本地通知
   void clearAll() {
+    for (final p in state) {
+      NotificationAdapter().cancelNotification(p.id).catchError((_) {});
+    }
     state = [];
-    _sync();
+    final box = _box;
+    if (box != null) {
+      try {
+        box.clear();
+      } catch (e) {
+        debugPrint('[PackageListNotifier] clearAll box.clear failed: $e');
+      }
+    }
   }
 
-  /// 删除单个包裹
+  /// 删除单个包裹（测试包裹不进入永久删除黑名单，便于调试页清理后再次创建）
   void removePackage(String id) {
     final existingIndex = state.indexWhere((p) => p.id == id);
-    if (existingIndex != -1) {
-      final existing = state[existingIndex];
-      PlatformAuthStore().addToBlacklist(existing.id, trackingNumber: existing.trackingNumber);
-    } else {
-      PlatformAuthStore().addToBlacklist(id);
+    final existing = existingIndex != -1 ? state[existingIndex] : null;
+    final isTestPackage =
+        id.startsWith('TEST_') || existing?.platform == 'test';
+    if (!isTestPackage) {
+      if (existing != null) {
+        PlatformAuthStore().addToBlacklist(
+          existing.id,
+          trackingNumber: existing.trackingNumber,
+        );
+      } else {
+        PlatformAuthStore().addToBlacklist(id);
+      }
     }
-    NotificationAdapter().cancelNotification(id);
+    NotificationAdapter().cancelNotification(id).catchError((_) {});
     state = state.where((p) => p.id != id).toList();
-    _sync();
+    final box = _box;
+    if (box != null) {
+      try {
+        box.delete(id);
+      } catch (e) {
+        debugPrint('[PackageListNotifier] delete one failed: $e');
+      }
+    }
   }
   
   void _sync() {
@@ -906,15 +996,9 @@ final inTransitPackagesProvider = Provider<List<Package>>((ref) {
 
 final heroDecisionProvider = Provider<HeroDecision>((ref) {
   final packages = ref.watch(packageListProvider);
-  return HeroDecisionService.decide(packages);
+  final aliases = ref.watch(pickupPointAliasesProvider);
+  return HeroDecisionService.decide(packages, stationAliases: aliases);
 });
-
-const _initialPackages = <Package>[];
-
-/// 合并两份物流时间轴 JSON：取节点并集（按「时间 + 描述」去重，时间倒序排列）。
-String? _mergeTimelineJson(String? existingJson, String? incomingJson) {
-  return mergeTimelineJson(existingJson, incomingJson);
-}
 
 bool _isFoodTakeoutPackage(Package pkg) {
   // 只保留「即时配送渠道」词：这些词出现在商品名里基本可断定是外卖/秒送单。

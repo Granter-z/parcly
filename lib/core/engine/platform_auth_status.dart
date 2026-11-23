@@ -52,6 +52,8 @@ String platformIssueKeyword(String platform) {
 /// - 提到本平台且带 [kLoginExpiredSignals] → 需重登（兜底；正常应已 setExpired）
 /// - 提到本平台、无登录信号 → 同步失败
 /// - 没提到 → 正常
+final RegExp _issueSplitReg = RegExp('[；;\n]');
+
 PlatformAuthStatus resolvePlatformAuthStatus({
   required String platform,
   required bool isBound,
@@ -62,7 +64,7 @@ PlatformAuthStatus resolvePlatformAuthStatus({
   if (isExpired) return PlatformAuthStatus.needsRelogin;
   final keyword = platformIssueKeyword(platform);
   final mine = (liveIssue ?? '')
-      .split(RegExp('[；;\n]'))
+      .split(_issueSplitReg)
       .where((seg) => seg.contains(keyword))
       .toList();
   if (mine.isEmpty) return PlatformAuthStatus.ok;

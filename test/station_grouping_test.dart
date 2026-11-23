@@ -1,4 +1,7 @@
+import 'dart:convert';
+
 import 'package:flutter_test/flutter_test.dart';
+import 'package:pickup_app/core/engine/arrived_at.dart';
 import 'package:pickup_app/core/engine/station_grouping.dart';
 import 'package:pickup_app/core/models/package.dart';
 import 'package:pickup_app/core/models/package_status.dart';
@@ -236,4 +239,45 @@ void main() {
     });
   });
 
+  group('墙钟对齐（UTC 轨迹时间 vs 本地 DateTime 无 8 小时偏移）', () {
+    test('extractArrivedAtFromTimeline 与本地 now 混算 arrivedAgoLabelOf / isNearlyOverdue / groupPackagesByStation 墙钟一致', () {
+      final timelineJson = jsonEncode([
+        {'time': '2026-10-06 10:00:00', 'text': '快件已到达驿站，待取件'},
+      ]);
+      final extractedUtc = extractArrivedAtFromTimeline(
+        timelineJson,
+        now: DateTime.utc(2026, 10, 6, 12),
+      );
+      expect(extractedUtc, DateTime.utc(2026, 10, 6, 10, 0, 0));
+
+      final fromTrace = pkg('fromTrace', station: '测试驿站', arrivedAt: extractedUtc);
+      final localLater = pkg('localLater', station: '测试驿站', arrivedAt: DateTime(2026, 10, 6, 11, 0, 0));
+      final localEarlier = pkg('localEarlier', station: '测试驿站', arrivedAt: DateTime(2026, 10, 6, 9, 0, 0));
+
+      // arrivedAgoLabelOf：本地 10:30 与 10:00 墙钟对齐应为 30 分钟前到，而非 UTC+8 下 -7.5 小时「刚到」
+      expect(
+        arrivedAgoLabelOf(fromTrace, DateTime(2026, 10, 6, 10, 30, 0)),
+        '30分钟前到',
+      );
+      expect(
+        arrivedAgoLabelOf(fromTrace, DateTime(2026, 10, 6, 12, 0, 0)),
+        '2小时前到',
+      );
+
+      // isNearlyOverdue：恰好满 3 天不标，超过 1 秒立刻标（无 8 小时偏移）
+      expect(
+        isNearlyOverdue(fromTrace, DateTime(2026, 10, 9, 10, 0, 0)),
+        isFalse,
+      );
+      expect(
+        isNearlyOverdue(fromTrace, DateTime(2026, 10, 9, 10, 0, 1)),
+        isTrue,
+      );
+
+      // groupPackagesByStation：09:00（本地）< 10:00（UTC 墙钟）< 11:00（本地）
+      final groups = groupPackagesByStation([localLater, fromTrace, localEarlier]);
+      expect(groups, hasLength(1));
+      expect(ids(groups.single), ['localEarlier', 'fromTrace', 'localLater']);
+    });
+  });
 }

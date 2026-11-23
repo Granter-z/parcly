@@ -65,16 +65,20 @@ class _StaggeredEntranceState extends State<StaggeredEntrance>
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    if (_scheduled) return;
-    _scheduled = true;
-
     if (Motion.reduce(context)) {
+      _startTimer?.cancel();
+      _startTimer = null;
+      _scheduled = true;
       // 移除动画：不延迟、不位移，直接就是终态。
       _controller.value = 1.0;
       return;
     }
+    if (_scheduled) return;
+    _scheduled = true;
 
-    _startTimer = Timer(widget.baseDelay * widget.index, () {
+    // 限制交错延迟上限，避免长列表尾部长时间透明等待
+    final clampedIndex = widget.index.clamp(0, 6);
+    _startTimer = Timer(widget.baseDelay * clampedIndex, () {
       if (mounted) {
         _controller.forward();
       }

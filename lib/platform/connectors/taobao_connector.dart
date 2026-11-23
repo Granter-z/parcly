@@ -46,29 +46,44 @@ class TaobaoH5Connector implements PlatformConnector {
   final List<Package> Function()? _getLocalPackages;
   /// 本次同步是否忽略「24 小时内已同步」跳过，由用户主动触发的强制重拉置位
   final bool Function()? _shouldForceRefetch;
+  /// 本次同步是否忽略「已签收且有轨迹」跳过，由强制重拉入口置位
+  final bool Function()? _shouldForceSignedDetail;
   final SyncHistoryManager _syncHistory = SyncHistoryManager();
   static const _appKey = '12574478';
   static const _ua =
       'Mozilla/5.0 (Linux; Android 14; 25102RKBEC Build/UP1A.231005.007) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36';
+  static final RegExp _shelfCodeReg = RegExp(r'^\d{1,3}-\d{1,3}-\d{2,5}$');
+  static final RegExp _shortCodeReg = RegExp(r'^(?=.*\d)[A-Za-z0-9\-]{2,12}$');
+  static final RegExp _longDigitsReg = RegExp(r'^\d{10,}$');
+  static final RegExp _phoneReg = RegExp(r'^1[3-9]\d{9}$');
+  static final RegExp _datePrefixReg = RegExp(r'^\d{4}-\d{2}-\d{2}');
+  static final RegExp _pickupCodeTextReg =
+      RegExp(r'取件码[:：\s]*([A-Za-z0-9\-]{2,12})');
+  static final RegExp _mtopTkExtractReg = RegExp(r'_m_h5_tk=([^;]+)');
+  static final RegExp _mtopTkEncExtractReg = RegExp(r'_m_h5_tk_enc=([^;]+)');
+  static final RegExp _mtopTkHasReg = RegExp(r'(^|;\s*)_m_h5_tk=');
+  static final RegExp _mtopTkReplaceReg = RegExp(r'(^|;\s*)_m_h5_tk=[^;]*');
+  static final RegExp _mtopTkEncReplaceReg =
+      RegExp(r'(^|;\s*)_m_h5_tk_enc=[^;]*');
+  static final RegExp _jsonpPrefixReg = RegExp(r'^[A-Za-z_$][\w$]*\s*\(');
 
   TaobaoH5Connector({
     PlatformAuthStore? authStore,
     List<String> Function()? getActiveTrackingNumbers,
     List<Package> Function()? getLocalPackages,
     bool Function()? shouldForceRefetch,
+    bool Function()? shouldForceSignedDetail,
   })  : _authStore = authStore ?? PlatformAuthStore(),
         _getActiveTrackingNumbers = getActiveTrackingNumbers,
         _getLocalPackages = getLocalPackages,
-        _shouldForceRefetch = shouldForceRefetch;
+        _shouldForceRefetch = shouldForceRefetch,
+        _shouldForceSignedDetail = shouldForceSignedDetail;
 
   @override
   String get platformId => 'taobao';
 
   @override
   String get displayName => '淘宝 / 天猫';
-
-  @override
-  String get brandColorHex => '#FF5000';
 
   @override
   Future<bool> isAuthenticated() async => _authStore.isBound('taobao');
@@ -87,11 +102,16 @@ class TaobaoH5Connector implements PlatformConnector {
   }
 
   String? _lastIssue;
+  bool _lastSyncSucceeded = false;
 
   @override
   String? get lastIssue => _lastIssue;
 
+  @override
+  bool get lastSyncSucceeded => _lastSyncSucceeded;
+
   /// 用户重新授权后清理上一次的失效提示
+  @override
   void clearLastIssue() {
     _lastIssue = null;
   }
@@ -111,6 +131,7 @@ class TaobaoH5Connector implements PlatformConnector {
   Stream<Package> streamSync() async* {
     _cancelled = false;
     _lastIssue = null;
+    _lastSyncSucceeded = false;
     final cookies = _authStore.getCookies('taobao');
     if (cookies == null || cookies.trim().isEmpty) return;
 
@@ -132,11 +153,14 @@ class TaobaoH5Connector implements PlatformConnector {
         _logTb('[Cainiao] Cainiao skip (recent)');
         cainiaoPackages.addAll(localCainiaoSeedForPriority(localEarly));
       } else {
-        final cainiaoItems = await _fetchCainiaoStationPackages(cookies);
+        final cainiaoResult = await _fetchCainiaoStationPackages(cookies);
         if (_cancelled) return;
+        final cainiaoItems = cainiaoResult.items;
         // 日志只记数量，不打印运单号、取件码、驿站名
         _logTb('[Cainiao] 阶段 1 产出待取件包裹 ${cainiaoItems.length} 个');
-        await _syncHistory.recordCainiaoSuccess();
+        if (cainiaoResult.succeeded) {
+          await _syncHistory.recordCainiaoSuccess();
+        }
         for (final item in cainiaoItems) {
           if (_cancelled) return;
           final cn = Package(
@@ -167,15 +191,17 @@ class TaobaoH5Connector implements PlatformConnector {
     try {
       // 1. 获取买家最近订单列表
       final orders = await _fetchBoughtOrders(client, cookies);
+      if (orders == null || _cancelled) return;
       // 2. 只对订单列表里有「查看物流」按钮的订单请求 SSR 物流详情；
       //    饿了么等订单（bizType 5000）没有这个按钮，请求详情只会返回 JUMP_302
       final withLogistics = orders.where((o) => o.hasLogistics).toList();
       _logTb('[Taobao] 订单 ${orders.length} 个，有「查看物流」${withLogistics.length} 个，'
           '跳过 ${orders.length - withLogistics.length} 个');
 
-      // 已签收订单只请求一次：本地已有、已签收且轨迹不为空的跳过（不另存标记）
+      // 已签收订单只请求一次：本地已有、已签收且轨迹不为空的跳过（除非 forceSignedDetail）
       final local = _getLocalPackages?.call() ?? const <Package>[];
       final force = _shouldForceRefetch?.call() ?? false;
+      final forceSignedDetail = _shouldForceSignedDetail?.call() ?? false;
 
       // ⚡ 优化：智能跳过最近已同步的订单（24小时内）；强制重拉时忽略该窗口
       final needFetchOrders = SyncOptimizer.filterNeedsFetch<_TbOrder>(
@@ -192,7 +218,7 @@ class TaobaoH5Connector implements PlatformConnector {
       var skippedSigned = 0;
       for (final order in needFetchOrders) {
         final localPkg = findLocalTaobaoPackage(local, order.orderId);
-        if (shouldSkipSignedDetail(localPkg)) {
+        if (shouldSkipSignedDetail(localPkg, force: forceSignedDetail)) {
           skippedSigned++;
           continue;
         }
@@ -202,58 +228,78 @@ class TaobaoH5Connector implements PlatformConnector {
       _logTb('[Taobao] 智能跳过（24h内已同步）${withLogistics.length - needFetchOrders.length} 个，'
           '已签收且本地有轨迹跳过 $skippedSigned 个，需拉取详情 ${finalNeedFetch.length} 个');
 
-      // ⚡ 优化：并发拉取订单详情（限制并发数为 3）
+      // ⚡ 优化：并发拉取订单详情（限制并发数为 3），完成一单即流式产出
       final executor = ThrottledExecutor(
         maxConcurrent: 3,
         minDelay: const Duration(milliseconds: 100),
         maxDelay: const Duration(milliseconds: 300),
       );
 
-      // P23-a：详情任务必须吃 finalNeedFetch（已签收有轨迹已滤），与上面日志一致
-      final detailTasks = finalNeedFetch.map((order) {
-        return () => _fetchSsrLogistics(client, cookies, order.orderId).then((parcel) {
-          return {'order': order, 'parcel': parcel};
-        });
-      }).toList();
-
-      final results = await executor.executeAll(detailTasks);
-
       var parsedCount = 0;
       var failedCount = 0;
       var cainiaoOverrides = 0;
 
-      for (final result in results) {
-        if (_cancelled) break;
+      if (finalNeedFetch.isNotEmpty) {
+        final detailStream = StreamController<({_TbOrder order, _TbParcel? parcel})>();
+        var remaining = finalNeedFetch.length;
 
-        final order = result['order'] as _TbOrder;
-        final parcel = result['parcel'] as _TbParcel?;
+        // P23-a：详情任务必须吃 finalNeedFetch（已签收有轨迹已滤），与上面日志一致
+        for (final order in finalNeedFetch) {
+          executor.execute(() async {
+            if (_cancelled) return null;
+            return await _fetchSsrLogistics(client, cookies, order.orderId);
+          }).then((parcel) {
+            if (!detailStream.isClosed) {
+              detailStream.add((order: order, parcel: parcel));
+            }
+          }, onError: (_) {
+            if (!detailStream.isClosed) {
+              detailStream.add((order: order, parcel: null));
+            }
+          }).whenComplete(() {
+            remaining--;
+            if (remaining == 0 && !detailStream.isClosed) {
+              detailStream.close();
+            }
+          });
+        }
 
-        if (parcel == null) {
-          failedCount++;
-        } else {
-          parsedCount++;
-          final status = parcel.derivedStatus ?? _resolveStatus(parcel.stateLabel);
-          final tbPkg = Package(
-            id: taobaoPackageId(order.orderId),
-            trackingNumber: parcel.mailNo.isNotEmpty ? parcel.mailNo : order.orderId,
-            courier: courierFromName(parcel.cpName),
-            goodsName: order.goodsName,
-            goodsImageUrl: order.goodsPic,
-            pickupCode: parcel.pickupCode,
-            stationName: parcel.stationName.isNotEmpty ? parcel.stationName : '菜鸟驿站',
-            location: parcel.location,
-            platform: 'taobao',
-            // 急件由引擎统一判定：已签收时即使轨迹里有旧取件码也不标急件
-            urgency: LogisticsStatusEngine.urgencyFor(status: status, pickupCode: parcel.pickupCode),
-            status: status,
-            addedAt: DateTime.now(),
-            rawTimelineJson: parcel.rawTimelineJson,
-          );
-          // 淘宝已签收但菜鸟驿站还挂着且有取件码 → 以菜鸟为准（用户手动已取 / 归档的不改）
-          final localPkg = findLocalTaobaoPackage(local, order.orderId);
-          final finalPkg = applyCainiaoPriority(tbPkg, cainiaoPackages, local: localPkg);
-          if (!identical(finalPkg, tbPkg)) cainiaoOverrides++;
-          yield finalPkg;
+        await for (final result in detailStream.stream) {
+          if (_cancelled) {
+            await detailStream.close();
+            break;
+          }
+
+          final order = result.order;
+          final parcel = result.parcel;
+
+          if (parcel == null) {
+            failedCount++;
+          } else {
+            parsedCount++;
+            final status = parcel.derivedStatus ?? _resolveStatus(parcel.stateLabel);
+            final tbPkg = Package(
+              id: taobaoPackageId(order.orderId),
+              trackingNumber: parcel.mailNo.isNotEmpty ? parcel.mailNo : order.orderId,
+              courier: courierFromName(parcel.cpName),
+              goodsName: order.goodsName,
+              goodsImageUrl: order.goodsPic.isNotEmpty ? order.goodsPic : null,
+              pickupCode: parcel.pickupCode,
+              stationName: parcel.stationName.isNotEmpty ? parcel.stationName : null,
+              location: parcel.location,
+              platform: 'taobao',
+              // 急件由引擎统一判定：已签收时即使轨迹里有旧取件码也不标急件
+              urgency: LogisticsStatusEngine.urgencyFor(status: status, pickupCode: parcel.pickupCode),
+              status: status,
+              addedAt: DateTime.now(),
+              rawTimelineJson: parcel.rawTimelineJson,
+            );
+            // 淘宝已签收但菜鸟驿站还挂着且有取件码 → 以菜鸟为准（用户手动已取 / 归档的不改）
+            final localPkg = findLocalTaobaoPackage(local, order.orderId);
+            final finalPkg = applyCainiaoPriority(tbPkg, cainiaoPackages, local: localPkg);
+            if (!identical(finalPkg, tbPkg)) cainiaoOverrides++;
+            yield finalPkg;
+          }
         }
       }
 
@@ -261,50 +307,23 @@ class TaobaoH5Connector implements PlatformConnector {
           '请求 ${parsedCount + failedCount} 个，解析成功 $parsedCount 个，失败 $failedCount 个，'
           '已签收但菜鸟仍待取改回待取件 $cainiaoOverrides 个');
 
-      // ── 阶段 3：针对待取件但取件码仍为后5位或空的包裹，以运单号定向查询菜鸟货架码 ──
-      if (_getActiveTrackingNumbers != null) {
-        try {
-          final activeTns = _getActiveTrackingNumbers();
-          // 打码单号（含 *）查不到菜鸟，直接跳过
-          final pendingTns = queryableTrackingNumbers(activeTns);
-          var targetedHits = 0;
-          for (final tn in pendingTns) {
-            if (_cancelled) break;
-            final item = await _queryCainiaoByMailNo(client, cookies, tn);
-            if (item != null && item.pickupCode.isNotEmpty) {
-              targetedHits++;
-              yield Package(
-                id: 'CN_$tn',
-                trackingNumber: tn,
-                courier: courierFromName(item.courier),
-                goodsName: '快递包裹',
-                stationName: item.stationName.isNotEmpty ? item.stationName : '菜鸟驿站',
-                pickupCode: item.pickupCode,
-                location: item.stationName,
-                platform: 'cainiao',
-                urgency: UrgencyLevel.urgent,
-                status: PackageStatus.arrived,
-                addedAt: DateTime.now(),
-              );
-            }
-          }
-          _logTb('[Cainiao] 阶段 3 按运单号查货架码：跳过打码单号 ${activeTns.length - pendingTns.length} 个，'
-              '查询 ${pendingTns.length} 个，拿到取件码 $targetedHits 个');
-        } catch (e) {
-          _logTb('[Cainiao] 阶段 3 异常：${e.runtimeType}');
-        }
+      // ── 阶段 3：先批量拉菜鸟驿站多包裹取件码，再对漏网运单号逐单兜底查货架码 ──
+      if (!_cancelled && _getActiveTrackingNumbers != null) {
+        final resolvedTns = <String>{};
+        var batchHits = 0;
 
-        // 直连菜鸟驿站官方多包裹接口（复刻前端页面自身请求），一次性拿到全部到站包裹的取件码
+        // 1) 直连菜鸟驿站官方多包裹接口，一次性拿到全部到站包裹的取件码
         try {
           final listItems = await _queryCainiaoStationList(client, cookies);
-          final usable = listItems.where((i) => i.pickupCode.isNotEmpty && i.trackingNumber.isNotEmpty).length;
-          _logTb('[Cainiao StationList] 返回 ${listItems.length} 个，带取件码和运单号 $usable 个');
           for (final item in listItems) {
             if (_cancelled) break;
-            if (item.pickupCode.isEmpty || item.trackingNumber.isEmpty) continue;
+            final tn = item.trackingNumber.trim();
+            if (item.pickupCode.trim().isEmpty || tn.isEmpty) continue;
+            resolvedTns.add(tn.toUpperCase());
+            batchHits++;
             yield Package(
-              id: 'CN_${item.trackingNumber}',
-              trackingNumber: item.trackingNumber,
+              id: 'CN_$tn',
+              trackingNumber: tn,
               courier: courierFromName(item.courier),
               goodsName: '快递包裹',
               stationName: item.stationName.isNotEmpty ? item.stationName : '菜鸟驿站',
@@ -316,9 +335,53 @@ class TaobaoH5Connector implements PlatformConnector {
               addedAt: DateTime.now(),
             );
           }
+          _logTb('[Cainiao StationList] 返回 ${listItems.length} 个，批量命中取件码 $batchHits 个');
         } catch (e) {
           _logTb('[Cainiao] StationList 异常：${e.runtimeType}');
         }
+
+        // 2) 仅对多包裹列表未命中的漏网运单号逐单按运单号补查，避免重复请求
+        if (!_cancelled) {
+          try {
+            final activeTns = _getActiveTrackingNumbers();
+            // 打码单号（含 *）查不到菜鸟，直接跳过
+            final pendingTns = queryableTrackingNumbers(activeTns);
+            final remainingTns = [
+              for (final tn in pendingTns)
+                if (!resolvedTns.contains(tn.trim().toUpperCase())) tn,
+            ];
+            var targetedHits = 0;
+            for (final tn in remainingTns) {
+              if (_cancelled) break;
+              final item = await _queryCainiaoByMailNo(client, cookies, tn);
+              if (item != null && item.pickupCode.isNotEmpty) {
+                targetedHits++;
+                yield Package(
+                  id: 'CN_$tn',
+                  trackingNumber: tn,
+                  courier: courierFromName(item.courier),
+                  goodsName: '快递包裹',
+                  stationName: item.stationName.isNotEmpty ? item.stationName : '菜鸟驿站',
+                  pickupCode: item.pickupCode,
+                  location: item.stationName,
+                  platform: 'cainiao',
+                  urgency: UrgencyLevel.urgent,
+                  status: PackageStatus.arrived,
+                  addedAt: DateTime.now(),
+                );
+              }
+            }
+            _logTb('[Cainiao] 阶段 3 批量命中 $batchHits 个，跳过打码单号 ${activeTns.length - pendingTns.length} 个，'
+                '去重跳过 ${pendingTns.length - remainingTns.length} 个，'
+                '漏网补查 ${remainingTns.length} 个，补查拿到取件码 $targetedHits 个');
+          } catch (e) {
+            _logTb('[Cainiao] 阶段 3 异常：${e.runtimeType}');
+          }
+        }
+      }
+
+      if (_lastIssue == null && !_cancelled) {
+        _lastSyncSucceeded = true;
       }
     } catch (e) {
       // 网络/解析异常容错；只记异常类型，异常文本可能带请求 URL（含订单号）
@@ -356,7 +419,6 @@ class TaobaoH5Connector implements PlatformConnector {
       // 原「紧凑诊断」会把运单号、取件码、驿站名逐个打进日志，已删除；字段定位改用 P11-a 的脱敏采集
 
       // 提取 运单号 + 取件码 组合
-      final shelfReg = RegExp(r'^\d{1,3}-\d{1,3}-\d{2,5}$');
       const codeKeys = [
         'takeCode', 'fetchCode', 'pickupCode', 'shelfCode', 'pickCode',
         'pickupNo', 'takeNo', 'fetchNo', 'codeValue', 'pickupCodeText',
@@ -377,8 +439,8 @@ class TaobaoH5Connector implements PlatformConnector {
           }
           for (final k in codeKeys) {
             final v = m[k]?.toString().trim() ?? '';
-            if (v.isNotEmpty && (shelfReg.hasMatch(v) || v.length <= 12)) {
-              if (code.isEmpty || (shelfReg.hasMatch(v) && !shelfReg.hasMatch(code))) code = v;
+            if (v.isNotEmpty && (_shelfCodeReg.hasMatch(v) || v.length <= 12)) {
+              if (code.isEmpty || (_shelfCodeReg.hasMatch(v) && !_shelfCodeReg.hasMatch(code))) code = v;
             }
           }
           if (mail.isNotEmpty && code.isNotEmpty) {
@@ -444,8 +506,9 @@ class TaobaoH5Connector implements PlatformConnector {
   XMLHttpRequest.prototype.send = function() {
     this.addEventListener('load', function() {
       try {
-        if (this.responseText && (this.responseText.indexOf('Package') !== -1 || this.responseText.indexOf('mailNo') !== -1 || this.responseText.indexOf('fetchCode') !== -1 || this.responseText.indexOf('takeCode') !== -1)) {
-          report(this.responseText);
+        var rt = this.responseText || '';
+        if (rt && (rt.indexOf('Package') !== -1 || rt.indexOf('mailNo') !== -1 || rt.indexOf('fetchCode') !== -1 || rt.indexOf('pickup') !== -1 || rt.indexOf('takeCode') !== -1)) {
+          report(rt);
         }
       } catch(e) {}
     });
@@ -459,7 +522,7 @@ class TaobaoH5Connector implements PlatformConnector {
   }
 
   /// 在本地安全浏览器上下文中加载淘宝官方菜鸟驿站模块，提取待取件货架码与运单号
-  Future<List<_CainiaoItem>> _fetchCainiaoStationPackages(String cookies) async {
+  Future<_CainiaoFetchResult> _fetchCainiaoStationPackages(String cookies) async {
     final list = <_CainiaoItem>[];
     // 新一轮抓取：递增代际并清空缓冲，旧页面的迟到响应不再被接受。
     _captureGeneration++;
@@ -526,7 +589,7 @@ class TaobaoH5Connector implements PlatformConnector {
               // 只接受本轮注入的钩子发来的响应
               if (int.tryParse(raw.substring(0, sep)) != _captureGeneration) return;
               final text = raw.substring(sep + 1);
-              if (text.contains('Package') || text.contains('mailNo') || text.contains('fetchCode') || text.contains('takeCode')) {
+              if (text.contains('Package') || text.contains('mailNo') || text.contains('fetchCode') || text.contains('pickup') || text.contains('takeCode')) {
                 _logTb('[Cainiao Hook] Captured JSON len: ${text.length}');
                 _capturedCainiaoJson.add(text);
               }
@@ -696,10 +759,10 @@ class TaobaoH5Connector implements PlatformConnector {
 })()
 ''';
 
-      if (_cancelled) return list;
+      if (_cancelled) return _CainiaoFetchResult(items: list, succeeded: false);
 
       final res = await controller.runJavaScriptReturningResult(jsExtractor);
-      if (_cancelled) return list;
+      if (_cancelled) return _CainiaoFetchResult(items: list, succeeded: false);
       var s = res.toString();
       if (s.startsWith('"') && s.endsWith('"')) {
         try {
@@ -780,10 +843,17 @@ class TaobaoH5Connector implements PlatformConnector {
         uniqueMap[it.trackingNumber] = it;
       }
       _logTb('[Cainiao] Final station pickup packages: ${uniqueMap.length}');
-      return uniqueMap.values.toList();
+      final succeeded = !_cancelled &&
+          _lastIssue == null &&
+          root != null &&
+          root['error'] == null;
+      return _CainiaoFetchResult(
+        items: uniqueMap.values.toList(),
+        succeeded: succeeded,
+      );
     } catch (e) {
       _logTb('[Cainiao] fetch error: ${e.runtimeType}');
-      return list;
+      return _CainiaoFetchResult(items: list, succeeded: false);
     } finally {
       // 只释放本轮使用的 controller；若下一轮已重建了新的 _cainiaoController，
       // 不能把别人的 controller 拉成 about:blank 或置空。
@@ -833,7 +903,7 @@ class TaobaoH5Connector implements PlatformConnector {
     return list;
   }
 
-  Future<List<_TbOrder>> _fetchBoughtOrders(http.Client client, String cookies) async {
+  Future<List<_TbOrder>?> _fetchBoughtOrders(http.Client client, String cookies) async {
     final dataObj = {
       'tabCode': 'all',
       'page': 1,
@@ -854,14 +924,14 @@ class TaobaoH5Connector implements PlatformConnector {
       dataRaw: jsonEncode(dataObj),
     );
 
-    if (rawJson == null) return [];
+    if (rawJson == null) return null;
 
     final orders = <_TbOrder>[];
     try {
       final jsonStr = stripJsonp(rawJson);
       final root = jsonDecode(jsonStr) as Map<String, dynamic>;
       final data = root['data'] as Map<String, dynamic>?;
-      if (data == null) return [];
+      if (data == null) return null;
 
       dynamic inner = data['data'];
       if (data['result'] != null && data['result'] is String) {
@@ -874,9 +944,10 @@ class TaobaoH5Connector implements PlatformConnector {
         final mainOrders = inner['mainOrders'] as List<dynamic>?;
         if (mainOrders != null) {
           for (final o in mainOrders) {
-            final orderMap = o as Map<String, dynamic>;
-            final id = orderMap['id']?.toString() ?? '';
-            final statusInfo = orderMap['statusInfo'] as Map<String, dynamic>?;
+            if (o is! Map<String, dynamic>) continue;
+            final id = (o['id']?.toString() ?? '').trim();
+            if (id.isEmpty) continue;
+            final statusInfo = o['statusInfo'] as Map<String, dynamic>?;
             final statusText = statusInfo?['text']?.toString() ?? '';
 
             // 过滤关闭、退款订单
@@ -884,7 +955,7 @@ class TaobaoH5Connector implements PlatformConnector {
 
             String title = '';
             String pic = '';
-            final subOrders = orderMap['subOrders'] as List<dynamic>?;
+            final subOrders = o['subOrders'] as List<dynamic>?;
             if (subOrders != null && subOrders.isNotEmpty) {
               final sub = subOrders[0] as Map<String, dynamic>;
               final itemInfo = sub['itemInfo'] as Map<String, dynamic>?;
@@ -899,15 +970,17 @@ class TaobaoH5Connector implements PlatformConnector {
               statusText: statusText,
               goodsName: title,
               goodsPic: pic,
-              hasLogistics: TaobaoTraceParser.orderHasLogistics(orderMap),
+              hasLogistics: TaobaoTraceParser.orderHasLogistics(o),
             ));
           }
         }
       } else {
         _logTb('[Taobao] 订单列表没有 mainOrders 结构');
+        return null;
       }
     } catch (e) {
       _logTb('[Taobao] 订单列表解析失败：${e.runtimeType}（已解析 ${orders.length} 个）');
+      return null;
     }
     return orders;
   }
@@ -925,7 +998,7 @@ class TaobaoH5Connector implements PlatformConnector {
           'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
           'Cookie': cookies,
         },
-      );
+      ).timeout(const Duration(seconds: 10));
       if (response.statusCode != 200) {
         _logTb('[Taobao SSR] 物流详情 HTTP ${response.statusCode}，跳过');
         return null;
@@ -936,7 +1009,7 @@ class TaobaoH5Connector implements PlatformConnector {
 
       final nodes = trace.nodes;
       final stateLabel = trace.stateLabel;
-      final stationName = trace.stationName.isNotEmpty ? trace.stationName : '菜鸟驿站';
+      final stationName = trace.stationName;
 
       // 优先以时间轴推导真实状态（与拼多多通道同一套引擎）；节点时间已规范成 yyyy-MM-dd HH:mm:ss
       String? rawTimelineJson;
@@ -997,17 +1070,13 @@ class TaobaoH5Connector implements PlatformConnector {
       var station = '';
       var cp = '';
 
-      // 货架码形态（如 9-4-1006 / 16-1-7002），或含数字的短码（如 A108、3021）
-      final shelfReg = RegExp(r'^\d{1,3}-\d{1,3}-\d{2,5}$');
-      final shortCodeReg = RegExp(r'^(?=.*\d)[A-Za-z0-9\-]{2,12}$');
-
       bool isPlausibleCode(String v) {
         if (v.isEmpty) return false;
         if (v.length > 14) return false;
-        if (RegExp(r'^\d{10,}$').hasMatch(v)) return false; // 纯数字长单号
-        if (RegExp(r'^1[3-9]\d{9}$').hasMatch(v)) return false; // 手机号
-        if (RegExp(r'^\d{4}-\d{2}-\d{2}').hasMatch(v)) return false; // 日期
-        return shelfReg.hasMatch(v) || shortCodeReg.hasMatch(v);
+        if (_longDigitsReg.hasMatch(v)) return false; // 纯数字长单号
+        if (_phoneReg.hasMatch(v)) return false; // 手机号
+        if (_datePrefixReg.hasMatch(v)) return false; // 日期
+        return _shelfCodeReg.hasMatch(v) || _shortCodeReg.hasMatch(v);
       }
 
       const codeKeys = [
@@ -1025,8 +1094,8 @@ class TaobaoH5Connector implements PlatformConnector {
             final v = m[k]?.toString().trim() ?? '';
             if (isPlausibleCode(v)) {
               // 货架码优先级最高；已有货架码时不再降级覆盖
-              final incomingIsShelf = shelfReg.hasMatch(v);
-              final currentIsShelf = shelfReg.hasMatch(code);
+              final incomingIsShelf = _shelfCodeReg.hasMatch(v);
+              final currentIsShelf = _shelfCodeReg.hasMatch(code);
               if (code.isEmpty || (incomingIsShelf && !currentIsShelf)) {
                 code = v;
               }
@@ -1035,7 +1104,7 @@ class TaobaoH5Connector implements PlatformConnector {
           // 兜底：字符串值中出现「取件码 XXX」
           for (final v in m.values) {
             if (v is String) {
-              final m2 = RegExp(r'取件码[:：\s]*([A-Za-z0-9\-]{2,12})').firstMatch(v);
+              final m2 = _pickupCodeTextReg.firstMatch(v);
               if (m2 != null) {
                 final c = m2.group(1)!.trim();
                 if (isPlausibleCode(c) && code.isEmpty) code = c;
@@ -1087,7 +1156,7 @@ class TaobaoH5Connector implements PlatformConnector {
       var cookieStr = cookies;
       // 标准 mtop 令牌流程：无令牌时先裸发一次，从 Set-Cookie 取新令牌后重试
       for (var attempt = 0; attempt < 3; attempt++) {
-        final tokenMatch = RegExp(r'_m_h5_tk=([^;]+)').firstMatch(cookieStr);
+        final tokenMatch = _mtopTkExtractReg.firstMatch(cookieStr);
         // 令牌缺失时使用空令牌发起引导请求，服务器会通过 Set-Cookie 下发新令牌
         final token = tokenMatch?.group(1)?.split('_').first ?? '';
 
@@ -1105,26 +1174,26 @@ class TaobaoH5Connector implements PlatformConnector {
             'Referer': 'https://h5.m.taobao.com/',
             'Cookie': cookieStr,
           },
-        );
+        ).timeout(const Duration(seconds: 10));
 
         // 解析服务端下发的新令牌（轮换），并持久化，避免会话到期后彻底断联
         final setCookies = resp.headers['set-cookie'] ?? '';
-        final newTk = RegExp(r'_m_h5_tk=([^;]+)').firstMatch(setCookies)?.group(1);
-        final newTkEnc = RegExp(r'_m_h5_tk_enc=([^;]+)').firstMatch(setCookies)?.group(1);
+        final newTk = _mtopTkExtractReg.firstMatch(setCookies)?.group(1);
+        final newTkEnc = _mtopTkEncExtractReg.firstMatch(setCookies)?.group(1);
         if (newTk != null || newTkEnc != null) {
           var updated = cookieStr;
           if (newTk != null) {
             // 边界 (^|;\s*)：裸 `_m_h5_tk=` 会命中 `_m_h5_tk_enc=` 的前缀，污染 enc 值。
-            updated = updated.contains(RegExp(r'(^|;\s*)_m_h5_tk='))
+            updated = updated.contains(_mtopTkHasReg)
                 ? updated.replaceAllMapped(
-                    RegExp(r'(^|;\s*)_m_h5_tk=[^;]*'),
+                    _mtopTkReplaceReg,
                     (m) => '${m[1]}_m_h5_tk=$newTk')
                 : '$updated; _m_h5_tk=$newTk';
           }
           if (newTkEnc != null) {
             updated = updated.contains('_m_h5_tk_enc=')
                 ? updated.replaceAllMapped(
-                    RegExp(r'(^|;\s*)_m_h5_tk_enc=[^;]*'),
+                    _mtopTkEncReplaceReg,
                     (m) => '${m[1]}_m_h5_tk_enc=$newTkEnc')
                 : '$updated; _m_h5_tk_enc=$newTkEnc';
           }
@@ -1160,8 +1229,8 @@ class TaobaoH5Connector implements PlatformConnector {
       }
       return null;
     } catch (e) {
-      // 至少留下异常类型与摘要，避免 DNS/TLS 失败被当成「同步成功 0 单」
-      _logTb('[Taobao] mtop call failed: ${e.runtimeType}: $e');
+      // 仅记录异常类型，避免异常对象携带含运单号的请求 URL
+      _logTb('[Taobao] mtop call failed: ${e.runtimeType}');
       return null;
     }
   }
@@ -1175,7 +1244,7 @@ class TaobaoH5Connector implements PlatformConnector {
   /// 剥离 JSONP 外壳（mtopjsonp1({...})），只去掉起止包裹，避免正文括号被误截断
   static String stripJsonp(String raw) {
     var s = raw.trim();
-    final m = RegExp(r'^[A-Za-z_$][\w$]*\s*\(').firstMatch(s);
+    final m = _jsonpPrefixReg.firstMatch(s);
     if (m != null && s.endsWith(')')) {
       s = s.substring(m.end, s.length - 1).trim();
     }
@@ -1237,5 +1306,15 @@ class _TbParcel {
     required this.location,
     this.rawTimelineJson,
     this.derivedStatus,
+  });
+}
+
+class _CainiaoFetchResult {
+  final List<_CainiaoItem> items;
+  final bool succeeded;
+
+  const _CainiaoFetchResult({
+    required this.items,
+    required this.succeeded,
   });
 }

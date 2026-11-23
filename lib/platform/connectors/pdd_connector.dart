@@ -28,6 +28,60 @@ import 'platform_connector.dart';
 import 'concurrent_limiter.dart';
 import 'package:pickup_app/core/parser/pickup_point_name.dart';
 
+final RegExp _pddTimeMarkerReg =
+    RegExp(r'\d{4}[-/.]\d{2}[-/.]\d{2}\s+\d{2}:\d{2}');
+final RegExp _pddOrderSnReg = RegExp(r'订单编号[:：\s]*([0-9\-]+)');
+final RegExp _pddCourierTrackReg = RegExp(
+  r'([\u4e00-\u9fa5A-Za-z]{2,10}(?:快递|速递|速运|包裹|物流)?)\s*[:：]\s*([A-Za-z0-9]{8,25})',
+);
+final RegExp _pddTrackingOnlyReg = RegExp(r'^([A-Za-z]{2,6}\d{8,20}|\d{10,20})$');
+final RegExp _pddAddrReg = RegExp(r'收货地址[:：\s]*([^\n]{4,80})');
+final RegExp _pddAddrHashSuffixReg = RegExp(r'#[A-Za-z0-9]{4,}$');
+final RegExp _pddDetailCodeReg = RegExp(
+  r'(?:取件码|提货码|取货码|凭码|取货凭证|验证码)[:：\s]*([A-Za-z0-9\-]{3,12})',
+);
+final RegExp _pddListCodeReg =
+    RegExp(r'(?:取件码|提货码|取货码|凭码)[:：\s]*([A-Za-z0-9\-]{3,12})');
+final RegExp _pddFiveCodeReg = RegExp(
+  r'(?:取件出示|出示)?(?:快递)?(?:单号)?后([四五\d]+)位[:：\s]*([0-9A-Za-z]{4,6})',
+);
+final RegExp _pddAltFiveCodeReg = RegExp(
+  r'(?:出示|凭)[\u4e00-\u9fa5]{0,6}后五位[:：\s]*([0-9A-Za-z]{5})',
+);
+final RegExp _pddTimeOnlyLineReg =
+    RegExp(r'^\s*(?:[\u4e00-\u9fa5]{2,6}\s*)?\d{4}[-/.]\d{2}[-/.]\d{2}');
+final RegExp _pddMultiSpaceReg = RegExp(r'\s+');
+final RegExp _pddPipeStationReg = RegExp(
+  r'(?:菜鸟驿站|多多驿站|兔喜生活|中通快递超市|顺丰速运|韵达超市|妈妈驿站)\s*[|｜·]\s*([^\n\r,，。】\]]{2,30})',
+);
+final RegExp _pddBracketStationReg = RegExp(
+  r'(?:已派送至|派送至|到达|存入|放入|已送达|自提点|自提柜|自提门店|取件门店|驿站|门店)[:：\s]*【([^】]{2,30})】',
+);
+final RegExp _pddBrandStationReg = RegExp(
+  r'(?:菜鸟驿站|多多驿站|兔喜生活|中通快递超市|顺丰速运|韵达超市|妈妈驿站)\s*[【\[]?([^\n\r,，。】\]]{2,30})',
+);
+final RegExp _pddLeadingSepReg = RegExp(r'^[|｜·\s]+');
+final RegExp _pddArrivedExpressReg =
+    RegExp(r'(?:已送达|今天\s*\d{2}:\d{2}\s*送达|包裹已送达)');
+final RegExp _pddAtPickupStationReg = RegExp(
+  r'(?:已到达|已派送至|已送至|存入|放入)[^，,\n]{0,10}(?:自提点|驿站|自提柜|快递柜|门店|代收点)',
+);
+final RegExp _pddTimelineTimeReg = RegExp(
+  r'(?:([\u4e00-\u9fa5]{2,6})\s*)?(\d{4}[-/.]\d{2}[-/.]\d{2}\s+\d{2}:\d{2}(?::\d{2})?)',
+);
+final RegExp _pddNavBarReg = RegExp(
+  r'全部[\s|｜·/、,，]*待付款[\s|｜·/、,，]*(?:待分享[\s|｜·/、,，]*)?'
+  r'待发货[\s|｜·/、,，]*待收货[\s|｜·/、,，]*(?:待评价|评价)',
+);
+final RegExp _pddClassifierStationArrivalReg = RegExp(
+  r'(?:已到达|已派送至|已送至|放入|存入)[^，,\n]{0,10}(?:自提点|驿站|自提柜|快递柜|门店|代收点)',
+);
+final RegExp _pddInTransitSignalReg =
+    RegExp(r'(运输中|派件中|派送中|已发往|已离开|转运中心|分拨中心|集散中心|分拣中心)');
+final RegExp _pddDeliveringStationReg = RegExp(
+  r'(?:已到达|到达|发往|离开|存放|送至)[^，,\n]{0,12}(?:网点|营业部|分部|派件站|派送站|配送站)',
+);
+
 /// 保活探活结果
 ///
 /// 只表达两种可判定的结局；「无法判定」（正忙 / 网络异常）由
@@ -61,19 +115,22 @@ class PddH5Connector implements PlatformConnector {
   String get displayName => '拼多多';
 
   @override
-  String get brandColorHex => '#E02E24';
-
-  @override
   Future<bool> isAuthenticated() async => _authStore.isBound('pdd');
 
   @override
   Future<void> cancelSync() async {
     _cancelled = true;
+    _bridgeGeneration++;
+    final bc = _bridgeCompleter;
+    _bridgeCompleter = null;
+    if (bc != null && !bc.isCompleted) bc.complete('');
   }
 
   WebViewController? _controller;
   Completer<String>? _bridgeCompleter;
+  int _bridgeGeneration = 0;
   String? _lastIssue;
+  bool _lastSyncSucceeded = false;
 
   /// 同步与保活探活共用同一个 WebView，用互斥位串行化，避免两个 loadRequest 互相打断
   bool _busy = false;
@@ -89,11 +146,11 @@ class PddH5Connector implements PlatformConnector {
   /// 上一次已写入 WebView 的 Cookie 串，用于避免每次同步重复写入
   String? _lastInjectedCookies;
 
-  /// 是否已打印过订单对象的字段清单（用于定位官方二级状态字段）
-  int _listKeysDumpedCount = 0;
-
   @override
   String? get lastIssue => _lastIssue;
+
+  @override
+  bool get lastSyncSucceeded => _lastSyncSucceeded;
 
 
   Package? _localPackageById(String id) {
@@ -106,6 +163,7 @@ class PddH5Connector implements PlatformConnector {
   }
 
   /// 用户重新授权后清理上一次的失效提示
+  @override
   void clearLastIssue() {
     _lastIssue = null;
   }
@@ -120,13 +178,13 @@ class PddH5Connector implements PlatformConnector {
         'PddBridge',
         onMessageReceived: (JavaScriptMessage message) {
           final m = message.message;
-          if (m.startsWith('{"type":"LOGISTICS_API"')) {
-            // 物流响应体积大且解析走 window.name，不再常驻内存
-            return;
-          }
-          debugPrint('[PDD] Bridge msg len=${m.length}');
+          final sep = m.indexOf('|');
+          if (sep <= 0) return;
+          if (int.tryParse(m.substring(0, sep)) != _bridgeGeneration) return;
+          final payload = m.substring(sep + 1);
+          debugPrint('[PDD] Bridge msg len=${payload.length}');
           final c = _bridgeCompleter;
-          if (c != null && !c.isCompleted) c.complete(message.message);
+          if (c != null && !c.isCompleted) c.complete(payload);
         },
       )
       ..setNavigationDelegate(
@@ -188,11 +246,6 @@ class PddH5Connector implements PlatformConnector {
       if (!body || body.length < 30) return;
       if (body.indexOf('orders') !== -1 && body.indexOf('aristotle') !== -1) return;
       pushWindowName(url, body);
-      PddBridge.postMessage(JSON.stringify({
-        type: 'LOGISTICS_API',
-        url: String(url),
-        body: String(body)
-      }));
     } catch(e) {}
   }
 
@@ -260,6 +313,8 @@ class PddH5Connector implements PlatformConnector {
 
     _busy = true;
     _cancelled = false;
+    _lastSyncSucceeded = false;
+    final alreadyExpiredAtStart = _authStore.isExpired('pdd');
     try {
       // P44-g+：免网络硬路径——列表/详情都拿不到时，也必须把 Hive 里的假 pickedUp
       // （pickedUp 且无用户 pickedUpAt）按本地时间轴拽回活跃态，不能等详情。
@@ -284,6 +339,7 @@ class PddH5Connector implements PlatformConnector {
       try {
         // ── 阶段 1：订单列表 ─────────────────────────────────
         final listJson = await _fetchOrderList();
+        if (_cancelled) return;
         if (listJson == null || listJson.isEmpty) {
           debugPrint('[PDD] Order list empty');
           return;
@@ -291,9 +347,14 @@ class PddH5Connector implements PlatformConnector {
 
         final orders = _extractOrders(listJson);
         debugPrint('[PDD] Parsed ${orders.length} orders');
-        if (orders.isEmpty) return;
-        // 订单列表拉取成功 → 登录态健康，清除此前的失效标记
-        await _authStore.setExpired('pdd', false);
+        if (orders.isEmpty) {
+          _lastSyncSucceeded = _lastIssue == null && !_cancelled;
+          return;
+        }
+        // 订单列表拉取成功且开始前未失效 → 清除此前的失效标记
+        if (!alreadyExpiredAtStart) {
+          await _authStore.setExpired('pdd', false);
+        }
 
         final pendingCodes = <String, _PddOrder>{}; // orderSn -> order（优先深挖时间轴）
         final handledOrderSns = <String>{};
@@ -318,15 +379,15 @@ class PddH5Connector implements PlatformConnector {
                 local != null &&
                 PddFalsePickupHeal.isStaleCompleted(local),
           )) {
-            debugPrint('[PDD NewMode] 已经完成，跳过同步: ${parsed.package.id} (${parsed.package.status.label})');
+            debugPrint('[PDD NewMode] 已经完成，跳过同步: ${packageIdForLog(parsed.package.id)} (${parsed.package.status.label})');
             // 标记已处理，别让扫尾逻辑再把旧件拉去 enrich
             handledOrderSns.add(parsed.package.id.replaceFirst('PDD_', ''));
             continue;
           }
           if (parsed.package.status == PackageStatus.pickedUp && local?.pickedUpAt == null) {
-            debugPrint('[PDD NewMode] P44 假完成无 pickedUpAt，继续 enrich 以回滚: ${parsed.package.id}');
+            debugPrint('[PDD NewMode] P44 假完成无 pickedUpAt，继续 enrich 以回滚: ${packageIdForLog(parsed.package.id)}');
           } else if (localActive && local.pickedUpAt == null) {
-            debugPrint('[PDD NewMode] P44 本地活跃证据，继续 enrich: ${parsed.package.id}');
+            debugPrint('[PDD NewMode] P44 本地活跃证据，继续 enrich: ${packageIdForLog(parsed.package.id)}');
           }
 
           final orderSn = parsed.package.id.replaceFirst('PDD_', '');
@@ -382,6 +443,7 @@ class PddH5Connector implements PlatformConnector {
         final locals = _getLocalPackages?.call() ?? const <Package>[];
         final orphanPending = <String, _PddOrder>{};
         for (final local in locals) {
+          if (_cancelled) return;
           if (local.platform != 'pdd') continue;
           if (!PddFalsePickupHeal.isFakePickup(local)) continue;
           final orderSn = local.id.startsWith('PDD_') ? local.id.substring(4) : '';
@@ -391,7 +453,7 @@ class PddH5Connector implements PlatformConnector {
           final healed = PddFalsePickupHeal.recoverAfterEnrichFailure(local: local) ??
               PddFalsePickupHeal.healMisfiledPickedUp(local);
           if (healed != null) {
-            debugPrint('[PDD NewMode] P44 扫尾本地自愈 ${local.id} → ${healed.status.label}');
+            debugPrint('[PDD NewMode] P44 扫尾本地自愈 ${packageIdForLog(local.id)} → ${healed.status.label}');
             yield healed;
           }
 
@@ -405,9 +467,17 @@ class PddH5Connector implements PlatformConnector {
         if (orphanPending.isNotEmpty) {
           yield* _enrichPending(orphanPending);
         }
+        if (_lastIssue == null && !_cancelled) {
+          _lastSyncSucceeded = true;
+        }
       } finally {
-        // 无论本次同步成功、失败还是中断，都尝试把刷新后的 Cookie 回写（仅当登录态健康）
-        await _persistCookiesIfHealthy(cookies);
+        // 仅在开始前未失效、本轮未报错/失效且未取消时就地回写刷新后的 Cookie
+        if (!alreadyExpiredAtStart &&
+            _lastIssue == null &&
+            !_cancelled &&
+            !_authStore.isExpired('pdd')) {
+          await _persistCookiesIfHealthy(cookies);
+        }
       }
     } finally {
       _busy = false;
@@ -431,6 +501,7 @@ class PddH5Connector implements PlatformConnector {
     if (cookies == null || cookies.trim().isEmpty) return null;
 
     _busy = true;
+    _cancelled = false;
     try {
       await _injectCookies(cookies);
       await _ensureController();
@@ -663,6 +734,7 @@ class PddH5Connector implements PlatformConnector {
     final deadline = DateTime.now().add(const Duration(seconds: 4));
     var ready = false;
     while (DateTime.now().isBefore(deadline)) {
+      if (_cancelled) return;
       try {
         final r = await _controller?.runJavaScriptReturningResult(
           "(function(){return (document.readyState==='complete' && typeof window.fetch==='function') ? '1' : '0';})()",
@@ -673,10 +745,12 @@ class PddH5Connector implements PlatformConnector {
         }
       } catch (_) {}
       await Future.delayed(const Duration(milliseconds: 100));
+      if (_cancelled) return;
     }
     if (!ready) {
       debugPrint('[PDD] page interactive wait timed out, continue anyway');
     }
+    if (_cancelled) return;
     // 站点 SDK 初始化缓冲
     await Future.delayed(const Duration(milliseconds: 150));
   }
@@ -684,17 +758,18 @@ class PddH5Connector implements PlatformConnector {
   /// 轮询等待点击「查看物流」后跳转的官方物流轨迹页面（页面以时间戳和运输轨迹为主）
   Future<String> _awaitExpressTimelineText({Duration timeout = const Duration(milliseconds: 3200)}) async {
     final deadline = DateTime.now().add(timeout);
-    final timeMarker = RegExp(r'\d{4}[-/.]\d{2}[-/.]\d{2}\s+\d{2}:\d{2}');
     var text = '';
     var scrolled = false;
     while (DateTime.now().isBefore(deadline)) {
+      if (_cancelled) return text;
       await Future.delayed(const Duration(milliseconds: 100));
+      if (_cancelled) return text;
       final curText = await _domText();
       if (!scrolled && curText.length >= 80) {
         scrolled = true;
         await _expandAndScroll();
       }
-      final tsCount = timeMarker.allMatches(curText).length;
+      final tsCount = _pddTimeMarkerReg.allMatches(curText).length;
       if (tsCount >= 3 || (curText.length >= 400 && tsCount >= 1)) {
         text = curText;
         break;
@@ -761,13 +836,14 @@ class PddH5Connector implements PlatformConnector {
         return;
       }
 
-      final merged = map.entries.map((e) => '${e.key}=${e.value}').join('; ');
+      final sortedKeys = map.keys.toList()..sort();
+      final merged = sortedKeys.map((k) => '$k=${map[k]}').join('; ');
       if (merged.length < (originalCookies.length * 0.6)) {
         debugPrint('[PDD] skip cookie persist: degraded set (${merged.length} < ${originalCookies.length})');
         return;
       }
       if (merged != originalCookies) {
-        await PlatformAuthStore().saveCookies('pdd', merged);
+        await _authStore.refreshCookiesInPlace('pdd', merged);
         debugPrint('[PDD] cookies refreshed (len ${merged.length})');
       }
     } catch (e) {
@@ -778,13 +854,15 @@ class PddH5Connector implements PlatformConnector {
   /// 阶段 1：在页面上下文内 fetch 订单列表（结果不可用时自动重试）
   Future<String?> _fetchOrderList() async {
     final controller = _controller;
-    if (controller == null) return null;
+    if (controller == null || _cancelled) return null;
 
     // 优化：若当前 WebView 已停留在拼多多站点内，优先直接发起 API fetch，免去整页重新加载
     try {
       final currentUrl = await controller.currentUrl();
+      if (_cancelled) return null;
       if (currentUrl != null && currentUrl.contains('yangkeduo.com')) {
         final quickRaw = await _runOrderListFetch();
+        if (_cancelled) return null;
         if (quickRaw != null &&
             quickRaw.trimLeft().startsWith('{') &&
             quickRaw.length > 100 &&
@@ -795,12 +873,17 @@ class PddH5Connector implements PlatformConnector {
       }
     } catch (_) {}
 
+    if (_cancelled) return null;
     await controller.loadRequest(Uri.parse('https://mobile.yangkeduo.com/orders.html'));
+    if (_cancelled) return null;
     // 轮询等待页面与 JS 运行时就绪
     await _awaitPageInteractive();
+    if (_cancelled) return null;
 
     for (var attempt = 1; attempt <= 2; attempt++) {
+      if (_cancelled) return null;
       final raw = await _runOrderListFetch();
+      if (_cancelled) return null;
       if (raw == null) {
         debugPrint('[PDD] order list attempt $attempt timeout');
       } else {
@@ -820,8 +903,9 @@ class PddH5Connector implements PlatformConnector {
         if (s.trimLeft().startsWith('{') && s.length > 100 && !s.contains('"error"')) {
           return s;
         }
-        debugPrint('[PDD] order list attempt $attempt unusable (len=${s.length}, head=${s.take(160)})');
+        debugPrint('[PDD] order list attempt $attempt unusable (len=${s.length})');
       }
+      if (_cancelled) return null;
       await Future.delayed(const Duration(milliseconds: 300));
     }
     return null;
@@ -829,15 +913,16 @@ class PddH5Connector implements PlatformConnector {
 
   Future<String?> _runOrderListFetch() async {
     final controller = _controller;
-    if (controller == null) return null;
+    if (controller == null || _cancelled) return null;
 
+    final gen = ++_bridgeGeneration;
     final completer = Completer<String>();
     _bridgeCompleter = completer;
 
     try {
       await controller.runJavaScript('''
 (function(){
-  function report(t){ try { PddBridge.postMessage(String(t)); } catch(e) {} }
+  function report(t){ try { PddBridge.postMessage('$gen|' + String(t)); } catch(e) {} }
   try {
     var uid = '';
     var m = document.cookie.match(/(?:pdd_user_id|pdduid)=([^;]+)/);
@@ -880,16 +965,17 @@ class PddH5Connector implements PlatformConnector {
 ''');
     } catch (e) {
       debugPrint('[PDD] runJavaScript error: $e');
-      _bridgeCompleter = null;
+      if (identical(_bridgeCompleter, completer)) _bridgeCompleter = null;
       return null;
     }
 
     try {
       final raw = await completer.future.timeout(const Duration(seconds: 10));
-      _bridgeCompleter = null;
+      if (identical(_bridgeCompleter, completer)) _bridgeCompleter = null;
+      if (_cancelled || raw.isEmpty) return null;
       return raw;
     } on TimeoutException {
-      _bridgeCompleter = null;
+      if (identical(_bridgeCompleter, completer)) _bridgeCompleter = null;
       return null;
     }
   }
@@ -970,12 +1056,15 @@ class PddH5Connector implements PlatformConnector {
   }) async {
     final deadline = DateTime.now().add(timeout);
     while (DateTime.now().isBefore(deadline)) {
+      if (_cancelled) return null;
       final data = await _extractOrderRawData();
       if (data != null && data['orderSn'] == requiredOrderSn) {
         return data;
       }
+      if (_cancelled) return null;
       await Future.delayed(const Duration(milliseconds: 100));
     }
+    if (_cancelled) return null;
     // P44-g：超时后也不得返回串页 rawData（错单 traces 会毒化本票）。
     final last = await _extractOrderRawData();
     if (last != null && last['orderSn'] == requiredOrderSn) return last;
@@ -985,7 +1074,7 @@ class PddH5Connector implements PlatformConnector {
   /// 阶段 2：进入订单详情页 / 物流轨迹页，抽取承运商、运单号、完整时间线与取件码
   Future<PddDetailResult?> _fetchOrderDetail(String orderSn, {Package? base}) async {
     final controller = _controller;
-    if (controller == null || orderSn.isEmpty) return null;
+    if (controller == null || orderSn.isEmpty || _cancelled) return null;
 
     final sw = Stopwatch()..start();
 
@@ -1054,8 +1143,7 @@ class PddH5Connector implements PlatformConnector {
       }
 
       final t3 = sw.elapsedMilliseconds;
-      final deepTsCount =
-          RegExp(r'\d{4}[-/.]\d{2}[-/.]\d{2}\s+\d{2}:\d{2}').allMatches(deep).length;
+      final deepTsCount = _pddTimeMarkerReg.allMatches(deep).length;
 
       // 关键优化：deep（物流详情页）包含最新取件凭证/到站信息，放在最前；
       // orderText 附在后面补充地址/订单编号
@@ -1204,7 +1292,7 @@ class PddH5Connector implements PlatformConnector {
     // 若传入了 orderSn，核验文本中出现的订单编号是否一致，防止读到上个页面的脏文本。
     // P44-g：mismatch 只丢弃脏 DOM，不得把同轮已拿到的官方 rawTraces 一并扔掉。
     if (orderSn.isNotEmpty && text.trim().isNotEmpty) {
-      final orderSnMatch = RegExp(r'订单编号[:：\s]*([0-9\-]+)').firstMatch(text);
+      final orderSnMatch = _pddOrderSnReg.firstMatch(text);
       if (orderSnMatch != null) {
         final extractedSn = orderSnMatch.group(1)!.trim();
         if (extractedSn.isNotEmpty && extractedSn != orderSn) {
@@ -1237,17 +1325,14 @@ class PddH5Connector implements PlatformConnector {
         .toList();
 
     // 1) 优先匹配「快递公司: 运单号」复合行（如“中通快递: 79146191072186”、“邮政快递包裹: 9819812698898”）
-    var courier = fallbackCourier != CourierType.other ? fallbackCourier : CourierType.other;
+    var courier = fallbackCourier;
     var trackingNo = fallbackTrackingNo;
 
-    final courierTrackPattern = RegExp(
-      r'([\u4e00-\u9fa5A-Za-z]{2,10}(?:快递|速递|速运|包裹|物流)?)\s*[:：]\s*([A-Za-z0-9]{8,25})',
-    );
     for (final line in lines) {
       if (line.contains('订单编号') || line.contains('收货地址') || line.contains('电话') || line.contains('自提点')) {
         continue;
       }
-      final m = courierTrackPattern.firstMatch(line);
+      final m = _pddCourierTrackReg.firstMatch(line);
       if (m != null) {
         final cName = m.group(1)!.trim();
         final tNum = m.group(2)!.trim();
@@ -1262,9 +1347,8 @@ class PddH5Connector implements PlatformConnector {
 
     // 若未匹配到复合行，单独查找运单号与快递名称
     if (trackingNo.isEmpty) {
-      final trackReg = RegExp(r'^([A-Za-z]{2,6}\d{8,20}|\d{10,20})$');
       for (final l in lines.take(15)) {
-        final m = trackReg.firstMatch(l);
+        final m = _pddTrackingOnlyReg.firstMatch(l);
         if (m != null && !l.contains('-')) {
           trackingNo = m.group(1)!;
           break;
@@ -1281,22 +1365,16 @@ class PddH5Connector implements PlatformConnector {
       courier = courierFromTrackingNumber(trackingNo);
     }
 
-    if (courier == CourierType.other && fallbackCourier != CourierType.other) {
-      courier = fallbackCourier;
-    }
-
     // 2) 收货地址
     var address = '';
-    final addrMatch = RegExp(r'收货地址[:：\s]*([^\n]{4,80})').firstMatch(logisticsText);
+    final addrMatch = _pddAddrReg.firstMatch(logisticsText);
     if (addrMatch != null) {
-      address = addrMatch.group(1)!.trim().replaceAll(RegExp(r'#[A-Za-z0-9]{4,}$'), '').trim();
+      address = addrMatch.group(1)!.trim().replaceAll(_pddAddrHashSuffixReg, '').trim();
     }
 
     // 3) 取件码：支持常规码与“取件出示[快递]单号后[四五\d]+位”
     var pickupCode = '';
-    final codeMatch = RegExp(
-      r'(?:取件码|提货码|取货码|凭码|取货凭证|验证码)[:：\s]*([A-Za-z0-9\-]{3,12})',
-    ).firstMatch(logisticsText);
+    final codeMatch = _pddDetailCodeReg.firstMatch(logisticsText);
     if (codeMatch != null) pickupCode = codeMatch.group(1) ?? '';
 
     // 只有在页面明确含有出示单号/凭单号取件上下文时，才提取后五位
@@ -1306,9 +1384,7 @@ class PddH5Connector implements PlatformConnector {
         logisticsText.contains('凭码') ||
         logisticsText.contains('提货');
     if (pickupCode.isEmpty && hasFiveCodeContext) {
-      final fiveMatch = RegExp(
-        r'(?:取件出示|出示)?(?:快递)?(?:单号)?后([四五\d]+)位[:：\s]*([0-9A-Za-z]{4,6})',
-      ).firstMatch(logisticsText);
+      final fiveMatch = _pddFiveCodeReg.firstMatch(logisticsText);
       if (fiveMatch != null) {
         final digits = fiveMatch.group(2) ?? '';
         if (digits.isNotEmpty) {
@@ -1318,7 +1394,7 @@ class PddH5Connector implements PlatformConnector {
     }
 
     if (pickupCode.isEmpty && hasFiveCodeContext) {
-      final altMatch = RegExp(r'(?:出示|凭)[\u4e00-\u9fa5]{0,6}后五位[:：\s]*([0-9A-Za-z]{5})').firstMatch(logisticsText);
+      final altMatch = _pddAltFiveCodeReg.firstMatch(logisticsText);
       if (altMatch != null) {
         pickupCode = '后5位 ${altMatch.group(1)}';
       }
@@ -1337,7 +1413,7 @@ class PddH5Connector implements PlatformConnector {
           statusFound = true;
           for (var j = i + 1; j < lines.length && j <= i + 4; j++) {
             final cand = lines[j];
-            final isTimeOnly = RegExp(r'^\s*(?:[\u4e00-\u9fa5]{2,6}\s*)?\d{4}[-/.]\d{2}[-/.]\d{2}').hasMatch(cand) && cand.length < 32;
+            final isTimeOnly = _pddTimeOnlyLineReg.hasMatch(cand) && cand.length < 32;
             if (cand.length >= 8 && _looksLikeTrace(cand) && !isTimeOnly) {
               latestText = cand;
               break;
@@ -1359,32 +1435,26 @@ class PddH5Connector implements PlatformConnector {
         }
       }
     }
-    latestText = latestText.replaceAll(RegExp(r'\s+'), ' ').trim();
+    latestText = latestText.replaceAll(_pddMultiSpaceReg, ' ').trim();
 
     // 5) 驿站名（支持“菜鸟驿站 | 示例小区北门店”、“已派送至【xxx】”）
     var stationName = '';
-    final pipeStation = RegExp(
-      r'(?:菜鸟驿站|多多驿站|兔喜生活|中通快递超市|顺丰速运|韵达超市|妈妈驿站)\s*[|｜·]\s*([^\n\r,，。】\]]{2,30})',
-    ).firstMatch(logisticsText);
+    final pipeStation = _pddPipeStationReg.firstMatch(logisticsText);
     if (pipeStation != null) {
       stationName = pipeStation.group(1)!.trim();
     }
 
     if (stationName.isEmpty) {
-      final bracketStation = RegExp(
-        r'(?:已派送至|派送至|到达|存入|放入|已送达|自提点|自提柜|自提门店|取件门店|驿站|门店)[:：\s]*【([^】]{2,30})】',
-      ).firstMatch(logisticsText);
+      final bracketStation = _pddBracketStationReg.firstMatch(logisticsText);
       if (bracketStation != null) {
         stationName = bracketStation.group(1)!.trim();
       }
     }
 
     if (stationName.isEmpty) {
-      final cnMatch = RegExp(
-        r'(?:菜鸟驿站|多多驿站|兔喜生活|中通快递超市|顺丰速运|韵达超市|妈妈驿站)\s*[【\[]?([^\n\r,，。】\]]{2,30})',
-      ).firstMatch(logisticsText);
+      final cnMatch = _pddBrandStationReg.firstMatch(logisticsText);
       if (cnMatch != null) {
-        stationName = cnMatch.group(1)!.trim().replaceAll(RegExp(r'^[|｜·\s]+'), '');
+        stationName = cnMatch.group(1)!.trim().replaceAll(_pddLeadingSepReg, '');
       }
     }
 
@@ -1408,11 +1478,11 @@ class PddH5Connector implements PlatformConnector {
         logisticsText.contains('凭取件码') ||
         logisticsText.contains('出示单号') ||
         logisticsText.contains('出示快递单号');
-    final isArrivedExpress = RegExp(r'(?:已送达|今天\s*\d{2}:\d{2}\s*送达|包裹已送达)').hasMatch(logisticsText) &&
+    final isArrivedExpress = _pddArrivedExpressReg.hasMatch(logisticsText) &&
         !logisticsText.contains('预计明日送达') &&
         !logisticsText.contains('预计后天送达') &&
         !logisticsText.contains('转运中心');
-    final isAtPickupStation = RegExp(r'(?:已到达|已派送至|已送至|存入|放入)[^，,\n]{0,10}(?:自提点|驿站|自提柜|快递柜|门店|代收点)').hasMatch(logisticsText) &&
+    final isAtPickupStation = _pddAtPickupStationReg.hasMatch(logisticsText) &&
         !logisticsText.contains('发往');
 
     final isAtStation = hasArrivalKeywords || isArrivedExpress || isAtPickupStation;
@@ -1448,17 +1518,18 @@ class PddH5Connector implements PlatformConnector {
     // 6) 高保真提取拼多多官方时间轴轨迹节点（图2完整对齐）
     final timelineNodes = <Map<String, String>>[];
 
-    // 写入前统一规范化时间（解析不出则不写入），同一时间只保留一条；
+    // 写入前统一规范化时间（解析不出则不写入），同一时间且相同文本只保留一条；
     // 已有节点没有标签、新节点时间和正文相同且带标签时，用带标签的替换（DOM 兜底节点 tag 恒为空）
     void addNode(String tag, String rawTime, String text) {
       final time = normalizeTraceTime(rawTime, now: now);
       if (time == null) return;
-      final idx = timelineNodes.indexWhere((n) => n['time'] == time);
+      final trimmedText = text.trim();
+      final idx = timelineNodes.indexWhere(
+        (n) => n['time'] == time && (n['text']?.toString().trim() ?? '') == trimmedText,
+      );
       if (idx == -1) {
         timelineNodes.add({'tag': tag, 'time': time, 'text': text});
-      } else if ((timelineNodes[idx]['tag'] ?? '').isEmpty &&
-          tag.isNotEmpty &&
-          (timelineNodes[idx]['text'] ?? '').trim() == text.trim()) {
+      } else if ((timelineNodes[idx]['tag'] ?? '').isEmpty && tag.isNotEmpty) {
         timelineNodes[idx] = {'tag': tag, 'time': time, 'text': text};
       }
     }
@@ -1482,13 +1553,9 @@ class PddH5Connector implements PlatformConnector {
       addNode(node['tag'] ?? '', node['time'] ?? '', node['text'] ?? '');
     }
 
-    final timeRegex = RegExp(
-      r'(?:([\u4e00-\u9fa5]{2,6})\s*)?(\d{4}[-/.]\d{2}[-/.]\d{2}\s+\d{2}:\d{2}(?::\d{2})?)',
-    );
-
     for (var i = 0; i < lines.length; i++) {
       final l = lines[i];
-      final m = timeRegex.firstMatch(l);
+      final m = _pddTimelineTimeReg.firstMatch(l);
       if (m != null) {
         var tag = m.group(1) ?? '';
         final timeStr = m.group(2)!;
@@ -1506,7 +1573,7 @@ class PddH5Connector implements PlatformConnector {
         // 如果残留的描述是空，或者残留的仅仅是短标签（长度小于4），真实轨迹在下一行
         if ((desc.isEmpty || desc.length < 4) && i + 1 < lines.length) {
           final nextLine = lines[i + 1].trim();
-          if (!timeRegex.hasMatch(nextLine) && _looksLikeTrace(nextLine)) {
+          if (!_pddTimelineTimeReg.hasMatch(nextLine) && _looksLikeTrace(nextLine)) {
             desc = nextLine;
           }
         }
@@ -1591,9 +1658,6 @@ class PddH5Connector implements PlatformConnector {
 
   // ────────────────── 解析 ──────────────────
 
-  @visibleForTesting
-  dynamic parseOrderForTest(Map<String, dynamic> o) => _parseOrder(o);
-
   _ParsedOrder? _parseOrder(Map<String, dynamic> o) {
     final orderSn = _firstString(o, const ['order_sn', 'orderSn', 'order_id', 'orderId', 'mall_order_sn'])
         .ifBlank(_firstStringDeep(o, const ['order_sn', 'orderSn'], 3));
@@ -1625,11 +1689,11 @@ class PddH5Connector implements PlatformConnector {
 
     // 列表接口偶尔直接带取件码
     var pickupCode = '';
-    final codeMatch = RegExp(r'(?:取件码|提货码|取货码|凭码)[:：\s]*([A-Za-z0-9\-]{3,12})').firstMatch(allText);
+    final codeMatch = _pddListCodeReg.firstMatch(allText);
     if (codeMatch != null) pickupCode = codeMatch.group(1) ?? '';
 
     var stationName = '';
-    final bracketMatch = RegExp(r'(?:已派送至|派送至|到达|存入|放入|已送达|自提点|自提柜|自提门店|取件门店|驿站|门店)[:：\s]*【([^】]{2,30})】').firstMatch(allText);
+    final bracketMatch = _pddBracketStationReg.firstMatch(allText);
     if (bracketMatch != null) {
       stationName = bracketMatch.group(1)!.trim();
     } else {
@@ -1648,16 +1712,6 @@ class PddH5Connector implements PlatformConnector {
     );
     debugPrint('[PDD LIST] sn=${packageIdForLog('PDD_$orderSn')} status=${status.label} '
         'promptLen=${statusPrompt.length} descLen=${descText.length}');
-
-    // 一次性输出「待收货」订单对象的字段名（仅键名，不含值），用于定位官方二级标签字段
-    if (_listKeysDumpedCount < 2 && statusPrompt.contains('待收货')) {
-      _listKeysDumpedCount++;
-      o.forEach((k, v) {
-        if (v is String && v.trim().isNotEmpty) {
-          debugPrint('[PDD LIST KEY] $k (len=${v.trim().length})');
-        }
-      });
-    }
 
     final courier = _resolveCourier(o, trackingNo: trackingNo, text: allText);
 
@@ -2035,8 +2089,6 @@ class PddFalsePickupHeal {
           )) {
         return null;
       }
-      // P44-g+：最新节点仍活跃（在途/派送/待取）时，历史残留取件码不得把它压回「待取件」。
-      // （JT554 假完成若带着旧码，旧逻辑会 heal 成 arrived，验收要的是 transit。）
       final derived = LogisticsStatusEngine.derive(
         events: events,
         isOrderSigned: true,
@@ -2194,11 +2246,7 @@ class PddStatusClassifier {
     // 剔除拼多多移动端顶部导航栏 Tab 串的干扰（如“全部 待付款 待分享 待发货 待收货 评价”）：
     // 只删除「全部 → 评价」这一段连续出现的导航串本身。
     // 不能按词全局 replaceAll，否则正文里真实的「待发货」轨迹会被一并删掉而误判成运输中。
-    final navBar = RegExp(
-      r'全部[\s|｜·/、,，]*待付款[\s|｜·/、,，]*(?:待分享[\s|｜·/、,，]*)?'
-      r'待发货[\s|｜·/、,，]*待收货[\s|｜·/、,，]*(?:待评价|评价)',
-    );
-    all = all.replaceFirst(navBar, ' ').trim();
+    all = all.replaceFirst(_pddNavBarReg, ' ').trim();
 
     // 0. 已拒收 / 退回发件人（终结态，优先于签收与到件判定）
     if (LogisticsStatusEngine.isRejectionSignal(prompt) ||
@@ -2256,13 +2304,13 @@ class PddStatusClassifier {
         prompt.contains('待自提') ||
         prompt.contains('已到站') ||
         prompt.contains('已到驿站') ||
-        RegExp(r'(?:已到达|已派送至|已送至|放入|存入)[^，,\n]{0,10}(?:自提点|驿站|自提柜|快递柜|门店|代收点)').hasMatch(all);
+        _pddClassifierStationArrivalReg.hasMatch(all);
 
     // 干线中转排除：转运中心送达并非自提点到件
     final isTransferTransit = all.contains('转运中心') && !all.contains('自提点') && !all.contains('驿站') && !all.contains('代收点');
     // 在途信号：文本明确处于干线运输/派送阶段时，取件码不足以独立证明已到站，
     // 否则历史残留的脏取件码会把在途包裹误锁成「待取件」。
-    final hasInTransitSignal = RegExp(r'(运输中|派件中|派送中|已发往|已离开|转运中心|分拨中心|集散中心|分拣中心)').hasMatch(all);
+    final hasInTransitSignal = _pddInTransitSignalReg.hasMatch(all);
 
     if (!isTransferTransit && hasStationArrival) {
       return PackageStatus.arrived;
@@ -2278,7 +2326,7 @@ class PddStatusClassifier {
         prompt.contains('正在配送') ||
         all.contains('派件') ||
         all.contains('派送') ||
-        RegExp(r'(?:已到达|到达|发往|离开|存放|送至)[^，,\n]{0,12}(?:网点|营业部|分部|派件站|派送站|配送站)').hasMatch(all)) {
+        _pddDeliveringStationReg.hasMatch(all)) {
       return PackageStatus.delivering;
     }
 
@@ -2296,5 +2344,4 @@ class PddStatusClassifier {
 
 extension on String {
   String ifBlank(String fallback) => trim().isEmpty ? fallback : this;
-  String take(int n) => length <= n ? this : substring(0, n);
 }

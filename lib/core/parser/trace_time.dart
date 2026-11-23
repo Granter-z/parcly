@@ -20,6 +20,8 @@ final RegExp _dateTimeReg = RegExp(
 /// 带时区的 ISO 8601（Z 或 ±hh:mm），按时区换算成北京时间
 final RegExp _isoWithZoneReg = RegExp(r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})$');
 
+final RegExp _digitsOnlyReg = RegExp(r'^\d+$');
+
 /// 把轨迹时间规范成 `yyyy-MM-dd HH:mm:ss`（北京时间），解析不出返回 null。
 ///
 /// 支持：
@@ -36,7 +38,7 @@ String? normalizeTraceTime(Object? raw, {DateTime? now}) {
   final s = raw.toString().trim();
   if (s.isEmpty) return null;
 
-  if (RegExp(r'^\d+$').hasMatch(s)) {
+  if (_digitsOnlyReg.hasMatch(s)) {
     return _fromEpoch(int.tryParse(s));
   }
 

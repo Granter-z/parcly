@@ -115,6 +115,40 @@ void main() {
         isFalse,
       );
     });
+
+    test('正常业务 URL 参数携带 ReturnUrl=https://plogin.m.jd.com/... 返回 false；主域为 plogin/passport 返回 true', () {
+      expect(
+        jdShouldExpireOnLoginLanding(
+          networkSoftFailThisRound: false,
+          landedUrl:
+              'https://wqs.jd.com/order/orderlist_jdm.shtml?ReturnUrl=https%3A%2F%2Fplogin.m.jd.com%2Flogin%2Flogin',
+        ),
+        isFalse,
+      );
+      expect(
+        jdShouldExpireOnLoginLanding(
+          networkSoftFailThisRound: false,
+          landedUrl:
+              'https://trade.m.jd.com/order/deal_wuliu_jdm.shtml?ReturnUrl=https://plogin.m.jd.com/login',
+        ),
+        isFalse,
+      );
+      expect(
+        jdShouldExpireOnLoginLanding(
+          networkSoftFailThisRound: false,
+          landedUrl:
+              'https://plogin.m.jd.com/login/login?ReturnUrl=https://wqs.jd.com/order/orderlist_jdm.shtml',
+        ),
+        isTrue,
+      );
+      expect(
+        jdShouldExpireOnLoginLanding(
+          networkSoftFailThisRound: false,
+          landedUrl: 'https://passport.jd.com/new/login.aspx',
+        ),
+        isTrue,
+      );
+    });
   });
 
   group('P42-c soft issue → syncFailed', () {

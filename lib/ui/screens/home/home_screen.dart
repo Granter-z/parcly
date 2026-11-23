@@ -71,6 +71,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
 
     // 延迟初始化后台同步服务和保活服务（等待 ref 可用）
     WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) return;
       // 页面挂载时若已在同步，补上转圈。
       _syncSpin(ref.read(syncStateProvider));
 
@@ -91,11 +92,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       // Android 13+ 先拿到通知权限再启动保活：
       // 否则保活合并到期的失效结果时，通知会被系统静默丢弃却仍写了去重标记。
       await NotificationAdapter().ensurePermission();
+      if (!mounted) return;
 
       // 启动前台保活（进程外续期由 WorkManager 承担）
-      if (mounted) {
-        ref.read(keepAliveControllerProvider.notifier).start();
-      }
+      ref.read(keepAliveControllerProvider.notifier).start();
     });
   }
 
@@ -141,6 +141,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                 ? SnackBarAction(
                     label: '去重新登录',
                     onPressed: () {
+                      if (!mounted) return;
                       Navigator.of(context).push(
                         MaterialPageRoute(
                           builder: (_) => const SettingsScreen(),
@@ -208,7 +209,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   Widget build(BuildContext context) {
     final stationGroups = ref.watch(groupedPendingPackagesProvider);
     final inTransitPackages = ref.watch(inTransitPackagesProvider);
-    final completedPackages = ref.watch(completedPackagesProvider);
+    final completedCount = ref.watch(
+      completedPackagesProvider.select((l) => l.length),
+    );
     final isSyncing = ref.watch(syncStateProvider);
     // 全部未绑定只加横幅，绝不整页盖住本地包裹（#9 修好后 #15 曾丢掉状态条，这里一并恢复）。
     final allUnbound = kPlatforms.every(
@@ -288,9 +291,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                   SliverToBoxAdapter(child: _buildPddEntry()),
 
                   // 无待取/在途但有已完成：保留右侧已完成入口
-                  if (!hasPending && completedPackages.isNotEmpty)
+                  if (!hasPending && completedCount > 0)
                     SliverToBoxAdapter(
-                      child: _completedOnlyBar(completedPackages.length),
+                      child: _completedOnlyBar(completedCount),
                     ),
 
                   // 空状态：仅在无待取/在途时出现
@@ -308,7 +311,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                           ? const SizedBox.shrink(
                               key: ValueKey('packages_present'),
                             )
-                          : _buildEmptyState(),
+                          : _buildEmptyState(isSyncing),
                     ),
                   ),
 
@@ -319,7 +322,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                       child: _sectionTitle(
                         '待取件',
                         pickupCount,
-                        completedCount: completedPackages.length,
+                        completedCount: completedCount,
                       ),
                     ),
                     for (final group in stationGroups)
@@ -332,8 +335,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                       child: _sectionTitle(
                         '在途',
                         inTransitPackages.length,
-                        completedCount:
-                            pickupCount == 0 ? completedPackages.length : 0,
+                        completedCount: pickupCount == 0 ? completedCount : 0,
                       ),
                     ),
                     AnimatedPackageList(
@@ -638,7 +640,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   }
 
   /// 无在途件的空状态卡片（供 AnimatedSwitcher 做进出场）
-  Widget _buildEmptyState() {
+  Widget _buildEmptyState(bool isSyncing) {
     final text = Theme.of(context).textTheme;
 
     return Padding(
@@ -670,10 +672,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
             ),
             const SizedBox(height: AppSpacing.xl),
             FilledButton.tonalIcon(
-              onPressed: () async {
-                HapticFeedback.lightImpact();
-                await _runSync();
-              },
+              onPressed: isSyncing
+                  ? null
+                  : () async {
+                      HapticFeedback.lightImpact();
+                      await _runSync();
+                    },
               icon: const Icon(Icons.sync_rounded, size: 16),
               label: const Text('一键同步'),
             ),

@@ -59,11 +59,14 @@ void main() {
 
   tearDown(() async {
     await Hive.close();
-    await _dir.delete(recursive: true);
+    if (_dir.existsSync()) {
+      await _dir.delete(recursive: true);
+    }
   });
 
   test('删除后黑名单拦住重新同步；清空黑名单后包裹能回来', () {
     final notifier = PackageListNotifier();
+    addTearDown(notifier.dispose);
 
     notifier.addPackage(_taobao());
     expect(notifier.state, hasLength(1));
@@ -86,6 +89,7 @@ void main() {
 
   test('运单号一并进黑名单：换个 ID 的同一件同样被拦，恢复后也能回来', () {
     final notifier = PackageListNotifier();
+    addTearDown(notifier.dispose);
     notifier.addPackage(_taobao());
     notifier.removePackage('TB_$_orderId');
 
@@ -101,6 +105,7 @@ void main() {
 
   test('删除只拦住被删的那件，其它包裹照常进来', () {
     final notifier = PackageListNotifier();
+    addTearDown(notifier.dispose);
     notifier.addPackage(_taobao());
     notifier.removePackage('TB_$_orderId');
 

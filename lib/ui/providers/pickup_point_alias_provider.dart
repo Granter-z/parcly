@@ -18,10 +18,6 @@ class PickupPointAliasNotifier extends StateNotifier<Map<String, String>> {
 
   final PickupPointAliasStore _store;
 
-  Future<void> reload() async {
-    state = await _store.loadAll();
-  }
-
   Future<void> setAlias(String alias, String canonical) async {
     await _store.setAlias(alias, canonical);
     state = Map<String, String>.from(_store.readAll());

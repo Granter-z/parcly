@@ -86,6 +86,17 @@ class TaobaoTokenRefresher {
   static const _ua =
       'Mozilla/5.0 (Linux; Android 14; 25102RKBEC Build/UP1A.231005.007) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36';
 
+  static final RegExp _cookieTkReadReg = RegExp(r'(?:^|;\s*)_m_h5_tk=([^;]+)');
+  static final RegExp _setCookieTkReg =
+      RegExp(r'(?:^|[;,\s])_m_h5_tk=([^;,\s]+)');
+  static final RegExp _setCookieTkEncReg =
+      RegExp(r'(?:^|[;,\s])_m_h5_tk_enc=([^;,\s]+)');
+  static final RegExp _cookieTkHasReg = RegExp(r'(^|;\s*)_m_h5_tk=');
+  static final RegExp _cookieTkReplaceReg = RegExp(r'(^|;\s*)_m_h5_tk=[^;]*');
+  static final RegExp _cookieTkEncHasReg = RegExp(r'(^|;\s*)_m_h5_tk_enc=');
+  static final RegExp _cookieTkEncReplaceReg =
+      RegExp(r'(^|;\s*)_m_h5_tk_enc=[^;]*');
+
   /// 用户维度的菜鸟包裹列表接口；登录态失效时返回 FAIL_SYS_SESSION_EXPIRED。
   static const probeApi = 'mtop.cainiao.pickup.plus.queryMultiStaPackages4Xy';
   static const _probeVersion = '1.0';
@@ -105,8 +116,12 @@ class TaobaoTokenRefresher {
     final c = client ?? http.Client();
     try {
       var cookieStr = cookies;
+      // 保留首轮 TOKEN_EMPTY/EXPIRED 重试时下发的轮换令牌，避免第 2 轮无 Set-Cookie 时丢失
+      String? rotatedTk;
+      String? rotatedTkEnc;
+
       for (var attempt = 0; attempt < 2; attempt++) {
-        final tokenMatch = RegExp(r'_m_h5_tk=([^;]+)').firstMatch(cookieStr);
+        final tokenMatch = _cookieTkReadReg.firstMatch(cookieStr);
         final token = tokenMatch?.group(1)?.split('_').first ?? '';
 
         final dataRaw = jsonEncode({
@@ -134,21 +149,26 @@ class TaobaoTokenRefresher {
         ).timeout(const Duration(seconds: 10));
 
         final setCookies = resp.headers['set-cookie'] ?? '';
-        final newTk =
-            RegExp(r'_m_h5_tk=([^;]+)').firstMatch(setCookies)?.group(1);
-        final newTkEnc =
-            RegExp(r'_m_h5_tk_enc=([^;]+)').firstMatch(setCookies)?.group(1);
+        final newTk = _setCookieTkReg.firstMatch(setCookies)?.group(1);
+        final newTkEnc = _setCookieTkEncReg.firstMatch(setCookies)?.group(1);
+        if (newTk != null) rotatedTk = newTk;
+        if (newTkEnc != null) rotatedTkEnc = newTkEnc;
         if (newTk != null || newTkEnc != null) {
           var updated = cookieStr;
           if (newTk != null) {
-            updated = updated.contains('_m_h5_tk=')
-                ? updated.replaceAll(RegExp(r'_m_h5_tk=[^;]*'), '_m_h5_tk=$newTk')
+            updated = updated.contains(_cookieTkHasReg)
+                ? updated.replaceAllMapped(
+                    _cookieTkReplaceReg,
+                    (m) => '${m[1]}_m_h5_tk=$newTk',
+                  )
                 : '$updated; _m_h5_tk=$newTk';
           }
           if (newTkEnc != null) {
-            updated = updated.contains('_m_h5_tk_enc=')
-                ? updated.replaceAll(
-                    RegExp(r'_m_h5_tk_enc=[^;]*'), '_m_h5_tk_enc=$newTkEnc')
+            updated = updated.contains(_cookieTkEncHasReg)
+                ? updated.replaceAllMapped(
+                    _cookieTkEncReplaceReg,
+                    (m) => '${m[1]}_m_h5_tk_enc=$newTkEnc',
+                  )
                 : '$updated; _m_h5_tk_enc=$newTkEnc';
           }
           cookieStr = updated;
@@ -156,22 +176,34 @@ class TaobaoTokenRefresher {
 
         switch (classifyMtopBody(resp.body)) {
           case MtopBodyKind.sessionExpired:
-            return MtopRefreshResult.expired(newToken: newTk, newTokenEnc: newTkEnc);
+            return MtopRefreshResult.expired(
+              newToken: rotatedTk,
+              newTokenEnc: rotatedTkEnc,
+            );
           case MtopBodyKind.tokenRetryable:
             if (attempt < 1) {
               await Future.delayed(const Duration(milliseconds: 150));
               continue;
             }
-            return MtopRefreshResult.expired();
+            return MtopRefreshResult.expired(
+              newToken: rotatedTk,
+              newTokenEnc: rotatedTkEnc,
+            );
           case MtopBodyKind.unknown:
             return MtopRefreshResult.network(
               '接口返回无法识别（${resp.body.length} 字节）',
             );
           case MtopBodyKind.ok:
-            return MtopRefreshResult.ok(newToken: newTk, newTokenEnc: newTkEnc);
+            return MtopRefreshResult.ok(
+              newToken: rotatedTk,
+              newTokenEnc: rotatedTkEnc,
+            );
         }
       }
-      return MtopRefreshResult.ok();
+      return MtopRefreshResult.ok(
+        newToken: rotatedTk,
+        newTokenEnc: rotatedTkEnc,
+      );
     } catch (e) {
       return MtopRefreshResult.network('$e');
     } finally {

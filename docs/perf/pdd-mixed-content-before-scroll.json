@@ -1,0 +1,29 @@
+{
+  "frames": 2248,
+  "over50ms": 5,
+  "over100ms": 0,
+  "p50": 16.60000000000582,
+  "p95": 33.10000000000582,
+  "p99": 49.79999999998836,
+  "max": 99.5,
+  "longTaskCount": 4,
+  "longTaskMs": 273,
+  "documentElements": 9405,
+  "cleanScriptInstalled": true,
+  "images": {
+    "total": 1002,
+    "failed": 0,
+    "pending": 2,
+    "lazyNotLoaded": 6,
+    "visibleTotal": 19,
+    "visibleFailed": 1,
+    "visiblePending": 0
+  },
+  "imageResources": {
+    "count": 141,
+    "cacheHits": 0,
+    "transferBytes": 259708,
+    "decodedBytes": 243808
+  },
+  "deviceTime": "2026-11-23 19:10:04"
+}

@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/engine/station_grouping.dart';
+import '../../constants/app_constants.dart';
 import '../../providers/package_provider.dart';
 import '../../providers/pickup_point_alias_provider.dart';
 
@@ -19,7 +20,7 @@ class PickupPointMergeScreen extends ConsumerWidget {
       ..sort((a, b) => a.key.compareTo(b.key));
 
     return Scaffold(
-      backgroundColor: const Color(0xFFF6F7F9),
+      backgroundColor: AppColors.background,
       appBar: AppBar(
         title: const Text(
           '取件点合并',
@@ -209,6 +210,7 @@ class _AddMergeSheetState extends ConsumerState<_AddMergeSheet> {
 
     // 较短/另一名映射到规范名；若用户选的规范名等于 B，则 A→B，反之亦然。
     // 两边都可映射到同一规范名（多对一）。
+    final messenger = ScaffoldMessenger.maybeOf(context);
     final notifier = ref.read(pickupPointAliasesProvider.notifier);
     if (normalizeStationName(a) != normalizeStationName(canonical)) {
       await notifier.setAlias(a, canonical);
@@ -217,15 +219,14 @@ class _AddMergeSheetState extends ConsumerState<_AddMergeSheet> {
       await notifier.setAlias(b, canonical);
     }
 
-    if (mounted) {
-      Navigator.pop(context);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('已合并：显示为「$canonical」'),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
-    }
+    if (!mounted) return;
+    Navigator.pop(context);
+    messenger?.showSnackBar(
+      SnackBar(
+        content: Text('已合并：显示为「$canonical」'),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
   }
 
   @override

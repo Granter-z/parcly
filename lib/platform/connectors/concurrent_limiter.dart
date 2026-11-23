@@ -33,11 +33,6 @@ class ConcurrentLimiter {
       }
     }
   }
-
-  /// 批量执行任务，自动控制并发
-  Future<List<T>> runAll<T>(List<Future<T> Function()> tasks) async {
-    return Future.wait(tasks.map((task) => run(task)));
-  }
 }
 
 /// 带随机延迟的并发执行器（防风控）
