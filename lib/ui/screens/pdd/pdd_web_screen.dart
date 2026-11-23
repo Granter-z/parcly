@@ -23,6 +23,7 @@ import '../../../core/engine/login_session_gate.dart';
 import '../../../platform/storage/platform_auth_store.dart';
 import '../../../platform/webview/platform_cookie.dart';
 import '../../providers/package_provider.dart';
+import 'pdd_clean_ui_script.dart';
 
 class PddWebScreen extends ConsumerStatefulWidget {
   final String? initialUrl;
@@ -109,6 +110,7 @@ class _PddWebScreenState extends ConsumerState<PddWebScreen>
   bool _isSyncing = false;
   String _pageTitle = '拼多多';
   Timer? _debounceSyncTimer;
+  bool _cleanUiInjected = false;
 
   // 外部支付跳转与返回闭环状态
   String? _pendingPaymentRedirectUrl;
@@ -151,12 +153,12 @@ class _PddWebScreenState extends ConsumerState<PddWebScreen>
       ..setNavigationDelegate(
         NavigationDelegate(
           onProgress: (progress) {
-            if (mounted) setState(() => _loadingProgress = progress);
-            if (progress > 35) {
-              _injectCleanUiScript();
+            if (mounted && _loadingProgress != progress) {
+              setState(() => _loadingProgress = progress);
             }
           },
           onPageStarted: (url) {
+            _cleanUiInjected = false;
             _updateTitleFromUrl(url);
             _injectCleanUiScript();
           },
@@ -333,87 +335,12 @@ class _PddWebScreenState extends ConsumerState<PddWebScreen>
     await _controller.loadRequest(Uri.parse(targetUrl));
   }
 
-  /// 注入样式与DOM监听器，自动移除「在App打开」、「下载App」等营销浮标
+  /// 每个文档只安装一次增量观察器；不在加载进度中反复全量扫描。
   Future<void> _injectCleanUiScript() async {
+    if (_cleanUiInjected) return;
+    _cleanUiInjected = true;
     try {
-      await _controller.runJavaScript('''
-(function() {
-  try {
-    var styleId = '__pdd_clean_ui_style';
-    if (!document.getElementById(styleId)) {
-      var style = document.createElement('style');
-      style.id = styleId;
-      style.textContent = [
-        '[class*="open-app"]',
-        '[class*="wake-app"]',
-        '[class*="app-wake"]',
-        '[class*="download-app"]',
-        '[class*="app-download"]',
-        '[class*="btn-open"]',
-        '[class*="btn-app"]',
-        '[class*="top-bar-download"]',
-        '[class*="bottom-bar-download"]',
-        '[id*="open-app"]',
-        '[id*="wake-app"]',
-        'div[class*="downloadBar"]',
-        'div[class*="openApp"]'
-      ].join(',') + ' { display: none !important; opacity: 0 !important; visibility: hidden !important; pointer-events: none !important; width: 0 !important; height: 0 !important; }';
-      (document.head || document.documentElement).appendChild(style);
-    }
-
-    function removeAppBadges() {
-      try {
-        var all = document.querySelectorAll('div, span, a, p, button');
-        for (var i = 0; i < all.length; i++) {
-          var el = all[i];
-          var text = (el.innerText || el.textContent || '').trim();
-          if (text.indexOf('在App打开') !== -1 ||
-              text.indexOf('在APP打开') !== -1 ||
-              text.indexOf('在app打开') !== -1 ||
-              text.indexOf('App内打开') !== -1 ||
-              text.indexOf('APP内打开') !== -1 ||
-              (text.indexOf('打开App') !== -1 && text.length <= 10) ||
-              (text.indexOf('打开APP') !== -1 && text.length <= 10)) {
-            if (text.length <= 20) {
-              var target = el;
-              var cur = el;
-              for (var d = 0; d < 4; d++) {
-                if (cur && cur.parentElement && cur.parentElement !== document.body && cur.parentElement !== document.documentElement) {
-                  var comp = window.getComputedStyle(cur);
-                  if (comp.position === 'fixed' || comp.position === 'absolute') {
-                    target = cur;
-                    break;
-                  }
-                  cur = cur.parentElement;
-                }
-              }
-              target.style.setProperty('display', 'none', 'important');
-              target.style.setProperty('visibility', 'hidden', 'important');
-              target.style.setProperty('pointer-events', 'none', 'important');
-              target.style.setProperty('opacity', '0', 'important');
-              target.style.setProperty('width', '0px', 'important');
-              target.style.setProperty('height', '0px', 'important');
-            }
-          }
-        }
-      } catch(e) {}
-    }
-
-    removeAppBadges();
-
-    if (!window.__pddCleanObserver) {
-      var obs = new MutationObserver(function() {
-        removeAppBadges();
-      });
-      obs.observe(document.documentElement || document.body, {
-        childList: true,
-        subtree: true
-      });
-      window.__pddCleanObserver = obs;
-    }
-  } catch(e) {}
-})();
-''');
+      await _controller.runJavaScript(pddCleanUiScript);
     } catch (_) {}
   }
 

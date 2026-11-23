@@ -29,8 +29,9 @@ class MainActivity : FlutterActivity() {
                     if (url != null && cookie != null) {
                         try {
                             val cm = android.webkit.CookieManager.getInstance()
+                            val flush = call.argument<Boolean>("flush") ?: true
                             cm.setCookie(url, cookie)
-                            cm.flush()
+                            if (flush) cm.flush()
                             result.success(true)
                         } catch (e: Throwable) {
                             android.util.Log.w("PddHook", "setCookie failed: $e")
@@ -39,6 +40,10 @@ class MainActivity : FlutterActivity() {
                     } else {
                         result.error("INVALID_ARGS", "url and cookie required", null)
                     }
+                }
+                "flushCookies" -> {
+                    android.webkit.CookieManager.getInstance().flush()
+                    result.success(true)
                 }
                 "installDocumentStartHook" -> {
                     val identifier = (call.argument<Number>("identifier"))?.toLong()

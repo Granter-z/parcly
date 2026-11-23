@@ -1,0 +1,25 @@
+{
+  "frames": 2242,
+  "over50ms": 3,
+  "over100ms": 0,
+  "p50": 16.60000000000582,
+  "p95": 33.10000000000582,
+  "p99": 49.70000000001164,
+  "max": 83,
+  "longTaskCount": 14,
+  "longTaskMs": 853,
+  "documentElements": 9921,
+  "cleanScriptInstalled": true,
+  "images": {
+    "total": 1213,
+    "failed": 44,
+    "pending": 2
+  },
+  "imageResources": {
+    "count": 139,
+    "cacheHits": 13,
+    "transferBytes": 222986,
+    "decodedBytes": 231361
+  },
+  "deviceTime": "2026-11-23 17:54:33"
+}

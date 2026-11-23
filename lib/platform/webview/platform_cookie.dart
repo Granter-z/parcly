@@ -22,6 +22,7 @@ Future<bool> setPlatformCookie({
   required String domain,
   bool httpOnly = true,
   bool secure = true,
+  bool flush = true,
 }) async {
   if (name.isEmpty || value.isEmpty || domain.isEmpty) return false;
   final host = domain.startsWith('.') ? domain.substring(1) : domain;
@@ -34,6 +35,7 @@ Future<bool> setPlatformCookie({
     final ok = await _webviewChannel.invokeMethod<bool>('setCookie', {
       'url': url,
       'cookie': cookie.toString(),
+      'flush': flush,
     });
     if (ok == true) return true;
   } catch (e) {
@@ -50,7 +52,9 @@ Future<bool> setPlatformCookie({
   }
 }
 
-/// 把一整串 `k=v; k2=v2` Cookie 写入指定域名集合
+/// 把一整串 `k=v; k2=v2` Cookie 写入指定域名集合。
+/// 批量写入后统一落盘，避免每条 Cookie 都触发同步磁盘 I/O。
+/// 后台 isolate 没有 MainActivity 通道，保留原有逐条回退行为。
 Future<void> injectCookieString({
   required String cookies,
   required List<String> domains,
@@ -70,7 +74,15 @@ Future<void> injectCookieString({
         domain: domain,
         httpOnly: httpOnly,
         secure: secure,
+        flush: false,
       );
     }
+  }
+  try {
+    await _webviewChannel.invokeMethod<bool>('flushCookies');
+  } on MissingPluginException {
+    // 后台 isolate 没有原生通道，逐条回退已完成。
+  } catch (e) {
+    debugPrint('[Cookie] batch flush failed: $e');
   }
 }

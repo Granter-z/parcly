@@ -1,0 +1,83 @@
+{
+  "capturedAt": "2026-11-23T10:28:31.122Z",
+  "urlHost": "mobile.yangkeduo.com",
+  "urlPath": "/",
+  "titleLength": 3,
+  "documentElements": 17380,
+  "cleanScriptInstalled": true,
+  "scans": [
+    {
+      "elements": 15279,
+      "durationMs": 61.19999999925494
+    },
+    {
+      "elements": 15279,
+      "durationMs": 27.199999999254942
+    },
+    {
+      "elements": 15279,
+      "durationMs": 48.5
+    },
+    {
+      "elements": 15279,
+      "durationMs": 58.799999999813735
+    },
+    {
+      "elements": 15279,
+      "durationMs": 67.70000000018626
+    },
+    {
+      "elements": 15279,
+      "durationMs": 27.700000000186265
+    },
+    {
+      "elements": 15279,
+      "durationMs": 46.700000000186265
+    },
+    {
+      "elements": 15279,
+      "durationMs": 59.90000000037253
+    },
+    {
+      "elements": 15279,
+      "durationMs": 54.89999999944121
+    },
+    {
+      "elements": 15279,
+      "durationMs": 56.59999999962747
+    }
+  ],
+  "raf": {
+    "count": 51,
+    "over50ms": 0,
+    "p50": 16.60000000000582,
+    "p95": 49.70000000001164,
+    "p99": 49.79999999998836
+  },
+  "longTasks": {
+    "count": 7,
+    "totalMs": 427
+  },
+  "paint": {
+    "first-paint": 632,
+    "first-contentful-paint": 632
+  },
+  "navigation": {
+    "responseEnd": 795.7000000001863,
+    "domContentLoaded": 814.3999999994412,
+    "loadEvent": 1324
+  },
+  "images": {
+    "total": 1974,
+    "failed": 44,
+    "pending": 0,
+    "lazyNotLoaded": 44
+  },
+  "imageResources": {
+    "count": 142,
+    "cacheHits": 25,
+    "transferBytes": 234533,
+    "decodedBytes": 316673
+  },
+  "deviceTime": "2026-11-23 18:28:31"
+}
